@@ -72,6 +72,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <time.h>
 #include <errno.h>
 #include <math.h>
@@ -152,6 +153,37 @@ static void metrics_bind_reject(const char *val, const char *origin) {
     exit(1);
 }
 static char dashboard_dir[512] = "";
+
+/* ---- Control API (#46) --------------------------------------------------
+ * A token-protected POST endpoint on the metrics server that can change the
+ * GPU power limit and the mining intensity from the dashboard.
+ *
+ * Two files, deliberately separate:
+ *   /etc/dagcore-miner/config.env       operator's, the miner only reads it
+ *   /var/lib/dagcore-miner/overrides.env written by this API, loaded on top
+ * so a dashboard change can never corrupt the wallet or the pool, and an
+ * operator editing config.env never fights the API over the same file.
+ *
+ * Both paths, and the token file, can be redirected with environment
+ * variables - needed to test without root, useful for containers. */
+#define DT_TOKEN_PATH_DEFAULT     "/etc/dagcore-miner/api-token"
+#define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
+
+static int  gpu_power_limit = 0;      /* GPU_POWER_LIMIT, watts; 0 = leave alone */
+static char g_api_token[80] = "";     /* empty = control API disabled */
+static int  g_control_ok    = 0;      /* 1 = controls usable right now */
+static char g_control_reason[128] = "not initialised";
+/* Power-limit envelope as nvidia-smi reports it; -1 until queried. */
+static double g_pl_min = -1, g_pl_max = -1, g_pl_default = -1, g_pl_current = -1;
+
+static const char *dt_token_path(void) {
+    const char *e = getenv("DAGCORE_TOKEN_FILE");
+    return (e && e[0]) ? e : DT_TOKEN_PATH_DEFAULT;
+}
+static const char *dt_overrides_path(void) {
+    const char *e = getenv("DAGCORE_OVERRIDES_FILE");
+    return (e && e[0]) ? e : DT_OVERRIDES_PATH_DEFAULT;
+}
 
 /* Detected host CPU, shown at startup and in the metrics JSON. */
 static char g_cpu_brand[96]    = "";
@@ -2590,6 +2622,394 @@ static double get_cpu_temp(void) {
 }
 
 /* =========================================================================
+ * Control API (#46) - helpers
+ * ========================================================================= */
+
+/* Declared again here: the existing forward declaration lives inside the
+ * #ifdef DAGTECH_GPU autotune block, so it is invisible to the CPU-only
+ * build, where these helpers are compiled all the same. */
+static void dagtech_mkdir_parents(const char *filepath);
+
+/* Ask nvidia-smi for the power-limit envelope of one GPU. The CSV query is
+ * used rather than "-q -d POWER" on purpose: that output also contains a
+ * "Min"/"Max" pair for recent power *samples*, which a naive parse picks up
+ * instead of the limits. Returns 0 on success. */
+static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, double *cur) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "nvidia-smi --query-gpu=power.min_limit,power.max_limit,"
+             "power.default_limit,power.limit --format=csv,noheader,nounits -i %d 2>/dev/null",
+             idx);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+    char buf[256];
+    char *got = fgets(buf, sizeof(buf), fp);
+    int rc = pclose(fp);
+    if (!got || rc != 0) return -1;
+    double a, b, c, d;
+    if (sscanf(buf, "%lf , %lf , %lf , %lf", &a, &b, &c, &d) != 4) return -1;
+    if (mn) *mn = a;
+    if (mx) *mx = b;
+    if (def) *def = c;
+    if (cur) *cur = d;
+    return 0;
+}
+
+/* Apply a power limit. Needs root (the service runs as root); nvidia-smi
+ * prints the reason on failure, so it is captured and logged rather than
+ * reduced to an exit code. */
+static int nvsmi_set_power_limit(int idx, int watts, char *err, size_t err_size) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %d -pl %d 2>&1", idx, watts);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        snprintf(err, err_size, "cannot run nvidia-smi");
+        return -1;
+    }
+    char line[256], last[256] = "";
+    while (fgets(line, sizeof(line), fp)) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
+        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
+    }
+    int rc = pclose(fp);
+    if (rc != 0) {
+        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
+        return -1;
+    }
+    return 0;
+}
+
+/* Only these two keys may ever be written by the API. Anything else - wallet,
+ * pool, metrics bind - stays the operator's to set in config.env. */
+static int overrides_key_allowed(const char *key) {
+    return strcmp(key, "GPU_POWER_LIMIT") == 0 || strcmp(key, "GPU_INTENSITY") == 0;
+}
+
+static void overrides_apply(const char *key, const char *val) {
+    if (strcmp(key, "GPU_POWER_LIMIT") == 0) gpu_power_limit = atoi(val);
+    else if (strcmp(key, "GPU_INTENSITY") == 0) {
+        int v = atoi(val);
+        if (v >= 0 && v <= 100) { gpu_intensity = v; gpu_intensity_count = 0; }
+    }
+}
+
+/* Load the override file on top of config.env. Unknown keys are ignored, not
+ * an error: the file is machine-written, and a key from a newer version must
+ * not stop an older miner from starting. */
+static void overrides_load(void) {
+    const char *path = dt_overrides_path();
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    int n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
+        if (l == 0 || line[0] == '#') continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        if (!overrides_key_allowed(line)) continue;
+        overrides_apply(line, eq + 1);
+        n++;
+    }
+    fclose(f);
+    if (n) printf("[DagCore] Overrides loaded from %s (%d key%s)\n", path, n, n == 1 ? "" : "s");
+}
+
+/* Rewrite the override file with one key changed. Every other line is copied
+ * through verbatim, and the result is renamed into place, so a crash halfway
+ * cannot leave a truncated file behind. */
+static int overrides_set(const char *key, const char *value) {
+    if (!overrides_key_allowed(key)) return -1;
+    const char *path = dt_overrides_path();
+    dagtech_mkdir_parents(path);
+
+    char tmp[1100];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *out = fopen(tmp, "w");
+    if (!out) return -1;
+
+    int written = 0;
+    FILE *in = fopen(path, "r");
+    if (in) {
+        char line[512];
+        while (fgets(line, sizeof(line), in)) {
+            char probe[512];
+            strncpy(probe, line, sizeof(probe) - 1);
+            probe[sizeof(probe) - 1] = '\0';
+            char *eq = strchr(probe, '=');
+            if (eq) {
+                *eq = '\0';
+                if (strcmp(probe, key) == 0) {
+                    fprintf(out, "%s=%s\n", key, value);
+                    written = 1;
+                    continue;
+                }
+            }
+            fputs(line, out);
+        }
+        fclose(in);
+    } else {
+        fprintf(out, "# Written by the DAGCore control API. Edit config.env instead.\n");
+    }
+    if (!written) fprintf(out, "%s=%s\n", key, value);
+    if (fclose(out) != 0) { remove(tmp); return -1; }
+#ifndef _WIN32
+    chmod(tmp, 0640);
+#endif
+    if (rename(tmp, path) != 0) { remove(tmp); return -1; }
+    return 0;
+}
+
+/* Read the API token, creating it on first start. 0600 is set before anything
+ * is written, so the secret is never briefly world-readable. */
+static void token_init(void) {
+    const char *path = dt_token_path();
+    FILE *f = fopen(path, "r");
+    if (f) {
+        if (fgets(g_api_token, sizeof(g_api_token), f)) {
+            size_t l = strlen(g_api_token);
+            while (l > 0 && (g_api_token[l-1] == '\n' || g_api_token[l-1] == '\r' ||
+                             g_api_token[l-1] == ' ')) g_api_token[--l] = '\0';
+        }
+        fclose(f);
+        if (g_api_token[0]) return;
+    }
+
+    unsigned char raw[32];
+    int have = 0;
+#ifndef _WIN32
+    FILE *ur = fopen("/dev/urandom", "rb");
+    if (ur) {
+        have = (fread(raw, 1, sizeof(raw), ur) == sizeof(raw));
+        fclose(ur);
+    }
+#endif
+    if (!have) {
+        fprintf(stderr, "[DagCore] WARNING: no /dev/urandom; control API disabled\n");
+        g_api_token[0] = '\0';
+        return;
+    }
+    for (size_t i = 0; i < sizeof(raw); i++)
+        snprintf(g_api_token + i * 2, 3, "%02x", raw[i]);
+
+    dagtech_mkdir_parents(path);
+    f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "[DagCore] WARNING: cannot write %s: %s - control API disabled\n",
+                path, strerror(errno));
+        g_api_token[0] = '\0';
+        return;
+    }
+#ifndef _WIN32
+    chmod(path, 0600);
+#endif
+    fprintf(f, "%s\n", g_api_token);
+    fclose(f);
+    printf("[DagCore] Control API token created in %s\n", path);
+    printf("[DagCore] Token: %s\n", g_api_token);
+    printf("[DagCore]        paste it into the dashboard to enable the controls\n");
+}
+
+/* Length-independent comparison, so a wrong token cannot be narrowed down by
+ * timing the reply. */
+static int token_equal(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b), i;
+    unsigned char diff = (unsigned char)(la ^ lb);
+    for (i = 0; i < la; i++) diff |= (unsigned char)(a[i] ^ (i < lb ? b[i] : 0));
+    return diff == 0;
+}
+
+/* Decide once at startup whether the controls can work at all, and say why
+ * not - the dashboard shows the reason instead of dead buttons. */
+static void control_init(void) {
+    token_init();
+    g_control_ok = 0;
+    if (!g_api_token[0]) {
+        snprintf(g_control_reason, sizeof(g_control_reason), "no API token");
+        return;
+    }
+    if (gpu_enabled != 1) {
+        snprintf(g_control_reason, sizeof(g_control_reason), "GPU mining is disabled");
+        return;
+    }
+    if (g_num_gpus > 1) {
+        /* The miner indexes GPUs through OpenCL, nvidia-smi through NVML, and
+         * the two orders are not guaranteed to agree. Setting a power limit on
+         * the wrong card is worse than not offering the control. */
+        snprintf(g_control_reason, sizeof(g_control_reason),
+                 "multi-GPU: needs PCI bus-ID mapping (not implemented)");
+        return;
+    }
+    if (nvsmi_query_power(gpu_device, &g_pl_min, &g_pl_max, &g_pl_default, &g_pl_current) != 0) {
+        snprintf(g_control_reason, sizeof(g_control_reason), "nvidia-smi not available");
+        return;
+    }
+    g_control_ok = 1;
+    snprintf(g_control_reason, sizeof(g_control_reason), "ok");
+}
+
+/* ---- tiny HTTP helpers (this server speaks just enough HTTP) ---- */
+static void http_send_json(int fd, int status, const char *reason, const char *body) {
+    char hdr[256];
+    snprintf(hdr, sizeof(hdr),
+             "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
+             "Access-Control-Allow-Origin: *\r\nConnection: close\r\n"
+             "Content-Length: %d\r\n\r\n", status, reason, (int)strlen(body));
+    send(fd, hdr, (int)strlen(hdr), 0);
+    send(fd, body, (int)strlen(body), 0);
+}
+
+static void http_send_err(int fd, int status, const char *reason, const char *msg) {
+    char body[320];
+    snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", msg);
+    http_send_json(fd, status, reason, body);
+}
+
+/* Pull one integer out of a flat JSON object. The bodies this API accepts are
+ * a single key and a number, so a full parser would be more code than the
+ * feature. Anything more complex is rejected by the range checks. */
+static int json_get_int(const char *body, const char *key, long *out) {
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(body, pat);
+    if (!p) return -1;
+    p = strchr(p + strlen(pat), ':');
+    if (!p) return -1;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = NULL;
+    long v = strtol(p, &end, 10);
+    if (end == p) return -1;
+    *out = v;
+    return 0;
+}
+
+/* Case-insensitive header lookup; copies the value into out. */
+static int http_header(const char *req, const char *name, char *out, size_t out_size) {
+    size_t nl = strlen(name);
+    const char *p = req;
+    while (*p) {
+        const char *eol = strstr(p, "\r\n");
+        if (!eol || eol == p) break;
+        size_t i = 0;
+        while (i < nl && p[i] && (tolower((unsigned char)p[i]) == tolower((unsigned char)name[i]))) i++;
+        if (i == nl && p[i] == ':') {
+            const char *v = p + nl + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            size_t len = (size_t)(eol - v);
+            if (len >= out_size) len = out_size - 1;
+            memcpy(out, v, len);
+            out[len] = '\0';
+            return 0;
+        }
+        p = eol + 2;
+    }
+    return -1;
+}
+
+/* Route and serve one control request. Auth first, capability second, then
+ * the endpoint - so an unauthenticated caller learns nothing about the rig. */
+static void dagtech_handle_control(int cfd, const char *req, const char *body) {
+    char tok[128] = "";
+    if (!g_api_token[0] ||
+        http_header(req, "x-dagcore-token", tok, sizeof(tok)) != 0 ||
+        !token_equal(g_api_token, tok)) {
+        http_send_err(cfd, 401, "Unauthorized", "missing or invalid token");
+        return;
+    }
+    if (!g_control_ok) {
+        char msg[200];
+        snprintf(msg, sizeof(msg), "controls unavailable: %s", g_control_reason);
+        http_send_err(cfd, 409, "Conflict", msg);
+        return;
+    }
+
+    if (strncmp(req, "POST /api/power-limit", 21) == 0) {
+        long w;
+        if (json_get_int(body, "watts", &w) != 0) {
+            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"watts\\\"");
+            return;
+        }
+        /* Re-query rather than trust the startup snapshot: a driver reload or
+         * a VBIOS change can move the envelope while the miner is running. */
+        double mn, mx, df, cur;
+        if (nvsmi_query_power(gpu_device, &mn, &mx, &df, &cur) != 0) {
+            http_send_err(cfd, 500, "Internal Server Error", "nvidia-smi query failed");
+            return;
+        }
+        g_pl_min = mn; g_pl_max = mx; g_pl_default = df; g_pl_current = cur;
+        if (w < (long)mn || w > (long)mx) {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "watts must be between %.0f and %.0f", mn, mx);
+            http_send_err(cfd, 400, "Bad Request", msg);
+            return;
+        }
+        char err[200] = "";
+        if (nvsmi_set_power_limit(gpu_device, (int)w, err, sizeof(err)) != 0) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "nvidia-smi: %s", err);
+            fprintf(stderr, "[DagCore] Power limit %ld W rejected: %s\n", w, err);
+            http_send_err(cfd, 500, "Internal Server Error", msg);
+            return;
+        }
+        gpu_power_limit = (int)w;
+        char val[16];
+        snprintf(val, sizeof(val), "%ld", w);
+        int saved = (overrides_set("GPU_POWER_LIMIT", val) == 0);
+        nvsmi_query_power(gpu_device, NULL, NULL, NULL, &g_pl_current);
+        printf("[DagCore] Power limit set to %ld W via control API%s\n",
+               w, saved ? "" : " (WARNING: not persisted)");
+        char resp[160];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"applied\":%ld,\"saved\":%s}", w, saved ? "true" : "false");
+        http_send_json(cfd, 200, "OK", resp);
+        return;
+    }
+
+    if (strncmp(req, "POST /api/intensity", 19) == 0) {
+        long v;
+        if (json_get_int(body, "value", &v) != 0) {
+            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"value\\\"");
+            return;
+        }
+        if (v < 0 || v > 100) {
+            http_send_err(cfd, 400, "Bad Request", "value must be between 0 and 100");
+            return;
+        }
+        char val[16];
+        snprintf(val, sizeof(val), "%ld", v);
+        if (overrides_set("GPU_INTENSITY", val) != 0) {
+            http_send_err(cfd, 500, "Internal Server Error", "could not write overrides file");
+            return;
+        }
+        /* Intensity is fixed when the GPU buffers are allocated, so it only
+         * takes effect on a restart. systemd sets INVOCATION_ID; without it
+         * nothing would bring the miner back, so we save and say so instead
+         * of exiting into nowhere. */
+        int supervised = (getenv("INVOCATION_ID") != NULL);
+        char resp[240];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"saved\":true,\"restarting\":%s%s}",
+                 supervised ? "true" : "false",
+                 supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+        http_send_json(cfd, 200, "OK", resp);
+        if (supervised) {
+            printf("[DagCore] Intensity set to %ld via control API - exiting for restart\n", v);
+            keep_alive = 0;
+            running = 0;
+        } else {
+            printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
+        }
+        return;
+    }
+
+    http_send_err(cfd, 404, "Not Found", "unknown endpoint");
+}
+
+/* =========================================================================
  * Built-in Metrics Server (for Dashboard)
  * ========================================================================= */
 static void *dagtech_metrics_thread(void *arg) {
@@ -2636,9 +3056,46 @@ static void *dagtech_metrics_thread(void *arg) {
         #endif
         if (cfd < 0) continue;
 
-        /* Read request and check path */
-        char reqbuf[1024] = {0};
-        recv(cfd, reqbuf, sizeof(reqbuf) - 1, 0);
+        /* A stalled client must not wedge the whole (single-threaded) server. */
+#ifndef _WIN32
+        {
+            struct timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
+            setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        }
+#endif
+        /* Read the request. A GET arrives in one packet, but a POST body can
+         * be split, so keep reading until Content-Length bytes follow the
+         * header terminator. */
+        char reqbuf[8192];
+        size_t have = 0;
+        const char *body = NULL;
+        for (;;) {
+            int n = (int)recv(cfd, reqbuf + have, sizeof(reqbuf) - 1 - have, 0);
+            if (n <= 0) break;
+            have += (size_t)n;
+            reqbuf[have] = '\0';
+            char *hdr_end = strstr(reqbuf, "\r\n\r\n");
+            if (!hdr_end) {
+                if (have >= sizeof(reqbuf) - 1) break;
+                continue;                       /* headers still incomplete */
+            }
+            body = hdr_end + 4;
+            char cl[32];
+            long want = 0;
+            if (http_header(reqbuf, "content-length", cl, sizeof(cl)) == 0) want = atol(cl);
+            if ((long)(have - (size_t)(body - reqbuf)) >= want) break;
+            if (have >= sizeof(reqbuf) - 1) break;
+        }
+        if (have == 0) { close(cfd); continue; }
+        reqbuf[have] = '\0';
+        if (!body) body = "";
+
+        /* ---- Control API (#46): token-protected POST ---- */
+        if (strncmp(reqbuf, "POST ", 5) == 0) {
+            dagtech_handle_control(cfd, reqbuf, body);
+            close(cfd);
+            continue;
+        }
 
         /* Serve dashboard HTML for any non-metrics GET */
         if (dashboard_dir[0] && strstr(reqbuf, "GET /metrics") == NULL
@@ -2714,6 +3171,13 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"gpu_usage\":%.1f,"
             "\"gpu_memory\":%.1f,"
             "\"gpu_power\":%.2f,"
+            "\"gpu_power_limit\":%.0f,"
+            "\"gpu_power_min\":%.0f,"
+            "\"gpu_power_max\":%.0f,"
+            "\"gpu_power_default\":%.0f,"
+            "\"gpu_intensity\":%d,"
+            "\"control_available\":%s,"
+            "\"control_reason\":\"%s\","
             "\"total_hashes\":%" DT_PRIu64 ","
             "\"submitted\":%" DT_PRIu64 ","
             "\"accepted\":%" DT_PRIu64 ","
@@ -2742,6 +3206,8 @@ static void *dagtech_metrics_thread(void *arg) {
             g_cpu_brand, g_cpu_cores,
             num_threads, current_hashrate, cpu_hashrate, gpu_hashrate,
             cpu_temp, gpu_temp, gpu_usage, gpu_memory, gpu_power,
+            g_pl_current, g_pl_min, g_pl_max, g_pl_default, gpu_intensity,
+            g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
             (unsigned long long)total_submitted,
             (unsigned long long)total_accepted,
@@ -2863,7 +3329,7 @@ static void dagtech_usage(void) {
     printf("\n");
     printf("  Config file keys: WALLET, POOL, PORT, THREADS, WORKER, CPU_LIMIT,\n");
     printf("    METRICS_PORT, METRICS_BIND, GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE,\n");
-    printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN\n");
+    printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN, GPU_POWER_LIMIT\n");
     printf("\n");
 }
 
@@ -3049,6 +3515,7 @@ static void dagtech_load_config(const char *path) {
         }
         else if (strcmp(key, "DASHBOARD_DIR")== 0) strncpy(dashboard_dir,val, sizeof(dashboard_dir)- 1);
         else if (strcmp(key, "GPU_ENABLED")  == 0) gpu_enabled   = atoi(val);
+        else if (strcmp(key, "GPU_POWER_LIMIT") == 0) gpu_power_limit = atoi(val);
         else if (strcmp(key, "GPU_ALIGN")    == 0) {
             if (gpu_parse_align(val) != 0) gpu_align_reject(val, "GPU_ALIGN");
         }
@@ -3270,6 +3737,11 @@ int main(int argc, char **argv) {
 
     /* ---- Load config file (CLI args below will override) ---- */
     dagtech_load_config(config_path);
+
+    /* Dashboard-written overrides sit between the operator's config.env and
+     * the command line: a setting changed from the browser wins over the file
+     * an operator wrote by hand, but an explicit CLI flag still wins over both. */
+    overrides_load();
 
     /* ---- #42 env-var overrides for autotune knobs (env wins over config.env)
        Lets ad-hoc tuning happen without editing config.env, mirroring the
@@ -3508,6 +3980,25 @@ int main(int argc, char **argv) {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2,2), &wsa);
     #endif
+
+    /* Control API: decide whether the dashboard's controls can work, and
+     * re-apply a power limit saved by a previous session. */
+    control_init();
+    if (gpu_power_limit > 0) {
+        if (!g_control_ok) {
+            fprintf(stderr, "[DagCore] WARNING: GPU_POWER_LIMIT=%d ignored (%s)\n",
+                    gpu_power_limit, g_control_reason);
+        } else {
+            char err[200] = "";
+            if (nvsmi_set_power_limit(gpu_device, gpu_power_limit, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not apply GPU_POWER_LIMIT=%d: %s\n",
+                        gpu_power_limit, err);
+            else {
+                nvsmi_query_power(gpu_device, NULL, NULL, NULL, &g_pl_current);
+                printf("[DagCore] GPU power limit set to %d W\n", gpu_power_limit);
+            }
+        }
+    }
 
     /* Start metrics server thread */
     pthread_t metrics_tid;
