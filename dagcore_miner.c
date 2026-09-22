@@ -3030,28 +3030,69 @@ static int overrides_set(const char *key, const char *value);
 #define TRIAL_MS (10 * 60 * 1000)
 typedef struct {
     int      active;
-    int      value;              /* MHz under test */
+    int      value;              /* value under test (step, or offset MHz) */
+    int      prev;               /* what to come back to if it goes wrong */
     uint64_t start_ms;
     uint64_t rejected_at_start;
+    int      rejected_seen;      /* rejects that appeared during the trial */
     char     status[16];         /* none | running | saved | failed */
 } ClockTrial;
 /* [0] core clock, [1] memory clock, [2] core offset, [3] memory offset. */
 #define TRIAL_N 4
 static ClockTrial g_trial[TRIAL_N] = {
-    {0,0,0,0,"none"}, {0,0,0,0,"none"}, {0,0,0,0,"none"}, {0,0,0,0,"none"}
+    {0,0,0,0,0,0,"none"}, {0,0,0,0,0,0,"none"},
+    {0,0,0,0,0,0,"none"}, {0,0,0,0,0,0,"none"}
 };
 static const char *TRIAL_KEY[TRIAL_N] = {
     "GPU_CORE_CLOCK_BASE", "GPU_MEM_CLOCK_BASE", "GPU_CORE_OFFSET", "GPU_MEM_OFFSET"
 };
 
-static void trial_start(int which, int mhz) {
+/* Put a domain back to the value it had before the trial. Used when the test
+ * fails and when the operator cancels it - "the previous value comes back
+ * automatically" has to be literally true, or the promise in the help text is
+ * a lie. */
+static void trial_revert(int which) {
+    char err[200] = "";
+    int prev = g_trial[which].prev;
+    if (which <= 1) {                       /* clock lock: step, or none */
+        if (prev > 0) {
+            if (which) gpu_mem_clock_base = prev; else gpu_core_clock_base = prev;
+            nvml_lock_clock(which, clk_effective(which, prev), err, sizeof(err));
+        } else {
+            if (which) gpu_mem_clock_base = 0; else gpu_core_clock_base = 0;
+            nvml_unlock_clock(which, err, sizeof(err));
+        }
+    } else {                                /* offset */
+        int is_mem = (which == 3);
+        if (is_mem) gpu_mem_offset = prev; else gpu_core_offset = prev;
+        nvml_write_offset(is_mem, prev, err, sizeof(err));
+        /* An offset move displaces the table, so a lock has to follow it. */
+        int base = is_mem ? gpu_mem_clock_base : gpu_core_clock_base;
+        if (base > 0) nvml_lock_clock(is_mem, clk_effective(is_mem, base), err, sizeof(err));
+    }
+}
+
+static void trial_start(int which, int value, int prev) {
     g_trial[which].active = 1;
-    g_trial[which].value = mhz;
+    g_trial[which].value = value;
+    g_trial[which].prev = prev;
+    g_trial[which].rejected_seen = 0;
     g_trial[which].start_ms = dagtech_now_ms();
     pthread_mutex_lock(&stats_mtx);
     g_trial[which].rejected_at_start = total_rejected;
     pthread_mutex_unlock(&stats_mtx);
     snprintf(g_trial[which].status, sizeof(g_trial[which].status), "running");
+}
+
+/* Rejected shares seen since the trial began - live while it runs, frozen at
+ * the verdict once it ends, so the dashboard can show why it failed. */
+static int trial_rejects(int which) {
+    if (!g_trial[which].active) return g_trial[which].rejected_seen;
+    pthread_mutex_lock(&stats_mtx);
+    uint64_t rej = total_rejected;
+    pthread_mutex_unlock(&stats_mtx);
+    if (rej <= g_trial[which].rejected_at_start) return 0;
+    return (int)(rej - g_trial[which].rejected_at_start);
 }
 
 static int trial_remaining_s(int which) {
@@ -3070,13 +3111,14 @@ static void trial_tick(void) {
         pthread_mutex_unlock(&stats_mtx);
 
         if (rej != g_trial[i].rejected_at_start) {
+            g_trial[i].rejected_seen = (int)(rej - g_trial[i].rejected_at_start);
             g_trial[i].active = 0;
             snprintf(g_trial[i].status, sizeof(g_trial[i].status), "failed");
-            fprintf(stderr, "[DagCore] Clock trial FAILED: rejected shares went %"
-                    DT_PRIu64 " -> %" DT_PRIu64 "; %s=%d not saved (still applied - "
-                    "reset it or restart to drop it)\n",
-                    (unsigned long long)g_trial[i].rejected_at_start,
-                    (unsigned long long)rej, TRIAL_KEY[i], g_trial[i].value);
+            fprintf(stderr, "[DagCore] Trial FAILED: %d rejected share%s appeared; "
+                    "%s=%d not saved, reverting to %d\n",
+                    g_trial[i].rejected_seen, g_trial[i].rejected_seen == 1 ? "" : "s",
+                    TRIAL_KEY[i], g_trial[i].value, g_trial[i].prev);
+            trial_revert(i);
             continue;
         }
         if (dagtech_now_ms() - g_trial[i].start_ms < TRIAL_MS) continue;
@@ -3416,6 +3458,20 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             return;
         }
         gpu_power_limit = (int)w;
+
+        /* The power cap decides how often the card can actually hold a clock,
+         * so changing it invalidates whatever a running trial had measured.
+         * Restart them rather than credit the new cap with the old evidence. */
+        int restarted = 0;
+        for (int i = 0; i < TRIAL_N; i++) {
+            if (!g_trial[i].active) continue;
+            trial_start(i, g_trial[i].value, g_trial[i].prev);
+            restarted++;
+        }
+        if (restarted)
+            printf("[DagCore] Power limit changed - %d running test%s restarted\n",
+                   restarted, restarted == 1 ? "" : "s");
+
         char val[16];
         snprintf(val, sizeof(val), "%ld", w);
         int saved = (overrides_set("GPU_POWER_LIMIT", val) == 0);
@@ -3424,7 +3480,8 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                w, saved ? "" : " (WARNING: not persisted)");
         char resp[160];
         snprintf(resp, sizeof(resp),
-                 "{\"ok\":true,\"applied\":%ld,\"saved\":%s}", w, saved ? "true" : "false");
+                 "{\"ok\":true,\"applied\":%ld,\"saved\":%s,\"tests_restarted\":%d}",
+                 w, saved ? "true" : "false", restarted);
         http_send_json(cfd, 200, "OK", resp);
         return;
     }
@@ -3546,8 +3603,9 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                 http_send_err(cfd, 500, "Internal Server Error", msg);
                 return;
             }
+            int prev_base = which ? gpu_mem_clock_base : gpu_core_clock_base;
             if (which) gpu_mem_clock_base = base; else gpu_core_clock_base = base;
-            trial_start(which, base);
+            trial_start(which, base, prev_base);
             printf("[DagCore] %s locked to %d MHz (step %d %+d) - on trial for %d min\n",
                    which ? "Memory clock" : "Core clock", eff, base, shift, TRIAL_MS / 60000);
             char resp[220];
@@ -3597,6 +3655,10 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                 http_send_err(cfd, 500, "Internal Server Error", msg);
                 return;
             }
+            /* Captured before the write: this is what a failed trial goes back to. */
+            int prev_off = is_mem ? gpu_mem_offset : gpu_core_offset;
+            if (prev_off == DT_OFF_UNSET) prev_off = 0;
+
             if (is_mem) gpu_mem_offset = (int)mhz; else gpu_core_offset = (int)mhz;
 
             /* The offset just moved the table. A lock stored as a step still
@@ -3615,7 +3677,8 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                          * clock trial had proved is about an operating point
                          * that no longer exists. Start it over rather than
                          * credit it with stability it did not earn. */
-                        if (g_trial[is_mem].active) trial_start(is_mem, base);
+                        if (g_trial[is_mem].active)
+                            trial_start(is_mem, base, g_trial[is_mem].prev);
                         printf("[DagCore] %s lock re-applied at %d MHz (step %d) after the "
                                "offset changed\n", is_mem ? "Memory clock" : "Core clock",
                                relock_eff, base);
@@ -3641,7 +3704,7 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                 http_send_json(cfd, 200, "OK", resp);
                 return;
             }
-            trial_start(which, (int)mhz);
+            trial_start(which, (int)mhz, prev_off);
             printf("[DagCore] %s offset set to %+ld MHz - on trial for %d min\n",
                    is_mem ? "Memory" : "Core", mhz, TRIAL_MS / 60000);
             char resp[240];
@@ -3652,6 +3715,41 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             http_send_json(cfd, 200, "OK", resp);
             return;
         }
+    }
+
+    /* Cancel a running trial and put the previous value back. The dashboard
+     * offers this as "Cancel test" so a change can be undone without waiting
+     * ten minutes for a verdict nobody wants. */
+    if (strncmp(req, "POST /api/cancel-trial", 22) == 0) {
+        static const char *NAMES[TRIAL_N] = {
+            "core-clock", "mem-clock", "core-offset", "mem-offset"
+        };
+        int which = -1;
+        for (int i = 0; i < TRIAL_N; i++) {
+            char pat[64];
+            snprintf(pat, sizeof(pat), "\"%s\"", NAMES[i]);
+            if (strstr(body, pat)) { which = i; break; }
+        }
+        if (which < 0) {
+            http_send_err(cfd, 400, "Bad Request",
+                          "body must name one of core-clock, mem-clock, "
+                          "core-offset, mem-offset");
+            return;
+        }
+        if (!g_trial[which].active) {
+            http_send_err(cfd, 409, "Conflict", "no test is running for that setting");
+            return;
+        }
+        int back = g_trial[which].prev;
+        g_trial[which].active = 0;
+        snprintf(g_trial[which].status, sizeof(g_trial[which].status), "none");
+        trial_revert(which);
+        printf("[DagCore] Trial for %s cancelled; back to %d\n", TRIAL_KEY[which], back);
+        char resp[160];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"cancelled\":true,\"reverted_to\":%d}", back);
+        http_send_json(cfd, 200, "OK", resp);
+        return;
     }
 
     /* Adopt what the card is already running.
@@ -3978,9 +4076,13 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"trial_core_status\":\"%s\","
             "\"trial_core_value\":%d,"
             "\"trial_core_remaining\":%d,"
+            "\"trial_core_prev\":%d,"
+            "\"trial_core_rejected\":%d,"
             "\"trial_mem_status\":\"%s\","
             "\"trial_mem_value\":%d,"
             "\"trial_mem_remaining\":%d,"
+            "\"trial_mem_prev\":%d,"
+            "\"trial_mem_rejected\":%d,"
             "\"gpu_core_offset\":%d,"
             "\"gpu_core_offset_min\":%d,"
             "\"gpu_core_offset_max\":%d,"
@@ -3992,9 +4094,13 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"trial_coreoff_status\":\"%s\","
             "\"trial_coreoff_value\":%d,"
             "\"trial_coreoff_remaining\":%d,"
+            "\"trial_coreoff_prev\":%d,"
+            "\"trial_coreoff_rejected\":%d,"
             "\"trial_memoff_status\":\"%s\","
             "\"trial_memoff_value\":%d,"
             "\"trial_memoff_remaining\":%d,"
+            "\"trial_memoff_prev\":%d,"
+            "\"trial_memoff_rejected\":%d,"
             "\"gpu_mem_clock_shift\":%d,"
             "\"gpu_core_clock_shift\":%d,"
             "\"clock_lock_stale\":%s,"
@@ -4034,12 +4140,16 @@ static void *dagtech_metrics_thread(void *arg) {
             gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,
             lock_mem_eff, gpu_mem_clock_base,
             g_trial[0].status, g_trial[0].value, trial_remaining_s(0),
+            g_trial[0].prev, trial_rejects(0),
             g_trial[1].status, g_trial[1].value, trial_remaining_s(1),
+            g_trial[1].prev, trial_rejects(1),
             off_core, off_core_lo, off_core_hi,
             off_mem, off_mem_lo, off_mem_hi,
             off_ok ? "true" : "false", off_why,
             g_trial[2].status, g_trial[2].value, trial_remaining_s(2),
+            g_trial[2].prev, trial_rejects(2),
             g_trial[3].status, g_trial[3].value, trial_remaining_s(3),
+            g_trial[3].prev, trial_rejects(3),
             mem_shift, core_shift, lock_stale ? "true" : "false",
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
