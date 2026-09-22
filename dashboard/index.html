@@ -363,6 +363,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="range" id="plRange1" min="0" max="100" value="0" disabled>
         <input type="number" id="plNum" disabled>
         <button id="plApply" type="button" disabled>Apply</button>
+        <button class="ghost" id="plDefault" type="button" disabled>Default</button>
       </span>
     </div>
 
@@ -373,7 +374,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="range" id="coreSlider" min="0" max="100" value="0" disabled>
         <input type="number" id="coreNum" disabled>
         <button id="coreApply" type="button" disabled>Apply</button>
-        <button class="ghost" id="coreReset" type="button" disabled>Reset</button>
+        <button class="ghost" id="coreDefault" type="button" disabled>Default</button>
       </span>
     </div>
 
@@ -384,7 +385,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="range" id="memSlider" min="0" max="100" value="0" disabled>
         <input type="number" id="memNum" disabled>
         <button id="memApply" type="button" disabled>Apply</button>
-        <button class="ghost" id="memReset" type="button" disabled>Reset</button>
+        <button class="ghost" id="memDefault" type="button" disabled>Default</button>
       </span>
     </div>
 
@@ -395,7 +396,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="range" id="coreoffSlider" min="-1000" max="1500" step="15" value="0" disabled>
         <input type="number" id="coreoffNum" min="-1000" max="1500" step="15" disabled>
         <button id="coreoffApply" type="button" disabled>Apply</button>
-        <button class="ghost" id="coreoffReset" type="button" disabled>Reset</button>
+        <button class="ghost" id="coreoffDefault" type="button" disabled>Default</button>
       </span>
     </div>
 
@@ -406,7 +407,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="range" id="memoffSlider" min="-2000" max="4000" step="50" value="0" disabled>
         <input type="number" id="memoffNum" min="-2000" max="4000" step="50" disabled>
         <button id="memoffApply" type="button" disabled>Apply</button>
-        <button class="ghost" id="memoffReset" type="button" disabled>Reset</button>
+        <button class="ghost" id="memoffDefault" type="button" disabled>Default</button>
       </span>
     </div>
 
@@ -788,11 +789,11 @@ function noteIdle(msg, cls){
 
 function controlsEnabled(on){
   var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply",
-             "coreSlider","coreNum","coreApply","coreReset",
-             "memSlider","memNum","memApply","memReset",
-             "coreoffSlider","coreoffNum","coreoffApply","coreoffReset",
-             "memoffSlider","memoffNum","memoffApply","memoffReset",
-             "adoptBtn","adoptCore","adoptMem"], i;
+             "coreSlider","coreNum","coreApply","coreDefault",
+             "memSlider","memNum","memApply","memDefault",
+             "coreoffSlider","coreoffNum","coreoffApply","coreoffDefault",
+             "memoffSlider","memoffNum","memoffApply","memoffDefault",
+             "plDefault","adoptBtn","adoptCore","adoptMem"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
 }
 
@@ -813,7 +814,8 @@ function syncSettings(d){
 
   if (d.gpu_power_min >= 0 && d.gpu_power_max > 0){
     txt("plRange", "allowed " + d.gpu_power_min.toFixed(0) + "\u2013" +
-        d.gpu_power_max.toFixed(0) + " W, default " + d.gpu_power_default.toFixed(0) + " W");
+        d.gpu_power_max.toFixed(0) + " W \u00b7 card default " +
+        d.gpu_power_default.toFixed(0) + " W");
     var r = $("plRange1"), n2 = $("plNum");
     r.min = n2.min = d.gpu_power_min; r.max = n2.max = d.gpu_power_max;
     if (!plTouched && d.gpu_power_limit > 0){ r.value = d.gpu_power_limit; n2.value = d.gpu_power_limit; }
@@ -834,8 +836,8 @@ function syncSettings(d){
     sw.hidden = false;
     sw.getElementsByTagName("span")[0].textContent =
       "A saved clock step cannot be produced with the current offset \u2014 it " +
-      "falls outside the range the card accepts. Pick another step, or press " +
-      "Reset to hand the domain back to the driver.";
+      "falls outside the range the card accepts. Apply a different value; it " +
+      "takes effect straight away.";
   } else {
     sw.hidden = true;
   }
@@ -899,8 +901,9 @@ function syncClock(d, id, base_, trialBase){
   if (shift) parts.push("table shifted " + (shift > 0 ? "+" : "") + shift + " by the offset");
   if (typeof base === "number" && base > 0 && typeof lockMhz === "number" && lockMhz > 0)
     parts.push("locked at step " + base + " \u2192 " + lockMhz + " MHz");
-  else if (typeof cur === "number" && cur > 0)
-    parts.push("now " + Math.round(cur) + " MHz");
+  else
+    parts.push("Auto (driver)" +
+               (typeof cur === "number" && cur > 0 ? ", now " + Math.round(cur) + " MHz" : ""));
   txt(id + "Range", parts.join(" \u00b7 "));
 
   var sl = $(id + "Slider"), nm = $(id + "Num");
@@ -953,9 +956,11 @@ function syncOffset(d, id, field, trialBase){
   if (typeof lo === "number" && typeof hi === "number" && hi > lo){
     sl.min = nm.min = lo; sl.max = nm.max = hi;
   }
-  txt(id + "Range", "currently " + (cur >= 0 ? "+" : "") + cur + " MHz" +
+  var shown = (cur === 0) ? "0 (factory default)"
+                          : ((cur > 0 ? "+" : "") + cur + " MHz");
+  txt(id + "Range", "currently " + shown +
       (typeof lo === "number" && typeof hi === "number" && hi > lo
-       ? " \u00b7 allowed " + (lo > 0 ? "+" : "") + lo + " to +" + hi : ""));
+       ? " \u00b7 allowed " + lo + " to +" + hi : ""));
   if (!clkTouched[id] && typeof cur === "number"){
     sl.value = cur; nm.value = cur;
   }
@@ -1042,21 +1047,17 @@ function wireClock(id, path, label){
     post(path, { mhz: v }, function(st, d){
       clkTouched[id] = false;
       if (st === 200 && d && d.ok)
-        note(label + " set to " + d.applied + " MHz" +
-             (typeof d.base === "number" ? " (step " + d.base + ")" : "") +
-             (d.relocked ? "; lock re-applied at " + d.lock_mhz + " MHz" : "") +
-             " \u2014 on trial for " + Math.round((d.trial_seconds || 600) / 60) +
-             " min before it is saved.", "ok", 10000);
+        note("New value applied. Checking stability in the background for 10 min \u2014 you don\u2019t need to wait. Don\u2019t change other clock settings until then.", "ok", 20000);
       else if (st === 401) note("Rejected: invalid token.", "err", 8000);
       else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
     });
   });
-  $(id + "Reset").addEventListener("click", function(){
-    note("Resetting " + label + " clock\u2026", "busy", 15000);
+  $(id + "Default").addEventListener("click", function(){
+    note("Restoring the card\u2019s default for " + label + "\u2026", "busy", 15000);
     post(path, { reset: true }, function(st, d){
       clkTouched[id] = false;
       if (st === 200 && d && d.ok)
-        note(label + " handed back to the driver" +
+        note(label + " back to the card\u2019s default" +
              (d.saved ? " and saved." : " (NOT saved).") +
              (d.relocked ? " Lock re-applied at " + d.lock_mhz + " MHz." : ""),
              d.saved ? "ok" : "err", 8000);
@@ -1132,6 +1133,19 @@ function verifyPowerLimit(want, saved, tries){
   };
   xhr.send();
 }
+
+$("plDefault").addEventListener("click", function(){
+  note("Restoring the card\u2019s default power limit\u2026", "busy", 15000);
+  post("api/power-limit", { reset: true }, function(st, d){
+    plTouched = false;
+    if (st === 200 && d && d.ok){
+      note("Power limit back to the card\u2019s default, verifying\u2026", "busy", 15000);
+      verifyPowerLimit(d.applied, d.saved === true, 0);
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
+  });
+});
 
 $("plApply").addEventListener("click", function(){
   var w = parseInt($("plNum").value, 10);
