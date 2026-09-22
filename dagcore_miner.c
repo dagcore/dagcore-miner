@@ -3250,6 +3250,21 @@ static void *dagtech_metrics_thread(void *arg) {
 /* =========================================================================
  * Signal Handler
  * ========================================================================= */
+/* Unblock the receive thread before joining it. That thread sits in recv()
+ * on the pool socket, and a pool that stays connected but silent never makes
+ * it return - so pthread_join() would wait for as long as the pool stays
+ * quiet. In production the job stream hides this; a frozen pool would hang
+ * shutdown until systemd's TimeoutStopSec fires SIGKILL.
+ * shutdown() makes the pending recv() return 0 at once; close() follows. */
+static void dagtech_unblock_pool_socket(void) {
+    if (sockfd < 0) return;
+#ifdef _WIN32
+    shutdown(sockfd, SD_BOTH);
+#else
+    shutdown(sockfd, SHUT_RDWR);
+#endif
+}
+
 static void dagtech_signal(int sig) {
     (void)sig;
     printf("\n[DagCore] Shutting down...\n");
@@ -4038,6 +4053,7 @@ int main(int argc, char **argv) {
         if (!current_job.valid) {
             fprintf(stderr, "[DagCore] No job received - will retry in 10s\n");
             running = 0;
+            dagtech_unblock_pool_socket();
             pthread_join(recv_tid, NULL);
             close(sockfd);
             if (keep_alive) sleep(10);
@@ -4201,6 +4217,7 @@ int main(int argc, char **argv) {
             pthread_join(threads[i], NULL);
         for (int i = 0; i < gpu_threads_started; i++)
             pthread_join(gpu_tids[i], NULL);
+        dagtech_unblock_pool_socket();
         pthread_join(recv_tid, NULL);
         free(threads);
         free(tids);
