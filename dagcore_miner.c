@@ -2906,6 +2906,22 @@ static int nvml_unlock_clock(int is_mem, char *err, size_t err_size) {
     return 0;
 }
 
+/* Is this domain pinned, and to what?
+ *
+ * NVML has no getter for locked clocks. There is Set/Reset{Gpu,Memory}
+ * LockedClocks but no Get, and the ApplicationsClocksSetting event bit does
+ * not cover them: on rig1, with memory locked to 9851 MHz by nvidia_oc, the
+ * reason mask read 0x4 (SwPowerCap) with bit 0x2 clear. So a lock cannot be
+ * read back - only inferred.
+ *
+ * The inference is stability. A locked clock does not move; an unlocked one
+ * under a mining load moves constantly as the power cap pushes it around -
+ * the core on this card was seen at 1815 and 1800 MHz seconds apart. Five
+ * samples over 600 ms is enough to tell them apart, and a wrong answer here
+ * only means a domain is skipped, or adopted at a value the operator can see
+ * in the reply and undo with Reset. */
+static int nvml_clock_is_pinned(int is_mem, int *mhz);
+
 /* Clock currently reported for a domain, used to spot a lock that no longer
  * matches the table after an offset change. */
 static int nvml_current_clock(int is_mem, int *mhz) {
@@ -2916,6 +2932,19 @@ static int nvml_current_clock(int is_mem, int *mhz) {
     if (f(g_nvml.dev, is_mem ? NVML_CLK_MEM : NVML_CLK_GRAPHICS, &v) != 0) return -1;
     *mhz = (int)v;
     return 0;
+}
+
+static int nvml_clock_is_pinned(int is_mem, int *mhz) {
+    int first = 0;
+    if (nvml_current_clock(is_mem, &first) != 0) return 0;
+    for (int i = 0; i < 4; i++) {
+        usleep(150000);
+        int v = 0;
+        if (nvml_current_clock(is_mem, &v) != 0) return 0;
+        if (v != first) return 0;
+    }
+    if (mhz) *mhz = first;
+    return 1;
 }
 #else
 static int nvml_load(void) { return 0; }
@@ -3536,6 +3565,82 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             http_send_json(cfd, 200, "OK", resp);
             return;
         }
+    }
+
+    /* Adopt whatever the card is running right now.
+     *
+     * A rig is usually tuned before this miner ever sees it - on rig1 the
+     * memory was locked to 9851 MHz with a +1200 offset by nvidia_oc. Making
+     * the operator re-enter those numbers through the trial flow, to reach the
+     * state the card is already in, is busywork: the settings have been
+     * proving themselves for as long as the rig has been up. So this writes
+     * them straight to overrides.env with no trial.
+     *
+     * Offsets are read exactly - NVML returns the value that was set. Clocks
+     * are not: there is no getter for locked clocks (see nvml_clock_is_pinned),
+     * so a domain is adopted only when it holds perfectly still, and skipped
+     * otherwise. Skipping is the safe error: adopting a momentary boost clock
+     * would pin a domain that was never locked. The reply names both lists so
+     * the page can say exactly what happened. */
+    if (strncmp(req, "POST /api/adopt", 15) == 0) {
+        int core_off = 0, mem_off = 0;
+        if (nvml_read_offsets(&core_off, &mem_off) != 0) {
+            http_send_err(cfd, 409, "Conflict", "NVML could not read the current offsets");
+            return;
+        }
+
+        int core_clk = 0, mem_clk = 0;
+        int core_pinned = nvml_clock_is_pinned(0, &core_clk);
+        int mem_pinned  = nvml_clock_is_pinned(1, &mem_clk);
+
+        char val[16];
+        int wrote = 0, failed = 0;
+        snprintf(val, sizeof(val), "%d", core_off);
+        if (overrides_set("GPU_CORE_OFFSET", val) == 0) { gpu_core_offset = core_off; wrote++; }
+        else failed++;
+        snprintf(val, sizeof(val), "%d", mem_off);
+        if (overrides_set("GPU_MEM_OFFSET", val) == 0) { gpu_mem_offset = mem_off; wrote++; }
+        else failed++;
+
+        if (core_pinned) {
+            snprintf(val, sizeof(val), "%d", core_clk);
+            if (overrides_set("GPU_CORE_CLOCK", val) == 0) { gpu_core_clock = core_clk; wrote++; }
+            else failed++;
+        }
+        if (mem_pinned) {
+            snprintf(val, sizeof(val), "%d", mem_clk);
+            if (overrides_set("GPU_MEM_CLOCK", val) == 0) { gpu_mem_clock = mem_clk; wrote++; }
+            else failed++;
+        }
+
+        /* Adopting settles every pending question, so no trial stays running. */
+        for (int i = 0; i < TRIAL_N; i++) {
+            g_trial[i].active = 0;
+            snprintf(g_trial[i].status, sizeof(g_trial[i].status), "none");
+        }
+
+        if (failed) {
+            http_send_err(cfd, 500, "Internal Server Error",
+                          "could not write every key to the overrides file");
+            return;
+        }
+        printf("[DagCore] Adopted: offsets core %+d / memory %+d; core clock %s, "
+               "memory clock %s (%d key%s written)\n",
+               core_off, mem_off,
+               core_pinned ? "pinned, adopted" : "moving, left to the driver",
+               mem_pinned  ? "pinned, adopted" : "moving, left to the driver",
+               wrote, wrote == 1 ? "" : "s");
+        char resp[320];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"adopted\":true,\"keys\":%d,"
+                 "\"core_offset\":%d,\"mem_offset\":%d,"
+                 "\"core_clock\":%d,\"core_pinned\":%s,"
+                 "\"mem_clock\":%d,\"mem_pinned\":%s}",
+                 wrote, core_off, mem_off,
+                 core_pinned ? core_clk : 0, core_pinned ? "true" : "false",
+                 mem_pinned ? mem_clk : 0, mem_pinned ? "true" : "false");
+        http_send_json(cfd, 200, "OK", resp);
+        return;
     }
 
     http_send_err(cfd, 404, "Not Found", "unknown endpoint");
