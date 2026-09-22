@@ -2144,8 +2144,19 @@ static void dagtech_subscribe_authorize(void) {
         "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"DagCore/" DAGTECH_VERSION "\"]}");
     dagtech_send(buf);
 
-    /* Pool requires a bare EVM address as the stratum username.
-       Worker name is sent in the password field for display purposes. */
+    /* The pool requires a bare EVM address as the stratum username, so WORKER
+     * goes in the password field - the slot a pool that supports worker names
+     * reads it from.
+     *
+     * The current DagCore pool does not support them. Its own documentation
+     * says "this pool build rejects address.worker logins, so there are no
+     * per-machine names", and the password field is ignored, so WORKER has no
+     * visible effect on the pool site today.
+     *
+     * Kept as it is on purpose: the name starts working the day the pool reads
+     * that field, whereas sending address.worker as the username would be
+     * rejected outright. Note that WORKER wins over PASSWORD when both are
+     * set - they share this one field. */
     char pass_field[128];
     if (worker_name[0])
         snprintf(pass_field, sizeof(pass_field), "%s", worker_name);
