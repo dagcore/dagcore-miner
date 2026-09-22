@@ -218,6 +218,21 @@ have_cl_hdr()  { [ -r /usr/include/CL/cl.h ]; }
 have_cl_lib()  { ldconfig -p 2>/dev/null | grep -q 'libOpenCL\.so'; }
 have_cl_icd()  { ls /etc/OpenCL/vendors/*.icd >/dev/null 2>&1; }
 
+# Where the NVIDIA OpenCL driver actually is. Prefer the soname, which the
+# loader resolves, and fall back to a full path when it is not in the cache.
+nvidia_ocl_lib() {
+  local p
+  p="$(ldconfig -p 2>/dev/null | awk '/libnvidia-opencl\.so\.1/ {print $NF; exit}')"
+  if [ -n "$p" ] && [ -e "$p" ]; then printf 'libnvidia-opencl.so.1'; return 0; fi
+  for p in /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so.1 \
+           /usr/lib64/libnvidia-opencl.so.1 \
+           /usr/lib/libnvidia-opencl.so.1 \
+           /usr/local/nvidia/lib64/libnvidia-opencl.so.1; do
+    [ -e "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
 pkgs_for() {
   case "$PKG" in
     apt)    echo "build-essential ocl-icd-opencl-dev opencl-headers" ;;
@@ -262,19 +277,53 @@ check_deps() {
     step "Installing packages"
     install_pkgs "$list" || die "the package manager could not install them.
     Check the output above, fix the problem, and run this installer again."
-    have_cl_hdr || die "the OpenCL headers are still missing after installing.
+    # Nothing was installed during a dry run, so checking for it would always
+    # fail - and did, on every dry run before this was fixed.
+    if [ "$DRY_RUN" != 1 ]; then
+      have_cl_hdr || die "the OpenCL headers are still missing after installing.
     Your distribution may name that package differently."
-    ok "packages installed"
+      ok "packages installed"
+    fi
   fi
 
-  # The ICD is what lets a program find the NVIDIA OpenCL driver at runtime.
-  if ! have_cl_icd; then
-    warn "no OpenCL driver registration found in /etc/OpenCL/vendors."
-    say  "The miner will build, but it may not see the card. This normally"
-    say  "comes with the NVIDIA driver package; on Debian and Ubuntu it is"
-    say  "nvidia-opencl-icd. Install it if the miner reports no GPU."
-  else
+  # An ICD file is how a program finds the NVIDIA OpenCL driver at runtime.
+  # Without one the miner reports "No OpenCL platforms found", falls back to
+  # CPU mining and produces nothing - the card is there and unused.
+  if have_cl_icd; then
     ok "OpenCL driver registration present"
+  else
+    local ocl_lib=""
+    ocl_lib="$(nvidia_ocl_lib || true)"
+    if [ -n "$ocl_lib" ]; then
+      warn "the NVIDIA OpenCL driver is installed but not registered."
+      say  "  found:   $ocl_lib"
+      say  "  missing: /etc/OpenCL/vendors/nvidia.icd"
+      say  ""
+      say  "This is the normal state inside a container - RunPod, Vast.ai and"
+      say  "the CUDA images ship the library without the registration file."
+      say  "Without it the miner cannot see the card and would mine on the CPU"
+      say  "only, at effectively zero hashrate."
+      say  ""
+      if confirm "Create the registration file now?" y; then
+        run mkdir -p /etc/OpenCL/vendors
+        printf '%s\n' "$ocl_lib" | run_write /etc/OpenCL/vendors/nvidia.icd
+        run chmod 0644 /etc/OpenCL/vendors/nvidia.icd
+        if [ "$DRY_RUN" != 1 ]; then
+          have_cl_icd && ok "registered - the miner can now find the card" \
+                      || warn "the file was written but still is not being found"
+        fi
+      else
+        warn "skipped. The miner will not use the graphics card."
+        say  "Create it later with:"
+        say  "  sudo mkdir -p /etc/OpenCL/vendors"
+        say  "  echo $ocl_lib | sudo tee /etc/OpenCL/vendors/nvidia.icd"
+      fi
+    else
+      warn "no OpenCL driver registration and no NVIDIA OpenCL library found."
+      say  "The miner will build but will not see the card. The library comes"
+      say  "with the driver; on Debian and Ubuntu the package is"
+      say  "nvidia-opencl-icd."
+    fi
   fi
 
   if command -v nvidia-smi >/dev/null 2>&1; then
@@ -315,6 +364,46 @@ build_and_install() {
       die "could not copy the files into $PREFIX.
     Check that there is space and that you ran this with sudo."
     ok "miner, GPU kernel and dashboard installed"
+  fi
+}
+
+# The install can succeed and still leave a rig earning nothing: with no ICD
+# the miner starts, finds no OpenCL platform, and mines on the CPU at
+# effectively zero. So ask the miner itself, before declaring victory. It lists
+# its GPUs at startup, before it talks to a pool, so pointing it at a dead
+# address is enough and no pool ever sees this.
+verify_gpu_visible() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  command -v timeout >/dev/null 2>&1 || return 0
+  [ -x "$PREFIX/bin/dagcore-miner" ] || return 0
+
+  step "Checking that the miner can see the card"
+  local out=""
+  out="$(timeout 25 "$PREFIX/bin/dagcore-miner" --config "$CONFDIR/config.env" \
+          --pool 127.0.0.1 --port 1 --metrics-port 0 2>&1 | head -n 40 || true)"
+
+  if printf '%s\n' "$out" | grep -q 'Initialised [1-9][0-9]* GPU'; then
+    printf '%s\n' "$out" | grep -o 'Platform [0-9]* Device [0-9]*: .*' | head -n 4 |
+      while IFS= read -r line; do ok "$line"; done
+    ok "the miner can use the graphics card"
+    return 0
+  fi
+
+  warn "the miner did NOT find a usable graphics card."
+  say  "It would run, but on the CPU only, which earns almost nothing."
+  say  ""
+  if ! have_cl_icd; then
+    say  "The most likely reason is the missing OpenCL registration file"
+    say  "discussed above. Create it and run this installer again."
+  else
+    say  "The registration file exists, so the cause is elsewhere. What the"
+    say  "miner said:"
+    printf '%s\n' "$out" | grep -iE 'opencl|gpu|platform' | head -n 5 |
+      while IFS= read -r line; do say "  $line"; done
+  fi
+  say  ""
+  if ! confirm "Continue anyway?" n; then
+    die "stopped. Fix the graphics card setup and run this installer again."
   fi
 }
 
@@ -598,6 +687,7 @@ fi
 
 run mkdir -p "$STATEDIR"
 run chmod 0750 "$STATEDIR"
+verify_gpu_visible
 setup_service
 start_mining
 summary
