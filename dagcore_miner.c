@@ -657,7 +657,14 @@ static char *gpu_load_kernel_source(const char *exe_path, size_t *src_len) {
     fseek(f, 0, SEEK_SET);
     char *src = (char *)malloc(fsize + 1);
     if (!src) { fclose(f); return NULL; }
-    fread(src, 1, fsize, f);
+    size_t got = fread(src, 1, (size_t)fsize, f);
+    if (got != (size_t)fsize) {
+        fprintf(stderr, "[DagCore GPU] ERROR: short read on kernel %s (%zu of %ld bytes)\n",
+                cl_path, got, fsize);
+        free(src);
+        fclose(f);
+        return NULL;
+    }
     src[fsize] = '\0';
     fclose(f);
     if (src_len) *src_len = (size_t)fsize;
@@ -2168,6 +2175,7 @@ static void dagtech_parse_stratum(const char *line) {
             strncpy(current_job.bits,       strings[offset+3], sizeof(current_job.bits) - 1);
             strncpy(current_job.ntime,      strings[offset+4], sizeof(current_job.ntime) - 1);
             strncpy(current_job.extranonce1, extranonce1_global, sizeof(current_job.extranonce1) - 1);
+            current_job.extranonce1[sizeof(current_job.extranonce1) - 1] = '\0';
             pthread_mutex_unlock(&job_mtx);
             printf("[DagCore] New job: %s (diff %.8f)\n",
                    current_job.job_id, current_job.difficulty);
@@ -2501,7 +2509,9 @@ static double get_cpu_temp(void) {
     if (!dir) return -1.0;
 
     struct dirent *ent;
-    char path[256], name[64], label[64];
+    /* Big enough for "/sys/class/hwmon/" + a maximum-length d_name (255) +
+     * "/temp16_label" + NUL, so the snprintf() calls below cannot truncate. */
+    char path[320], name[64], label[64];
     double temp = -1.0;
 
     while ((ent = readdir(dir)) != NULL) {
@@ -2611,7 +2621,9 @@ static void *dagtech_metrics_thread(void *arg) {
                 fseek(f, 0, SEEK_SET);
                 char *html = (char *)malloc(fsize + 1);
                 if (html) {
-                    fread(html, 1, fsize, f);
+                    size_t got = fread(html, 1, (size_t)fsize, f);
+                    if (got != (size_t)fsize) fsize = (long)got;  /* serve what we read */
+                    html[fsize] = '\0';
                     char hdr[256];
                     snprintf(hdr, sizeof(hdr),
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
@@ -2829,13 +2841,21 @@ static const char *dagtech_default_config_path(const char *exe_path) {
     /* 1. <exedir>/config.env */
     if (dir[0]) {
         snprintf(cand, sizeof(cand), "%sconfig.env", dir);
-        if (dagtech_file_exists(cand)) { strncpy(path, cand, sizeof(path) - 1); return path; }
+        if (dagtech_file_exists(cand)) {
+            strncpy(path, cand, sizeof(path) - 1);
+            path[sizeof(path) - 1] = '\0';
+            return path;
+        }
     }
 
     /* 2. <exedir>/../config.env  (install root, e.g. C:\dagtech-gpu-miner\config.env) */
     if (dir[0]) {
         snprintf(cand, sizeof(cand), "%s..%cconfig.env", dir, ps);
-        if (dagtech_file_exists(cand)) { strncpy(path, cand, sizeof(path) - 1); return path; }
+        if (dagtech_file_exists(cand)) {
+            strncpy(path, cand, sizeof(path) - 1);
+            path[sizeof(path) - 1] = '\0';
+            return path;
+        }
     }
 
     /* 3. ./config.env */
@@ -3355,7 +3375,12 @@ int main(int argc, char **argv) {
         #ifdef _WIN32
         SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
         #else
-        nice(19);
+        /* nice() returns the new value, so -1 is a legitimate success result.
+         * POSIX: clear errno first and test it to tell the two apart. */
+        errno = 0;
+        if (nice(19) == -1 && errno != 0)
+            fprintf(stderr, "[DagCore] WARNING: could not lower process priority: %s\n",
+                    strerror(errno));
         #endif
         printf("[DagCore] Running at LOW CPU priority\n");
     }
@@ -3452,9 +3477,22 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        /* Start CPU mining threads */
-        pthread_t *threads = malloc(num_threads * sizeof(pthread_t));
-        int *tids = malloc(num_threads * sizeof(int));
+        /* Start CPU mining threads. num_threads == 0 is the default (GPU-only),
+         * and malloc(0) may legitimately return NULL - so skip the allocation
+         * entirely rather than rely on a particular libc's behaviour. */
+        pthread_t *threads = NULL;
+        int *tids = NULL;
+        if (num_threads > 0) {
+            threads = malloc(num_threads * sizeof(pthread_t));
+            tids    = malloc(num_threads * sizeof(int));
+            if (!threads || !tids) {
+                fprintf(stderr, "[DagCore] ERROR: out of memory allocating %d CPU thread(s)\n",
+                        num_threads);
+                free(threads); free(tids);
+                threads = NULL; tids = NULL;
+                num_threads = 0;
+            }
+        }
         for (int i = 0; i < num_threads; i++) {
             tids[i] = i;
             pthread_create(&threads[i], NULL, dagtech_mine_thread, &tids[i]);
