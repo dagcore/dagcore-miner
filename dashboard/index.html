@@ -185,6 +185,12 @@ button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
   padding:10px 12px;border-radius:9px;color:var(--warn);
   background:rgba(242,198,109,.09);border:1px solid rgba(242,198,109,.4)}
 .warn-row i{width:7px;height:7px;border-radius:50%;background:var(--warn);flex:0 0 auto;margin-top:5px}
+.adopt-picks{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.adopt-picks label{display:flex;align-items:flex-start;gap:9px;font-size:12.5px;
+  color:var(--muted);cursor:pointer}
+.adopt-picks input[type=checkbox]{accent-color:var(--mine);margin-top:2px;flex:0 0 auto;
+  width:15px;height:15px;cursor:pointer}
+.adopt-picks .hint{color:var(--muted-2)}
 #restartOverlay{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   background:rgba(255,171,46,.10);border:1px solid rgba(255,171,46,.45);
   color:var(--mine);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
@@ -415,10 +421,19 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <div class="set-row">
       <span class="lab"><b>Adopt current state</b>
-        <small>Save the clocks and offsets the card is running right now,
-        without a trial. For a rig tuned outside this miner.</small></span>
-      <span class="set-ctl" style="justify-content:flex-end">
-        <button class="ghost" id="adoptBtn" type="button" disabled>Adopt current state</button>
+        <small>Save what the card is running now, without a trial. For a rig
+        tuned outside this miner. Offsets are always adopted &mdash; they can be
+        read back exactly. Clock locks cannot: NVML has no way to report them,
+        so tick only what you know is locked.</small>
+        <span class="adopt-picks">
+          <label><input type="checkbox" id="adoptCore" disabled>
+            <span>also adopt core clock <span class="hint" id="adoptCoreHint">&mdash;</span></span></label>
+          <label><input type="checkbox" id="adoptMem" disabled>
+            <span>also adopt memory clock <span class="hint" id="adoptMemHint">&mdash;</span></span></label>
+        </span>
+      </span>
+      <span class="set-ctl" style="justify-content:flex-end;align-items:flex-start">
+        <button class="ghost" id="adoptBtn" type="button" disabled>Adopt</button>
       </span>
     </div>
 
@@ -777,7 +792,7 @@ function controlsEnabled(on){
              "memSlider","memNum","memApply","memReset",
              "coreoffSlider","coreoffNum","coreoffApply","coreoffReset",
              "memoffSlider","memoffNum","memoffApply","memoffReset",
-             "adoptBtn"], i;
+             "adoptBtn","adoptCore","adoptMem"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
 }
 
@@ -803,6 +818,9 @@ function syncSettings(d){
     r.min = n2.min = d.gpu_power_min; r.max = n2.max = d.gpu_power_max;
     if (!plTouched && d.gpu_power_limit > 0){ r.value = d.gpu_power_limit; n2.value = d.gpu_power_limit; }
   }
+  txt("adoptCoreHint", steadyHint("core", d.gpu_core_clock));
+  txt("adoptMemHint",  steadyHint("mem",  d.gpu_mem_clock));
+
   syncClock(d, "core", "gpu_core_clock", "trial_core");
   syncClock(d, "mem",  "gpu_mem_clock",  "trial_mem");
   syncOffset(d, "coreoff", "gpu_core_offset", "trial_coreoff");
@@ -828,6 +846,31 @@ function syncSettings(d){
 }
 
 var clkTouched = { core: false, mem: false, coreoff: false, memoff: false };
+
+/* Steadiness hint for the adopt checkboxes.
+ *
+ * The miner cannot tell a locked clock from a free one - NVML has no getter -
+ * and an earlier attempt to infer it from 600 ms of samples got it wrong both
+ * ways. The page is in a better position: it already polls every 5 s, so it
+ * can watch a couple of minutes instead of half a second. Even so this only
+ * labels the checkbox; it never ticks it. */
+var clkSamples = { core: [], mem: [] };
+var CLK_WINDOW = 24;                     /* 24 polls x 5 s = about two minutes */
+
+function steadyHint(which, value){
+  var a = clkSamples[which];
+  if (typeof value === "number" && value > 0){
+    a.push(value);
+    while (a.length > CLK_WINDOW) a.shift();
+  }
+  if (!a.length) return "";
+  var lo = a[0], hi = a[0], i;
+  for (i = 1; i < a.length; i++){ if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i]; }
+  var span = Math.round((a.length - 1) * POLL_MS / 1000);
+  if (a.length < 3) return "(now " + Math.round(a[a.length - 1]) + " MHz)";
+  if (lo === hi) return "(steady at " + lo + " MHz for " + span + "s \u2014 looks locked)";
+  return "(" + lo + "\u2013" + hi + " MHz over " + span + "s \u2014 looks free)";
+}
 
 /* One clock row. Hidden entirely when the card's supported range is unknown:
  * a slider with no bounds is worse than no slider. */
@@ -1020,18 +1063,21 @@ wireClock("memoff",  "api/mem-offset",  "memory offset");
 /* Adopt writes straight to overrides.env - no trial - so it says exactly what
  * it stored rather than a bare "done". */
 $("adoptBtn").addEventListener("click", function(){
-  note("Reading the card\u2019s current state (about 2 s)\u2026", "busy", 20000);
-  post("api/adopt", {}, function(st, d){
+  var pick = { core: $("adoptCore").checked, mem: $("adoptMem").checked };
+  note("Reading the card\u2019s current state\u2026", "busy", 15000);
+  post("api/adopt", pick, function(st, d){
     clkTouched.core = clkTouched.mem = clkTouched.coreoff = clkTouched.memoff = false;
     if (st === 200 && d && d.ok){
       var sgn = function(v){ return (v >= 0 ? "+" : "") + v; };
       var parts = ["offsets core " + sgn(d.core_offset) + ", memory " + sgn(d.mem_offset)];
-      parts.push(d.core_pinned ? "core locked at " + d.core_clock + " MHz"
-                               : "core clock left to the driver (it was moving)");
-      parts.push(d.mem_pinned ? "memory locked at " + d.mem_clock + " MHz"
-                              : "memory clock left to the driver (it was moving)");
+      parts.push(d.core_adopted ? "core clock locked at " + d.core_clock + " MHz"
+                                : "core clock not adopted");
+      parts.push(d.mem_adopted ? "memory clock locked at " + d.mem_clock + " MHz"
+                               : "memory clock not adopted");
       note("Adopted and saved \u2014 " + parts.join("; ") + ". " + d.keys +
            " keys written; these are re-applied on every start.", "ok", 20000);
+      $("adoptCore").checked = false;
+      $("adoptMem").checked = false;
     }
     else if (st === 401) note("Rejected: invalid token.", "err", 8000);
     else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
