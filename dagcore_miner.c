@@ -3703,6 +3703,13 @@ static void *dagtech_metrics_thread(void *arg) {
         /* An offset moves the table a lock was chosen from, but the card does
          * not rescale an existing lock. Spot the mismatch here so the page can
          * say so instead of showing two numbers that quietly disagree. */
+        /* The card states its own permitted offset range; the page uses it for
+         * the slider bounds instead of carrying constants of its own. */
+        int off_core_lo = 0, off_core_hi = 0, off_mem_lo = 0, off_mem_hi = 0;
+        if (off_ok) {
+            nvml_offset_bounds(0, &off_core_lo, &off_core_hi);
+            nvml_offset_bounds(1, &off_mem_lo, &off_mem_hi);
+        }
         int mem_shift = off_ok ? nvml_mem_shift() : 0;
         int lock_stale = 0;
         if (off_ok) {
@@ -3757,7 +3764,11 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"trial_mem_value\":%d,"
             "\"trial_mem_remaining\":%d,"
             "\"gpu_core_offset\":%d,"
+            "\"gpu_core_offset_min\":%d,"
+            "\"gpu_core_offset_max\":%d,"
             "\"gpu_mem_offset\":%d,"
+            "\"gpu_mem_offset_min\":%d,"
+            "\"gpu_mem_offset_max\":%d,"
             "\"offset_available\":%s,"
             "\"offset_reason\":\"%s\","
             "\"trial_coreoff_status\":\"%s\","
@@ -3803,7 +3814,8 @@ static void *dagtech_metrics_thread(void *arg) {
             gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,  gpu_mem_clock,
             g_trial[0].status, g_trial[0].value, trial_remaining_s(0),
             g_trial[1].status, g_trial[1].value, trial_remaining_s(1),
-            off_core, off_mem,
+            off_core, off_core_lo, off_core_hi,
+            off_mem, off_mem_lo, off_mem_hi,
             off_ok ? "true" : "false", off_why,
             g_trial[2].status, g_trial[2].value, trial_remaining_s(2),
             g_trial[3].status, g_trial[3].value, trial_remaining_s(3),
