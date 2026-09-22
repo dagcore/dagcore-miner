@@ -3381,11 +3381,6 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
     }
 
     if (strncmp(req, "POST /api/power-limit", 21) == 0) {
-        long w;
-        if (json_get_int(body, "watts", &w) != 0) {
-            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"watts\\\"");
-            return;
-        }
         /* Re-query rather than trust the startup snapshot: a driver reload or
          * a VBIOS change can move the envelope while the miner is running. */
         double mn, mx, df, cur;
@@ -3394,6 +3389,18 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             return;
         }
         g_pl_min = mn; g_pl_max = mx; g_pl_default = df; g_pl_current = cur;
+
+        /* "Default" means the card's own figure - 320 W on an RTX 3080 - not
+         * zero. Zero is not a power limit, and offering it as the way back
+         * would be a trap. */
+        long w;
+        if (json_is_true(body, "reset")) {
+            w = (long)df;
+        } else if (json_get_int(body, "watts", &w) != 0) {
+            http_send_err(cfd, 400, "Bad Request",
+                          "body must contain \\\"watts\\\" or \\\"reset\\\":true");
+            return;
+        }
         if (w < (long)mn || w > (long)mx) {
             char msg[160];
             snprintf(msg, sizeof(msg), "watts must be between %.0f and %.0f", mn, mx);
@@ -3604,6 +3611,11 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                     relock_eff = clk_effective(is_mem, base);
                     if (nvml_lock_clock(is_mem, relock_eff, rerr, sizeof(rerr)) == 0) {
                         relocked = 1;
+                        /* Same step, different frequency - so whatever the
+                         * clock trial had proved is about an operating point
+                         * that no longer exists. Start it over rather than
+                         * credit it with stability it did not earn. */
+                        if (g_trial[is_mem].active) trial_start(is_mem, base);
                         printf("[DagCore] %s lock re-applied at %d MHz (step %d) after the "
                                "offset changed\n", is_mem ? "Memory clock" : "Core clock",
                                relock_eff, base);
