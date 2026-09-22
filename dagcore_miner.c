@@ -154,6 +154,30 @@ static int gpu_intensity = 80;  /* 0-100 */
  * warps/wavefronts, and so coop mode - which enqueues global_size * 4 with a
  * local size of 32, and therefore needs global_size % 8 == 0 - stays legal. */
 static int gpu_align     = 0;
+
+/* Parse a --gpu-align / GPU_ALIGN value: "pow2", or a positive multiple of 32.
+ * Sets gpu_align and returns 0; returns -1 on a value we refuse. */
+static int gpu_parse_align(const char *val) {
+    if (!val || !val[0]) return -1;
+    if (strcmp(val, "pow2") == 0) { gpu_align = 0; return 0; }
+    char *end = NULL;
+    long n = strtol(val, &end, 10);
+    if (end == val || *end != '\0') return -1;
+    if (n < 32 || n > (1 << 20) || (n % 32) != 0) return -1;
+    gpu_align = (int)n;
+    return 0;
+}
+
+/* Bad --gpu-align / GPU_ALIGN: fail loudly at startup rather than mine with a
+ * work size the user did not ask for. */
+static void gpu_align_reject(const char *val, const char *origin) {
+    fprintf(stderr,
+            "[DagCore] ERROR: invalid %s value \"%s\".\n"
+            "          Use \"pow2\" (default) or a multiple of 32 (e.g. 256, 1024).\n",
+            origin, val ? val : "");
+    exit(1);
+}
+
 static int gpu_platform  = 0;
 static int gpu_device    = 0;   /* single-GPU fallback */
 
@@ -515,29 +539,6 @@ static GpuCtx g_gpus[MAX_GPUS];
  * loop retries at 5 Hz and would otherwise spin forever producing nothing.
  * `what` names the step, `code` is the OpenCL error (or 0 where there is none). */
 static void gpu_loop_error(GpuCtx *ctx, const char *what, int code);
-
-/* Parse a --gpu-align / GPU_ALIGN value: "pow2", or a positive multiple of 32.
- * Sets gpu_align and returns 0; returns -1 on a value we refuse. */
-static int gpu_parse_align(const char *val) {
-    if (!val || !val[0]) return -1;
-    if (strcmp(val, "pow2") == 0) { gpu_align = 0; return 0; }
-    char *end = NULL;
-    long n = strtol(val, &end, 10);
-    if (end == val || *end != '\0') return -1;
-    if (n < 32 || n > (1 << 20) || (n % 32) != 0) return -1;
-    gpu_align = (int)n;
-    return 0;
-}
-
-/* Bad --gpu-align / GPU_ALIGN: fail loudly at startup rather than mine with a
- * work size the user did not ask for. */
-static void gpu_align_reject(const char *val, const char *origin) {
-    fprintf(stderr,
-            "[DagCore] ERROR: invalid %s value \"%s\".\n"
-            "          Use \"pow2\" (default) or a multiple of 32 (e.g. 256, 1024).\n",
-            origin, val ? val : "");
-    exit(1);
-}
 
 static void gpu_loop_error(GpuCtx *ctx, const char *what, int code) {
     uint64_t now = dagtech_now_ms();
