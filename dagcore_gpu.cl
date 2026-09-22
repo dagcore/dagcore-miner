@@ -5,7 +5,7 @@
  *
  * Exact port of the DagTech scrypt_1024_1_1_256 algorithm with proprietary
  * post-ROMix X[0] modification.  Every constant and operation matches
- * dagtech_miner.c so that CPU and GPU produce identical hashes for the
+ * dagcore_miner.c so that CPU and GPU produce identical hashes for the
  * same nonce.
  *
  * Kernel entry point: dagtech_search
@@ -26,7 +26,7 @@
 #define BSWAP(x) ((rotate((x),8u)&0x00FF00FFu)|(rotate((x),24u)&0xFF00FF00u))
 
 /* =========================================================================
- * SHA-256 constants — identical to dagtech_sha256_k[64] in dagtech_sha256.h
+ * SHA-256 constants — identical to dagtech_sha256_k[64] in dagcore_sha256.h
  * ========================================================================= */
 __constant uint SHA256_K[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -47,7 +47,7 @@ __constant uint SHA256_K[64] = {
     0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
 };
 
-/* SHA-256 IV — identical to dagtech_sha256_iv[8] in dagtech_miner.c */
+/* SHA-256 IV — identical to dagtech_sha256_iv[8] in dagcore_miner.c */
 #define SHA256_IV_0 0x6a09e667u
 #define SHA256_IV_1 0xbb67ae85u
 #define SHA256_IV_2 0x3c6ef372u
@@ -58,7 +58,7 @@ __constant uint SHA256_K[64] = {
 #define SHA256_IV_7 0x5be0cd19u
 
 /* =========================================================================
- * PBKDF2 padding constants — exact same values as in dagtech_miner.c
+ * PBKDF2 padding constants — exact same values as in dagcore_miner.c
  * ========================================================================= */
 
 /* scrypt_keypad[12]: { 0x80000000,0,0,0,0,0,0,0,0,0,0,0x00000280 } */
