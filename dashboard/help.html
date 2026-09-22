@@ -27,10 +27,10 @@ body{
   background-size:100% 1600px,auto;
   color:var(--text);
   font:14px/1.75 "IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  padding:calc(var(--pad-top) + 20px) 16px calc(var(--pad-bottom) + 40px);
+  padding:calc(var(--pad-top) + 20px) 16px calc(var(--pad-bottom) + 28px);
   -webkit-font-smoothing:antialiased;
 }
-.wrap{max-width:860px;margin:0 auto}
+.wrap{max-width:1180px;margin:0 auto}
 img{max-width:100%}
 [hidden]{display:none!important}
 
@@ -47,10 +47,11 @@ nav{background:linear-gradient(160deg,rgba(15,28,50,.92),rgba(10,14,22,.88) 70%)
   border:1px solid var(--line-soft);border-radius:var(--radius);padding:18px 20px;margin:22px 0 30px}
 nav h2{margin:0 0 12px;font-size:12px;font-weight:600;letter-spacing:.2em;
   text-transform:uppercase;color:var(--label)}
-nav ol{margin:0;padding-left:20px;columns:2;column-gap:28px}
+nav ol{margin:0;padding-left:20px;columns:3;column-gap:28px}
 nav li{margin:0 0 6px;break-inside:avoid}
 nav a{color:var(--text-2);text-decoration:none}
 nav a:hover{color:var(--blue);text-decoration:underline}
+@media (max-width:900px){ nav ol{columns:2} }
 @media (max-width:620px){ nav ol{columns:1} }
 @media (max-width:560px){
   section{padding:18px 16px}
@@ -68,9 +69,13 @@ section > h2:first-child{margin-top:0;padding-top:0;border-top:0}
 h2{font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
   color:var(--label);margin:0 0 16px}
 h3{font-size:14px;font-weight:600;color:var(--mine-soft);margin:22px 0 6px}
-p{margin:0 0 12px;color:var(--muted)}
-p.lead{color:var(--text-2)}
-ul,ol.body{margin:0 0 14px;padding-left:22px;color:var(--muted)}
+/* The page frame matches the dashboard, but a 1180px line of monospace is
+ * about 110 characters - too long to read comfortably. Prose keeps a sane
+ * measure inside the full-width cards; tables, code and the contents list use
+ * the whole width. */
+p{margin:0 0 12px;color:var(--muted);max-width:74ch}
+p.lead{color:var(--text-2);max-width:74ch}
+ul,ol.body{margin:0 0 14px;padding-left:22px;color:var(--muted);max-width:74ch}
 li{margin:0 0 7px}
 b,strong{color:var(--text);font-weight:600}
 code{background:rgba(0,0,0,.4);border:1px solid var(--line-soft);border-radius:5px;
@@ -85,7 +90,8 @@ td{padding:9px 12px 9px 0;border-top:1px solid var(--line-soft);
   color:var(--muted);vertical-align:top}
 td:first-child{color:var(--text);white-space:nowrap}
 .table-scroll{overflow-x:auto;margin-bottom:16px}
-.note{border-radius:9px;padding:12px 14px;margin:0 0 16px;font-size:13px;line-height:1.7}
+.note{border-radius:9px;padding:12px 14px;margin:0 0 16px;font-size:13px;
+  line-height:1.7;max-width:78ch}
 .note.warn{border:1px solid rgba(242,198,109,.4);background:rgba(242,198,109,.09);color:var(--warn)}
 .note.bad{border:1px solid rgba(244,162,156,.45);background:rgba(244,162,156,.09);color:var(--bad)}
 .note.ok{border:1px solid rgba(63,224,138,.4);background:rgba(63,224,138,.09);color:var(--ok)}
