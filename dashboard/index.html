@@ -833,9 +833,9 @@ function syncSettings(d){
   if (d.clock_lock_stale === true){
     sw.hidden = false;
     sw.getElementsByTagName("span")[0].textContent =
-      "A saved clock lock no longer matches what the card is running \u2014 the " +
-      "offset moved the clock table and the lock was not rescaled. Re-apply it, " +
-      "or press Reset to hand the domain back to the driver.";
+      "A saved clock step cannot be produced with the current offset \u2014 it " +
+      "falls outside the range the card accepts. Pick another step, or press " +
+      "Reset to hand the domain back to the driver.";
   } else {
     sw.hidden = true;
   }
@@ -874,8 +874,8 @@ function steadyHint(which, value){
 
 /* One clock row. Hidden entirely when the card's supported range is unknown:
  * a slider with no bounds is worse than no slider. */
-function syncClock(d, id, base, trialBase){
-  var lo = d[base + "_min"], hi = d[base + "_max"];
+function syncClock(d, id, base_, trialBase){
+  var lo = d[base_ + "_min"], hi = d[base_ + "_max"];
   var row = $(id + "Row");
   if (typeof lo !== "number" || typeof hi !== "number" || lo < 0 || hi <= 0){
     row.hidden = true;
@@ -883,24 +883,30 @@ function syncClock(d, id, base, trialBase){
   }
   row.hidden = false;
 
-  var boost = d[base + "_boost"];
-  var cur = d[base];
+  var boost = d[base_ + "_boost"];
+  var cur = d[base_];
   /* The range already accounts for the offset; saying so avoids the obvious
    * question of why memory goes past the number the supported-clocks table
    * shows. */
-  var shift = (id === "mem" && typeof d.gpu_mem_clock_shift === "number")
-              ? d.gpu_mem_clock_shift : 0;
-  txt(id + "Range",
-      "lockable " + lo + "\u2013" + hi + " MHz" +
-      (shift ? " (table shifted " + (shift > 0 ? "+" : "") + shift +
-               " MHz by the offset)" : "") +
-      (typeof cur === "number" && cur > 0 ? " \u00b7 now " + Math.round(cur) + " MHz" : ""));
+  /* A lock is stored as a step of the base table, not as a frequency, so it
+   * keeps its meaning when an offset moves the table. Show both: the step is
+   * what is saved, the frequency is what the card runs. */
+  var shift = d[base_ + "_shift"];
+  if (typeof shift !== "number") shift = 0;
+  var base = d[base_ + "_base"];
+  var lockMhz = d[base_ + "_lock"];
+  var parts = ["lockable " + lo + "\u2013" + hi + " MHz"];
+  if (shift) parts.push("table shifted " + (shift > 0 ? "+" : "") + shift + " by the offset");
+  if (typeof base === "number" && base > 0 && typeof lockMhz === "number" && lockMhz > 0)
+    parts.push("locked at step " + base + " \u2192 " + lockMhz + " MHz");
+  else if (typeof cur === "number" && cur > 0)
+    parts.push("now " + Math.round(cur) + " MHz");
+  txt(id + "Range", parts.join(" \u00b7 "));
 
   var sl = $(id + "Slider"), nm = $(id + "Num");
   sl.min = nm.min = lo; sl.max = nm.max = hi;
   if (!clkTouched[id]){
-    var lock = d[base + "_lock"];
-    var show = (typeof lock === "number" && lock > 0) ? lock
+    var show = (typeof lockMhz === "number" && lockMhz > 0) ? lockMhz
              : (typeof cur === "number" && cur > 0 ? Math.round(cur) : lo);
     sl.value = show; nm.value = show;
   }
@@ -913,14 +919,16 @@ function syncClock(d, id, base, trialBase){
   box.hidden = false;
   box.className = "trial " + st;
   var label;
+  var asMhz = val + (shift || 0);
   if (st === "running"){
     var m = Math.floor(rem / 60), sec = rem % 60;
-    label = "on trial at " + val + " MHz \u2014 " + m + "m " + (sec < 10 ? "0" : "") + sec +
-            "s left before it is saved";
+    label = "on trial at step " + val + " (" + asMhz + " MHz) \u2014 " + m + "m " +
+            (sec < 10 ? "0" : "") + sec + "s left before it is saved";
   } else if (st === "saved"){
-    label = val + " MHz passed its trial and was saved";
+    label = "step " + val + " (" + asMhz + " MHz) passed its trial and was saved";
   } else {
-    label = val + " MHz failed its trial (rejected shares moved) \u2014 not saved";
+    label = "step " + val + " (" + asMhz + " MHz) failed its trial "
+          + "(rejected shares moved) \u2014 not saved";
   }
   box.getElementsByTagName("span")[0].textContent = label;
 }
@@ -1034,8 +1042,11 @@ function wireClock(id, path, label){
     post(path, { mhz: v }, function(st, d){
       clkTouched[id] = false;
       if (st === 200 && d && d.ok)
-        note(label + " clock locked to " + d.applied + " MHz \u2014 on trial for " +
-             Math.round((d.trial_seconds || 600) / 60) + " min before it is saved.", "ok", 10000);
+        note(label + " set to " + d.applied + " MHz" +
+             (typeof d.base === "number" ? " (step " + d.base + ")" : "") +
+             (d.relocked ? "; lock re-applied at " + d.lock_mhz + " MHz" : "") +
+             " \u2014 on trial for " + Math.round((d.trial_seconds || 600) / 60) +
+             " min before it is saved.", "ok", 10000);
       else if (st === 401) note("Rejected: invalid token.", "err", 8000);
       else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
     });
@@ -1045,8 +1056,10 @@ function wireClock(id, path, label){
     post(path, { reset: true }, function(st, d){
       clkTouched[id] = false;
       if (st === 200 && d && d.ok)
-        note(label + " clock handed back to the driver" +
-             (d.saved ? " and saved." : " (NOT saved)."), d.saved ? "ok" : "err", 8000);
+        note(label + " handed back to the driver" +
+             (d.saved ? " and saved." : " (NOT saved).") +
+             (d.relocked ? " Lock re-applied at " + d.lock_mhz + " MHz." : ""),
+             d.saved ? "ok" : "err", 8000);
       else if (st === 401) note("Rejected: invalid token.", "err", 8000);
       else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
     });
