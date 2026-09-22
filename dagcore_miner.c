@@ -173,13 +173,23 @@ static char dashboard_dir[512] = "";
 #define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
 
 static int  gpu_power_limit = 0;      /* GPU_POWER_LIMIT, watts; 0 = leave alone */
-static int  gpu_core_clock  = 0;      /* GPU_CORE_CLOCK, MHz; 0 = leave alone */
+/* A lock is stored as a step of the card's BASE clock table, not as the MHz
+ * the card ends up running. An offset displaces the whole table, so an
+ * absolute value goes stale the moment the offset changes - which is how
+ * adjusting Memory offset used to raise a warning on the Memory clock row
+ * nobody had touched. The step survives; the effective frequency is derived
+ * from it as step + shift, and the lock is re-applied automatically.
+ * GPU_CORE_CLOCK / GPU_MEM_CLOCK are the retired absolute keys, still read so
+ * an existing config can be migrated once. */
+static int  gpu_core_clock_base = 0;  /* GPU_CORE_CLOCK_BASE, MHz in the base table */
+static int  gpu_mem_clock_base  = 0;  /* GPU_MEM_CLOCK_BASE */
+static int  gpu_core_clock  = 0;      /* GPU_CORE_CLOCK, legacy absolute MHz */
 /* Clock offsets are signed and 0 is a meaningful value, so "not configured"
  * needs its own sentinel rather than 0. */
 #define DT_OFF_UNSET (-1000000)
 static int  gpu_core_offset = DT_OFF_UNSET;   /* GPU_CORE_OFFSET, MHz */
 static int  gpu_mem_offset  = DT_OFF_UNSET;   /* GPU_MEM_OFFSET, MHz */
-static int  gpu_mem_clock   = 0;      /* GPU_MEM_CLOCK, MHz;  0 = leave alone */
+static int  gpu_mem_clock   = 0;      /* GPU_MEM_CLOCK, legacy absolute MHz */
 /* Last-known clock envelope, refreshed from NVML on every control request.
  * It is NOT static: a memory offset displaces the whole table, so the ceiling
  * moves without a restart.
@@ -2886,6 +2896,49 @@ static int nvml_clock_bounds(int is_mem, int *lo, int *hi) {
     return 0;
 }
 
+/* How far an offset displaces a domain's clock table.
+ *
+ * Memory: half the offset, measured (see nvml_mem_shift).
+ * Core: taken as 1:1. That is the conventional behaviour but it is unverified
+ * here - the core offset on this card is 0, so there is nothing to measure
+ * against. With a zero offset the two readings coincide either way. */
+static int clk_shift(int is_mem) {
+    if (is_mem) return nvml_mem_shift();
+    int off = 0;
+    if (!nvml_load() || g_nvml.get_core(g_nvml.dev, &off) != 0) return 0;
+    return off;
+}
+
+static int clk_effective(int is_mem, int base) {
+    if (base <= 0) return 0;
+    return base + clk_shift(is_mem);
+}
+
+/* Nearest entry of the base table. Memory has an explicit table from NVML;
+ * graphics is a 15 MHz ladder (2100, 2085, ... 210 on this card), so the
+ * nearest multiple of 15 inside the range is the same answer. */
+static int clk_snap_base(int is_mem, int want) {
+    if (want <= 0) return 0;
+    if (is_mem) {
+        if (!nvml_load() || !g_nvml.sup_mem) return want;
+        unsigned int n = 32, tab[32];
+        if (g_nvml.sup_mem(g_nvml.dev, &n, tab) != 0 || n == 0) return want;
+        int best = (int)tab[0], bestd = abs(want - (int)tab[0]);
+        for (unsigned int i = 1; i < n; i++) {
+            int d = abs(want - (int)tab[i]);
+            if (d < bestd) { bestd = d; best = (int)tab[i]; }
+        }
+        return best;
+    }
+    int lo = 210, hi = 2100;
+    int top = 0, sh = clk_shift(0);
+    if (nvml_clock_bounds(0, NULL, &top) == 0 && top > 0) hi = top - sh;
+    int v = ((want + 7) / 15) * 15;
+    if (v < lo) v = lo;
+    if (v > hi) v = (hi / 15) * 15;
+    return v;
+}
+
 /* Lock a domain to a single clock. This is what nvidia_oc does, and what
  * nvidia-smi -lgc/-lmc does underneath - but going straight to NVML avoids
  * nvidia-smi's own client-side validation, which rejects values the driver
@@ -2988,7 +3041,7 @@ static ClockTrial g_trial[TRIAL_N] = {
     {0,0,0,0,"none"}, {0,0,0,0,"none"}, {0,0,0,0,"none"}, {0,0,0,0,"none"}
 };
 static const char *TRIAL_KEY[TRIAL_N] = {
-    "GPU_CORE_CLOCK", "GPU_MEM_CLOCK", "GPU_CORE_OFFSET", "GPU_MEM_OFFSET"
+    "GPU_CORE_CLOCK_BASE", "GPU_MEM_CLOCK_BASE", "GPU_CORE_OFFSET", "GPU_MEM_OFFSET"
 };
 
 static void trial_start(int which, int mhz) {
@@ -3049,6 +3102,8 @@ static int overrides_key_allowed(const char *key) {
            strcmp(key, "GPU_INTENSITY")   == 0 ||
            strcmp(key, "GPU_CORE_CLOCK")  == 0 ||
            strcmp(key, "GPU_MEM_CLOCK")   == 0 ||
+           strcmp(key, "GPU_CORE_CLOCK_BASE") == 0 ||
+           strcmp(key, "GPU_MEM_CLOCK_BASE")  == 0 ||
            strcmp(key, "GPU_CORE_OFFSET") == 0 ||
            strcmp(key, "GPU_MEM_OFFSET")  == 0;
 }
@@ -3057,6 +3112,8 @@ static void overrides_apply(const char *key, const char *val) {
     if (strcmp(key, "GPU_POWER_LIMIT") == 0) gpu_power_limit = atoi(val);
     else if (strcmp(key, "GPU_CORE_CLOCK") == 0) gpu_core_clock = atoi(val);
     else if (strcmp(key, "GPU_MEM_CLOCK")  == 0) gpu_mem_clock  = atoi(val);
+    else if (strcmp(key, "GPU_CORE_CLOCK_BASE") == 0) gpu_core_clock_base = atoi(val);
+    else if (strcmp(key, "GPU_MEM_CLOCK_BASE")  == 0) gpu_mem_clock_base  = atoi(val);
     else if (strcmp(key, "GPU_CORE_OFFSET") == 0) gpu_core_offset = atoi(val);
     else if (strcmp(key, "GPU_MEM_OFFSET")  == 0) gpu_mem_offset  = atoi(val);
     else if (strcmp(key, "GPU_INTENSITY") == 0) {
@@ -3425,7 +3482,7 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                  * release leaves the old value in overrides.env, and the next
                  * start puts the lock back. A reset is saved at once anyway:
                  * it is the safe direction and needs no trial. */
-                if (which) gpu_mem_clock = 0; else gpu_core_clock = 0;
+                if (which) gpu_mem_clock_base = 0; else gpu_core_clock_base = 0;
                 g_trial[which].active = 0;
                 snprintf(g_trial[which].status, sizeof(g_trial[which].status), "none");
                 int saved = (overrides_set(TRIAL_KEY[which], "0") == 0);
@@ -3468,22 +3525,29 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                 http_send_err(cfd, 400, "Bad Request", msg);
                 return;
             }
-            if (nvml_lock_clock(which, (int)mhz, err, sizeof(err)) != 0) {
+            /* The request names the frequency the card should run. What gets
+             * stored is the step it corresponds to, so the lock keeps its
+             * meaning when an offset later moves the table. */
+            int shift = clk_shift(which);
+            int base = clk_snap_base(which, (int)mhz - shift);
+            int eff = base + shift;
+            if (nvml_lock_clock(which, eff, err, sizeof(err)) != 0) {
                 char msg[256];
                 snprintf(msg, sizeof(msg), "NVML: %s", err);
-                fprintf(stderr, "[DagCore] %s lock %ld MHz rejected: %s\n",
-                        which ? "Memory clock" : "Core clock", mhz, err);
+                fprintf(stderr, "[DagCore] %s lock %d MHz (step %d) rejected: %s\n",
+                        which ? "Memory clock" : "Core clock", eff, base, err);
                 http_send_err(cfd, 500, "Internal Server Error", msg);
                 return;
             }
-            if (which) gpu_mem_clock = (int)mhz; else gpu_core_clock = (int)mhz;
-            trial_start(which, (int)mhz);
-            printf("[DagCore] %s locked to %ld MHz - on trial for %d min\n",
-                   which ? "Memory clock" : "Core clock", mhz, TRIAL_MS / 60000);
-            char resp[180];
+            if (which) gpu_mem_clock_base = base; else gpu_core_clock_base = base;
+            trial_start(which, base);
+            printf("[DagCore] %s locked to %d MHz (step %d %+d) - on trial for %d min\n",
+                   which ? "Memory clock" : "Core clock", eff, base, shift, TRIAL_MS / 60000);
+            char resp[220];
             snprintf(resp, sizeof(resp),
-                     "{\"ok\":true,\"applied\":%ld,\"trial\":true,\"trial_seconds\":%d}",
-                     mhz, TRIAL_MS / 1000);
+                     "{\"ok\":true,\"applied\":%d,\"base\":%d,\"shift\":%d,"
+                     "\"trial\":true,\"trial_seconds\":%d}",
+                     eff, base, shift, TRIAL_MS / 1000);
             http_send_json(cfd, 200, "OK", resp);
             return;
         }
@@ -3528,25 +3592,51 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             }
             if (is_mem) gpu_mem_offset = (int)mhz; else gpu_core_offset = (int)mhz;
 
+            /* The offset just moved the table. A lock stored as a step still
+             * means the same step, so put it back where it belongs instead of
+             * leaving it stranded at its old frequency - that mismatch is what
+             * used to raise a warning on a row the operator never touched. */
+            int relocked = 0, relock_eff = 0;
+            {
+                int base = is_mem ? gpu_mem_clock_base : gpu_core_clock_base;
+                if (base > 0) {
+                    char rerr[200] = "";
+                    relock_eff = clk_effective(is_mem, base);
+                    if (nvml_lock_clock(is_mem, relock_eff, rerr, sizeof(rerr)) == 0) {
+                        relocked = 1;
+                        printf("[DagCore] %s lock re-applied at %d MHz (step %d) after the "
+                               "offset changed\n", is_mem ? "Memory clock" : "Core clock",
+                               relock_eff, base);
+                    } else {
+                        fprintf(stderr, "[DagCore] WARNING: could not re-apply the %s lock "
+                                "at %d MHz (step %d): %s\n",
+                                is_mem ? "memory" : "core", relock_eff, base, rerr);
+                    }
+                }
+            }
+
             if (reset) {
                 g_trial[which].active = 0;
                 snprintf(g_trial[which].status, sizeof(g_trial[which].status), "none");
                 int saved = (overrides_set(TRIAL_KEY[which], "0") == 0);
                 printf("[DagCore] %s offset reset to 0 via control API%s\n",
                        is_mem ? "Memory" : "Core", saved ? "" : " (NOT saved)");
-                char resp[128];
+                char resp[200];
                 snprintf(resp, sizeof(resp),
-                         "{\"ok\":true,\"reset\":true,\"saved\":%s}", saved ? "true" : "false");
+                         "{\"ok\":true,\"reset\":true,\"saved\":%s,"
+                         "\"relocked\":%s,\"lock_mhz\":%d}",
+                         saved ? "true" : "false", relocked ? "true" : "false", relock_eff);
                 http_send_json(cfd, 200, "OK", resp);
                 return;
             }
             trial_start(which, (int)mhz);
             printf("[DagCore] %s offset set to %+ld MHz - on trial for %d min\n",
                    is_mem ? "Memory" : "Core", mhz, TRIAL_MS / 60000);
-            char resp[180];
+            char resp[240];
             snprintf(resp, sizeof(resp),
-                     "{\"ok\":true,\"applied\":%ld,\"trial\":true,\"trial_seconds\":%d}",
-                     mhz, TRIAL_MS / 1000);
+                     "{\"ok\":true,\"applied\":%ld,\"trial\":true,\"trial_seconds\":%d,"
+                     "\"relocked\":%s,\"lock_mhz\":%d}",
+                     mhz, TRIAL_MS / 1000, relocked ? "true" : "false", relock_eff);
             http_send_json(cfd, 200, "OK", resp);
             return;
         }
@@ -3600,14 +3690,18 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
         if (overrides_set("GPU_MEM_OFFSET", val) == 0) { gpu_mem_offset = mem_off; wrote++; }
         else failed++;
 
+        /* Stored as a step, like every other lock, so adopting now and changing
+         * an offset later does not strand the value. */
+        int core_base = want_core ? clk_snap_base(0, core_clk - clk_shift(0)) : 0;
+        int mem_base  = want_mem  ? clk_snap_base(1, mem_clk  - clk_shift(1)) : 0;
         if (want_core) {
-            snprintf(val, sizeof(val), "%d", core_clk);
-            if (overrides_set("GPU_CORE_CLOCK", val) == 0) { gpu_core_clock = core_clk; wrote++; }
+            snprintf(val, sizeof(val), "%d", core_base);
+            if (overrides_set("GPU_CORE_CLOCK_BASE", val) == 0) { gpu_core_clock_base = core_base; wrote++; }
             else failed++;
         }
         if (want_mem) {
-            snprintf(val, sizeof(val), "%d", mem_clk);
-            if (overrides_set("GPU_MEM_CLOCK", val) == 0) { gpu_mem_clock = mem_clk; wrote++; }
+            snprintf(val, sizeof(val), "%d", mem_base);
+            if (overrides_set("GPU_MEM_CLOCK_BASE", val) == 0) { gpu_mem_clock_base = mem_base; wrote++; }
             else failed++;
         }
         /* Whatever was just settled needs no probation. A domain that was not
@@ -3632,11 +3726,11 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
         snprintf(resp, sizeof(resp),
                  "{\"ok\":true,\"adopted\":true,\"keys\":%d,"
                  "\"core_offset\":%d,\"mem_offset\":%d,"
-                 "\"core_clock\":%d,\"core_adopted\":%s,"
-                 "\"mem_clock\":%d,\"mem_adopted\":%s}",
+                 "\"core_clock\":%d,\"core_base\":%d,\"core_adopted\":%s,"
+                 "\"mem_clock\":%d,\"mem_base\":%d,\"mem_adopted\":%s}",
                  wrote, core_off, mem_off,
-                 core_clk, want_core ? "true" : "false",
-                 mem_clk, want_mem ? "true" : "false");
+                 core_clk, core_base, want_core ? "true" : "false",
+                 mem_clk, mem_base, want_mem ? "true" : "false");
         http_send_json(cfd, 200, "OK", resp);
         return;
     }
@@ -3813,14 +3907,21 @@ static void *dagtech_metrics_thread(void *arg) {
             nvml_offset_bounds(0, &off_core_lo, &off_core_hi);
             nvml_offset_bounds(1, &off_mem_lo, &off_mem_hi);
         }
-        int mem_shift = off_ok ? nvml_mem_shift() : 0;
+        int mem_shift  = off_ok ? nvml_mem_shift() : 0;
+        int core_shift = off_ok ? clk_shift(0) : 0;
+        int lock_core_eff = off_ok ? clk_effective(0, gpu_core_clock_base) : 0;
+        int lock_mem_eff  = off_ok ? clk_effective(1, gpu_mem_clock_base) : 0;
+
+        /* Now that a lock follows its step through an offset change, the only
+         * thing left to warn about is a step the card cannot produce at all -
+         * an offset that pushed the effective frequency outside the range.
+         * A stale-looking frequency is no longer possible by construction. */
         int lock_stale = 0;
         if (off_ok) {
-            int live = 0;
-            if (gpu_mem_clock > 0 && nvml_current_clock(1, &live) == 0 &&
-                live != gpu_mem_clock) lock_stale = 1;
-            if (gpu_core_clock > 0 && nvml_current_clock(0, &live) == 0 &&
-                live != gpu_core_clock) lock_stale = 1;
+            if (lock_core_eff > 0 && g_core_lo > 0 &&
+                (lock_core_eff < g_core_lo || lock_core_eff > g_core_hi)) lock_stale = 1;
+            if (lock_mem_eff > 0 && g_mem_lo > 0 &&
+                (lock_mem_eff < g_mem_lo || lock_mem_eff > g_mem_hi)) lock_stale = 1;
         }
 
         /* Build JSON metrics response */
@@ -3855,11 +3956,13 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"gpu_core_clock_max\":%d,"
             "\"gpu_core_clock_boost\":%d,"
             "\"gpu_core_clock_lock\":%d,"
+            "\"gpu_core_clock_base\":%d,"
             "\"gpu_mem_clock\":%.0f,"
             "\"gpu_mem_clock_min\":%d,"
             "\"gpu_mem_clock_max\":%d,"
             "\"gpu_mem_clock_boost\":%d,"
             "\"gpu_mem_clock_lock\":%d,"
+            "\"gpu_mem_clock_base\":%d,"
             "\"trial_core_status\":\"%s\","
             "\"trial_core_value\":%d,"
             "\"trial_core_remaining\":%d,"
@@ -3881,6 +3984,7 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"trial_memoff_value\":%d,"
             "\"trial_memoff_remaining\":%d,"
             "\"gpu_mem_clock_shift\":%d,"
+            "\"gpu_core_clock_shift\":%d,"
             "\"clock_lock_stale\":%s,"
             "\"control_available\":%s,"
             "\"control_reason\":\"%s\","
@@ -3913,8 +4017,10 @@ static void *dagtech_metrics_thread(void *arg) {
             num_threads, current_hashrate, cpu_hashrate, gpu_hashrate,
             cpu_temp, gpu_temp, gpu_usage, gpu_memory, gpu_power,
             g_pl_current, g_pl_min, g_pl_max, g_pl_default, gpu_intensity,
-            gpu_core_cur, g_core_lo, g_core_hi, g_core_boost, gpu_core_clock,
-            gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,  gpu_mem_clock,
+            gpu_core_cur, g_core_lo, g_core_hi, g_core_boost,
+            lock_core_eff, gpu_core_clock_base,
+            gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,
+            lock_mem_eff, gpu_mem_clock_base,
             g_trial[0].status, g_trial[0].value, trial_remaining_s(0),
             g_trial[1].status, g_trial[1].value, trial_remaining_s(1),
             off_core, off_core_lo, off_core_hi,
@@ -3922,7 +4028,7 @@ static void *dagtech_metrics_thread(void *arg) {
             off_ok ? "true" : "false", off_why,
             g_trial[2].status, g_trial[2].value, trial_remaining_s(2),
             g_trial[3].status, g_trial[3].value, trial_remaining_s(3),
-            mem_shift, lock_stale ? "true" : "false",
+            mem_shift, core_shift, lock_stale ? "true" : "false",
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
             (unsigned long long)total_submitted,
@@ -4061,7 +4167,8 @@ static void dagtech_usage(void) {
     printf("  Config file keys: WALLET, POOL, PORT, THREADS, WORKER, CPU_LIMIT,\n");
     printf("    METRICS_PORT, METRICS_BIND, GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE,\n");
     printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN, GPU_POWER_LIMIT,\n");
-    printf("    GPU_CORE_CLOCK, GPU_MEM_CLOCK, GPU_CORE_OFFSET, GPU_MEM_OFFSET\n");
+    printf("    GPU_CORE_CLOCK_BASE, GPU_MEM_CLOCK_BASE, GPU_CORE_OFFSET,\n");
+    printf("    GPU_MEM_OFFSET\n");
     printf("\n");
 }
 
@@ -4250,6 +4357,8 @@ static void dagtech_load_config(const char *path) {
         else if (strcmp(key, "GPU_POWER_LIMIT") == 0) gpu_power_limit = atoi(val);
         else if (strcmp(key, "GPU_CORE_CLOCK") == 0) gpu_core_clock = atoi(val);
         else if (strcmp(key, "GPU_MEM_CLOCK")  == 0) gpu_mem_clock  = atoi(val);
+        else if (strcmp(key, "GPU_CORE_CLOCK_BASE") == 0) gpu_core_clock_base = atoi(val);
+        else if (strcmp(key, "GPU_MEM_CLOCK_BASE")  == 0) gpu_mem_clock_base  = atoi(val);
         else if (strcmp(key, "GPU_CORE_OFFSET") == 0) gpu_core_offset = atoi(val);
         else if (strcmp(key, "GPU_MEM_OFFSET")  == 0) gpu_mem_offset  = atoi(val);
         else if (strcmp(key, "GPU_ALIGN")    == 0) {
@@ -4758,26 +4867,57 @@ int main(int argc, char **argv) {
     }
 
 
+    /* One-off migration from the retired absolute keys. The step is recovered
+     * by subtracting the shift that was in force when the value was written -
+     * which is the shift in force now, since offsets were applied a moment
+     * ago. On rig1: GPU_MEM_CLOCK=9851 with a +1200 offset becomes
+     * GPU_MEM_CLOCK_BASE=9251, an exact entry of the base table. */
+    if (g_control_ok) {
+        char valbuf[16];
+        if (gpu_core_clock_base <= 0 && gpu_core_clock > 0) {
+            gpu_core_clock_base = clk_snap_base(0, gpu_core_clock - clk_shift(0));
+            snprintf(valbuf, sizeof(valbuf), "%d", gpu_core_clock_base);
+            overrides_set("GPU_CORE_CLOCK_BASE", valbuf);
+            overrides_set("GPU_CORE_CLOCK", "0");
+            printf("[DagCore] Migrated GPU_CORE_CLOCK=%d to GPU_CORE_CLOCK_BASE=%d "
+                   "(offset shift %+d)\n", gpu_core_clock, gpu_core_clock_base, clk_shift(0));
+            gpu_core_clock = 0;
+        }
+        if (gpu_mem_clock_base <= 0 && gpu_mem_clock > 0) {
+            gpu_mem_clock_base = clk_snap_base(1, gpu_mem_clock - clk_shift(1));
+            snprintf(valbuf, sizeof(valbuf), "%d", gpu_mem_clock_base);
+            overrides_set("GPU_MEM_CLOCK_BASE", valbuf);
+            overrides_set("GPU_MEM_CLOCK", "0");
+            printf("[DagCore] Migrated GPU_MEM_CLOCK=%d to GPU_MEM_CLOCK_BASE=%d "
+                   "(offset shift %+d)\n", gpu_mem_clock, gpu_mem_clock_base, clk_shift(1));
+            gpu_mem_clock = 0;
+        }
+    }
+
     /* Clock locks saved by a previous session (a trial that passed, or a value
-     * the operator put in config.env). A trial that never finished left
-     * nothing on disk, so it is simply not here. */
-    if (g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
+     * the operator put in config.env), applied at the step they were saved as
+     * and translated through the offset in force now. */
+    if (g_control_ok && (gpu_core_clock_base > 0 || gpu_mem_clock_base > 0)) {
         char err[200] = "";
-        if (gpu_core_clock > 0) {
-            if (nvml_lock_clock(0, gpu_core_clock, err, sizeof(err)) != 0)
-                fprintf(stderr, "[DagCore] WARNING: could not lock core clock to %d MHz: %s\n",
-                        gpu_core_clock, err);
+        if (gpu_core_clock_base > 0) {
+            int eff = clk_effective(0, gpu_core_clock_base);
+            if (nvml_lock_clock(0, eff, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not lock core clock to %d MHz "
+                        "(step %d): %s\n", eff, gpu_core_clock_base, err);
             else
-                printf("[DagCore] Core clock locked to %d MHz\n", gpu_core_clock);
+                printf("[DagCore] Core clock locked to %d MHz (step %d %+d)\n",
+                       eff, gpu_core_clock_base, clk_shift(0));
         }
-        if (gpu_mem_clock > 0) {
-            if (nvml_lock_clock(1, gpu_mem_clock, err, sizeof(err)) != 0)
-                fprintf(stderr, "[DagCore] WARNING: could not lock memory clock to %d MHz: %s\n",
-                        gpu_mem_clock, err);
+        if (gpu_mem_clock_base > 0) {
+            int eff = clk_effective(1, gpu_mem_clock_base);
+            if (nvml_lock_clock(1, eff, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not lock memory clock to %d MHz "
+                        "(step %d): %s\n", eff, gpu_mem_clock_base, err);
             else
-                printf("[DagCore] Memory clock locked to %d MHz\n", gpu_mem_clock);
+                printf("[DagCore] Memory clock locked to %d MHz (step %d %+d)\n",
+                       eff, gpu_mem_clock_base, clk_shift(1));
         }
-    } else if (!g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
+    } else if (!g_control_ok && (gpu_core_clock_base > 0 || gpu_mem_clock_base > 0)) {
         fprintf(stderr, "[DagCore] WARNING: clock locks ignored (%s)\n", g_control_reason);
     }
 
