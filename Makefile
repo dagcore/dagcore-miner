@@ -11,7 +11,7 @@ CC      ?= gcc
 NATIVE  ?= 0
 DEBUG   ?= 0
 
-CFLAGS  := -std=gnu11 -pthread -funroll-loops
+CFLAGS  := -std=gnu11 -pthread -funroll-loops -Wall
 ifeq ($(DEBUG),1)
   CFLAGS  += -O0 -g3 -fsanitize=address,undefined
   LDFLAGS += -fsanitize=address,undefined
@@ -46,7 +46,7 @@ BIN_CPU := dagcore-miner-cpu
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 
-.PHONY: all cpu warn install uninstall clean help
+.PHONY: all cpu check warn install uninstall clean help
 all: $(BIN_GPU)
 
 # $(KERNEL) e prerequisite doar pentru coerenta: nu se compileaza, e citit
@@ -57,6 +57,14 @@ $(BIN_GPU): $(SRC) $(HDR) $(KERNEL)
 cpu: $(BIN_CPU)
 $(BIN_CPU): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Compileaza ambele variante de la zero. Prinde ruperile care apar doar pe o
+# cale - de exemplu cod din #ifdef DAGTECH_GPU apelat din afara guard-ului,
+# care leaga bine cu GPU si esueaza la link fara el.
+check:
+	@$(MAKE) --no-print-directory -B $(BIN_GPU)
+	@$(MAKE) --no-print-directory -B $(BIN_CPU)
+	@echo "check: ambele variante (GPU + CPU) compileaza"
 
 # Build zgomotos, pentru audit - nu e in calea implicita.
 warn: $(SRC) $(HDR)
@@ -76,5 +84,5 @@ clean:
 	$(RM) $(BIN_GPU) $(BIN_CPU)
 
 help:
-	@printf '%s\n' 'tinte: all cpu warn install uninstall clean' \
+	@printf '%s\n' 'tinte: all cpu check warn install uninstall clean' \
 	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=...'
