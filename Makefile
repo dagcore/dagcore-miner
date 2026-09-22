@@ -39,7 +39,9 @@ endif
 SRC       := dagcore_miner.c
 HDR       := dagcore_sha256.h
 KERNEL    := dagcore_gpu.cl
-DASHBOARD := dashboard/index.html
+# Pagina, ajutorul, si resursele partajate de amandoua.
+DASHBOARD := dashboard/index.html dashboard/help.html \
+             dashboard/fonts.css dashboard/logo.webp
 # Fontul IBM Plex Mono e inline in pagina; OFL 1.1 cere ca licenta sa il insoteasca.
 DASH_OFL  := dashboard/OFL.txt
 CONFIG_EX := config.env.example
@@ -101,7 +103,11 @@ install: $(BIN_GPU)
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
-	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html $(DESTDIR)$(SHAREDIR)/dashboard/OFL.txt
+	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html \
+	      $(DESTDIR)$(SHAREDIR)/dashboard/help.html \
+	      $(DESTDIR)$(SHAREDIR)/dashboard/fonts.css \
+	      $(DESTDIR)$(SHAREDIR)/dashboard/logo.webp \
+	      $(DESTDIR)$(SHAREDIR)/dashboard/OFL.txt
 	$(RM) $(DESTDIR)$(SYSCONFDIR)/config.env.example
 	-rmdir $(DESTDIR)$(SHAREDIR)/dashboard $(DESTDIR)$(SHAREDIR) 2>/dev/null
 	@# config.env ramane: e fisierul operatorului, nu al nostru.

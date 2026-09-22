@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>DAGCore Miner — Help</title>
+<link rel="stylesheet" href="fonts.css">
+<style>
+/* Same tokens as the dashboard, same typeface (shared fonts.css), no external
+ * requests — a rig may have no internet at all. */
+:root{
+  --bg:#060a12; --panel:#0f1c32;
+  --line:rgba(110,155,220,.28); --line-soft:rgba(90,130,190,.12);
+  --text:#e8eef7; --text-2:#cfe0f4; --muted:#a9bcd3; --muted-2:#8fa5bf; --label:#8aa0bc;
+  --blue:#4d9dff; --mine:#ffab2e; --mine-soft:#ffc878;
+  --ok:#3fe08a; --warn:#f2c66d; --bad:#f4a29c;
+  --radius:14px;
+  --pad-top:env(safe-area-inset-top,0px);
+  --pad-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:radial-gradient(1100px 700px at 50% 8%,#0d1728 0%,#070c15 55%,#05080e 100%) no-repeat,var(--bg);
+  background-size:100% 1600px,auto;
+  color:var(--text);
+  font:14px/1.75 "IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  padding:calc(var(--pad-top) + 20px) 16px calc(var(--pad-bottom) + 40px);
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:860px;margin:0 auto}
+img{max-width:100%}
+[hidden]{display:none!important}
+
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding-bottom:20px;margin-bottom:8px;border-bottom:1px solid var(--line-soft)}
+header img{height:30px;width:auto;align-self:center}
+header h1{margin:0;font-size:19px;font-weight:700;letter-spacing:-.03em;color:#fff}
+a.back{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--blue);
+  text-decoration:none;border:1px solid rgba(77,157,255,.4);border-radius:9px;
+  padding:9px 14px;background:rgba(77,157,255,.08);white-space:nowrap}
+a.back:hover{background:rgba(77,157,255,.16)}
+
+nav{background:linear-gradient(160deg,rgba(15,28,50,.92),rgba(10,14,22,.88) 70%);
+  border:1px solid var(--line-soft);border-radius:var(--radius);padding:18px 20px;margin:22px 0 30px}
+nav h2{margin:0 0 12px;font-size:12px;font-weight:600;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--label)}
+nav ol{margin:0;padding-left:20px;columns:2;column-gap:28px}
+nav li{margin:0 0 6px;break-inside:avoid}
+nav a{color:var(--text-2);text-decoration:none}
+nav a:hover{color:var(--blue);text-decoration:underline}
+@media (max-width:620px){ nav ol{columns:1} }
+@media (max-width:560px){
+  section{padding:18px 16px}
+  header{gap:12px}
+  a.back{margin-left:0;width:100%;text-align:center;justify-content:center}
+}
+
+/* Same panel treatment as the dashboard cards, so the two pages read as one
+ * product rather than a page and its manual. */
+section{margin:0 0 16px;scroll-margin-top:16px;
+  border:1px solid var(--line-soft);border-radius:var(--radius);padding:20px 22px;
+  background:linear-gradient(160deg,rgba(15,28,50,.92),rgba(10,14,22,.88) 70%);
+  box-shadow:0 12px 40px rgba(0,0,0,.45)}
+section > h2:first-child{margin-top:0;padding-top:0;border-top:0}
+h2{font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--label);margin:0 0 16px}
+h3{font-size:14px;font-weight:600;color:var(--mine-soft);margin:22px 0 6px}
+p{margin:0 0 12px;color:var(--muted)}
+p.lead{color:var(--text-2)}
+ul,ol.body{margin:0 0 14px;padding-left:22px;color:var(--muted)}
+li{margin:0 0 7px}
+b,strong{color:var(--text);font-weight:600}
+code{background:rgba(0,0,0,.4);border:1px solid var(--line-soft);border-radius:5px;
+  padding:1px 5px;font-size:12.5px;color:var(--text-2)}
+pre{background:rgba(0,0,0,.4);border:1px solid var(--line-soft);border-radius:9px;
+  padding:13px 15px;overflow-x:auto;margin:0 0 14px;font-size:12.5px;color:var(--text-2)}
+pre code{background:none;border:0;padding:0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:0 0 16px}
+th{text-align:left;color:var(--label);font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;font-weight:600;padding:0 12px 9px 0;vertical-align:bottom}
+td{padding:9px 12px 9px 0;border-top:1px solid var(--line-soft);
+  color:var(--muted);vertical-align:top}
+td:first-child{color:var(--text);white-space:nowrap}
+.table-scroll{overflow-x:auto;margin-bottom:16px}
+.note{border-radius:9px;padding:12px 14px;margin:0 0 16px;font-size:13px;line-height:1.7}
+.note.warn{border:1px solid rgba(242,198,109,.4);background:rgba(242,198,109,.09);color:var(--warn)}
+.note.bad{border:1px solid rgba(244,162,156,.45);background:rgba(244,162,156,.09);color:var(--bad)}
+.note.ok{border:1px solid rgba(63,224,138,.4);background:rgba(63,224,138,.09);color:var(--ok)}
+.note b{color:inherit}
+.up{display:inline-block;margin-top:2px;font-size:11.5px;color:var(--muted-2);text-decoration:none}
+.up:hover{color:var(--blue)}
+footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--line-soft);
+  text-align:center;color:var(--label);font-size:11.5px;letter-spacing:.06em;line-height:1.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <img src="logo.webp" alt="DagCore" width="152" height="44">
+  <h1>Help</h1>
+  <a class="back" href="/">&larr; Back to dashboard</a>
+</header>
+
+<p class="lead">What every number on the dashboard means, what each setting
+does to a real card, and what to do when something looks wrong. The examples
+are from an RTX 3080 running this miner.</p>
+
+<nav>
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#reading">Reading the dashboard</a></li>
+    <li><a href="#shares">Shares: accepted, rejected, stale</a></li>
+    <li><a href="#health">Temperature, power, load</a></li>
+    <li><a href="#settings">The settings, one by one</a></li>
+    <li><a href="#howto">How a change is made</a></li>
+    <li><a href="#messages">Every message you can see</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+    <li><a href="#security">Security</a></li>
+  </ol>
+</nav>
+
+<section id="reading">
+<h2>1. Reading the dashboard</h2>
+
+<h3>Hashrate</h3>
+<p>Three figures: <b>Total</b>, <b>GPU</b> and <b>CPU</b>. On a GPU rig the GPU
+number is essentially the total — on the RTX 3080 it is about 1.61 MH/s of
+1.62 MH/s, with the two CPU threads contributing roughly 7 kH/s, under half a
+percent. Units switch by themselves: H/s, kH/s, MH/s, GH/s.</p>
+<p>The figure is an average over the last ten seconds, not an instant reading,
+so it moves smoothly. A drop that lasts one ten-second tick is noise; a drop
+that stays is not.</p>
+
+<h3>Efficiency</h3>
+<p>GPU hashrate divided by GPU power draw, in <b>kH/W</b> — how much work you
+get per watt. The 3080 at 300 W and 1.61 MH/s gives about 5.4 kH/W. This is
+the number to watch when tuning the power limit: raw hashrate almost always
+goes up with more watts, efficiency usually does not.</p>
+
+<h3>The 30-minute chart</h3>
+<p>Total hashrate over the last half hour. The samples live <b>only in the
+page</b> — reload the tab, or open the dashboard on a second device, and the
+chart starts empty. Nothing is stored on the rig. It is there to show shape:
+a flat line is healthy, a sawtooth means something is throttling, a cliff
+means the miner reconnected or the card stopped.</p>
+
+<h3>Session, rig</h3>
+<ul>
+<li><b>Difficulty</b> — the share difficulty the pool has set for you. It
+changes on its own as the pool adjusts; it is not something you control.</li>
+<li><b>Total hashes</b> — since this miner process started, not since the rig
+was built.</li>
+<li><b>Current job</b> — the pool's job ID. It should change every few
+seconds. If it stops changing for minutes, the pool connection is stale.</li>
+<li><b>Uptime</b> — of the miner process. It resets on every restart,
+including the automatic one after an intensity change.</li>
+<li><b>GPUs active</b> — how many cards this miner initialised.</li>
+</ul>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="shares">
+<h2>2. Shares: accepted, rejected, stale</h2>
+
+<p>A share is a proof of work sent to the pool. Three outcomes, and they do
+not mean the same thing at all.</p>
+
+<div class="table-scroll">
+<table>
+<tr><th>Outcome</th><th>What happened</th><th>Worrying?</th></tr>
+<tr><td>Accepted</td><td>The pool took it and it counts towards payment.</td>
+    <td>No — this is the one you want.</td></tr>
+<tr><td>Stale</td><td>The share was valid but arrived after the pool had moved
+    to a new job. The work was real, just late.</td>
+    <td>A few percent is normal. On this rig around 3% is typical. Above
+    roughly 5% means network latency or a pool that rotates jobs very
+    fast.</td></tr>
+<tr><td>Rejected</td><td>The pool refused it: the result did not check out.</td>
+    <td><b>Yes.</b> On a healthy card this should be zero.</td></tr>
+</table>
+</div>
+
+<div class="note warn"><b>Rejected shares are the overclock alarm.</b> A card
+pushed past what it can do silently computes wrong answers — it does not crash,
+it just returns numbers the pool refuses. That is why every clock change on
+this dashboard is watched for ten minutes with the rejected counter as the
+verdict. If rejected starts climbing after you changed something, the change
+is the cause.</div>
+
+<p>The bar under the three numbers shows their proportions. A healthy bar is
+almost entirely green with a thin amber sliver.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="health">
+<h2>3. Temperature, power, load</h2>
+
+<ul>
+<li><b>GPU temperature</b> — green below 70 °C, amber 70–80 °C, red above 80 °C.
+This is the <em>core</em> temperature. The 3080 in this rig sits around 62 °C.</li>
+<li><b>GPU load</b> — should be pinned at 100% while mining. Anything less
+means the card is waiting for something.</li>
+<li><b>Power draw</b> — live watts. With a 300 W limit the card will sit just
+under it, around 299 W.</li>
+<li><b>Memory used</b> — this miner's scratchpad. Each work-item needs 128 KB,
+so 16384 work-items is about 2 GB. It does not change while mining.</li>
+<li><b>CPU temperature</b> — the host processor, read from the kernel. Same
+colour thresholds. Unrelated to the GPU.</li>
+</ul>
+
+<div class="note warn"><b>Memory temperature is not shown, and cannot be.</b>
+The NVIDIA driver on Linux does not expose GDDR6X memory junction temperature
+to any tool — not to this dashboard, not to <code>nvidia-smi</code>. On a 3080
+the memory runs much hotter than the core, and it is the part that suffers
+from a memory overclock. Watch the hashrate instead: memory that is too hot
+throttles itself, and the hashrate sags while the core temperature still looks
+fine.</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="settings">
+<h2>4. The settings, one by one</h2>
+
+<p>Three are in plain view because they are the ones worth touching. The rest
+are behind <b>Advanced</b> because on this algorithm they mostly do not help,
+and a wrong value there costs more than it gains.</p>
+
+<h3>Power limit</h3>
+<p><b>What it does.</b> Caps how many watts the card may draw. Below the cap
+the card clocks itself freely; at the cap it pulls its clocks down to stay
+under.</p>
+<p><b>Sensible values.</b> The 3080 allows 100–350 W and ships at 320 W. This
+rig runs 300 W. Coming down from 320 to 300 costs very little hashrate and
+saves 20 W — that is the trade this setting is for. Going much below roughly
+70% of the default starts costing real hashrate.</p>
+<p><b>Risk.</b> None to the hardware; the card cannot be damaged by a lower
+limit. The only cost is throughput. Use <b>Efficiency</b> (kH/W) to judge it:
+if efficiency goes up and hashrate barely moves, the lower limit was worth
+it.</p>
+<p>This is the one setting that stays usable while a clock test is running,
+and it takes effect immediately with no test of its own.</p>
+
+<h3>Memory offset — the main tuning knob</h3>
+<p><b>Why this one.</b> The algorithm this miner runs is scrypt with N=1024,
+which needs a 128 KB scratchpad per work-item. It spends its time moving data
+in and out of VRAM, not doing arithmetic — it is <em>memory-bound</em>. Faster
+memory means more hashes. Faster core does not.</p>
+<p><b>How the number works.</b> The offset is given in data-rate MHz, and the
+actual memory clock moves by <b>half</b> of it. The card has a fixed table of
+memory clocks, and the offset shifts the whole table:</p>
+<pre><code>memory clock = base table entry + offset / 2
+
+RTX 3080 base table: 9501, 9251, 5001, 810, 405 MHz
+with offset +1200  : 10101, 9851, 5601, 1410, 1005 MHz</code></pre>
+<p>That is why the dashboard can offer a lock at 9851 MHz even though the
+card's own supported-clocks list stops at 9501 — the list is the table before
+the offset.</p>
+<p><b>How to tune.</b> Small steps. +100 or +150 at a time, Apply, then let
+the ten-minute test finish before the next step. The failure mode is not a
+crash: it is rejected shares, and they can take minutes to appear. On this rig
++1200 is stable; that does not mean +1200 is right for another 3080, because
+memory silicon varies between cards.</p>
+<div class="note warn"><b>Risk.</b> Too much memory offset produces wrong
+results, which the pool rejects — you keep burning power and stop getting
+paid. It also heats memory that you cannot see the temperature of. This is why
+the test exists and why it reverts by itself.</div>
+
+<h3>Intensity</h3>
+<p><b>What it does.</b> Asks for more work-items per batch, 0–100. More
+work-items keep the card busier between round trips.</p>
+<p><b>Why it needs a restart.</b> The scratchpad buffers are allocated once,
+when the GPU is initialised. Changing their size means allocating again, which
+means starting over. The dashboard saves the value and lets systemd restart the
+miner; it comes back in a few seconds and the page reconnects by itself.</p>
+<p><b>Why 100 is not a magic number.</b> The request is clamped to what VRAM
+can actually hold. Intensity 100 asks for 2<sup>20</sup> work-items, which at
+128 KB each would be 128 GB — far past any card. On the 3080 the limit works
+out to 16384 work-items, about 2 GB, and both intensity 80 and intensity 100
+end up there. Raising intensity past the point where VRAM is the constraint
+changes nothing at all.</p>
+<p><b>Risk.</b> None beyond the restart itself, which costs a few seconds of
+mining.</p>
+
+<h3 id="advanced">Advanced: Memory clock</h3>
+<p><b>What it does.</b> Pins the memory to one clock instead of letting the
+driver pick.</p>
+<p><b>Why the values are restricted.</b> A lock has to land on an entry of the
+card's table — with the offset applied, that is 10101, 9851, 5601, 1410 or
+1005 MHz on this rig. Anything you type is snapped to the nearest one. What
+gets saved is the <em>step</em>, not the frequency, so when you later change
+the offset the lock follows the table instead of being left behind.</p>
+<p><b>"Auto (driver)" is usually the right answer.</b> While mining, the card
+already sits at its top memory state the whole time. Locking it there gains
+nothing, and locking it lower only costs hashrate. The setting is here for
+diagnosis — pinning memory low to see whether a problem is memory-related — not
+for everyday tuning.</p>
+
+<h3>Advanced: Core clock and Core offset</h3>
+<p><b>Why they barely matter here.</b> The algorithm is waiting on memory.
+Giving the core more clock speeds up a part that is already idle-waiting. On
+this rig the core sits around 1800–1830 MHz under the power cap and raising it
+does not move the hashrate.</p>
+<p><b>When a negative offset does help.</b> A <em>lower</em> core costs almost
+no hashrate but frees watts inside the power limit — and those watts go to the
+memory controller, which is the part doing the work. On a power-limited card a
+core offset of −100 or −200 can leave hashrate unchanged while dropping
+temperature, or let the same power budget sustain a higher memory clock. That
+is the real use for these two controls.</p>
+<p><b>Risk.</b> A positive core offset that the silicon cannot hold produces
+the same rejected shares as a bad memory offset, for no gain.</p>
+
+<h3>Advanced: Adopt current state</h3>
+<p><b>What it is for.</b> A rig tuned with another tool before this miner
+arrived. Rather than re-entering the same numbers and sitting through a test to
+reach the state the card is already in, Adopt writes what is applied right now
+into the miner's own settings, with no test. From then on the miner re-applies
+them on every start.</p>
+<p><b>Offsets are adopted automatically. Clock locks are not</b> — they have
+checkboxes, unticked by default, and you have to tick what you know is
+locked.</p>
+<p><b>Why you have to tell it.</b> NVML — the NVIDIA library this all goes
+through — can <em>set</em> a locked clock and <em>clear</em> it, but it has no
+call to read one back. There is no way to ask the card "is memory locked, and
+to what". Earlier versions of this page guessed by watching whether a clock
+held still; it was wrong in both directions on this very rig, once re-adding a
+lock that had just been removed. Guessing was removed. You know what you
+locked; the software cannot find out.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="howto">
+<h2>5. How a change is made</h2>
+
+<ol class="body">
+<li><b>One setting at a time.</b> If two things change together and rejected
+shares appear, you cannot tell which caused it — and the test cannot
+either.</li>
+<li><b>Type a value and press Apply.</b> That is the whole action. The change
+goes to the card immediately; you see it in the readings within a few
+seconds.</li>
+<li><b>A ten-minute test starts by itself</b> for clock and offset changes. A
+banner appears at the top of Settings with a countdown and a live count of
+rejected shares. You do not have to wait or keep the page open — the miner runs
+the test whether the browser is there or not.</li>
+<li><b>While the test runs, the other clock controls are locked</b>, with the
+reason on each row. The power limit stays available; changing it restarts the
+test, because the power cap changes the very thing being measured.</li>
+<li><b>If rejected shares appear, the change is undone automatically</b> and
+nothing is saved. The banner turns red and tells you what it went back to.</li>
+<li><b>If ten clean minutes pass, the value is saved</b> and re-applied on
+every future start. The banner turns green.</li>
+</ol>
+
+<p><b>Cancel test</b> — in the banner — stops a test early and puts the previous
+value back immediately. Use it when you change your mind, or when the rig
+clearly does not like what you did and you do not want to wait.</p>
+
+<p><b>Default</b> — on each row — restores the card's own factory value, not
+zero. For the power limit that is the card's default in watts (320 W on the
+3080). For a clock it means Auto, handing the domain back to the driver. For an
+offset it means 0. You never need to press Default before changing something:
+Apply replaces whatever is there.</p>
+
+<p><b>What is saved where.</b> Settings you apply here are written to the
+miner's own override file, not to the file an operator edits. The miner reads
+both at startup: the operator's configuration first, then your overrides on top
+of it.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="messages">
+<h2>6. Every message you can see</h2>
+
+<h3>While a test is running</h3>
+<div class="table-scroll">
+<table>
+<tr><th>Message</th><th>Means</th><th>What to do</th></tr>
+<tr><td>Testing +2050 MHz memory — 7 min left</td>
+    <td>A change is applied and being watched. The rejected count next to it is
+    the verdict in progress.</td>
+    <td>Nothing. Leave it alone; you can close the page.</td></tr>
+<tr><td>Locked while another test is running.</td>
+    <td>On a clock or offset row: it is disabled so a second change cannot
+    confuse the measurement.</td>
+    <td>Wait, or press Cancel test if you would rather change this one.</td></tr>
+<tr><td>The running test restarted from zero</td>
+    <td>You changed the power limit mid-test. The cap changes what the test was
+    measuring, so it starts again.</td>
+    <td>Nothing, but expect another ten minutes.</td></tr>
+</table>
+</div>
+
+<h3>Test results</h3>
+<div class="note ok"><b>Test passed — +2050 saved.</b> Ten minutes with no new
+rejected shares. The value is stored and re-applied every time the miner
+starts. The banner stays until the next test.</div>
+<div class="note bad"><b>Test failed — rejected shares appeared, reverted to
++1200.</b> The card produced work the pool refused. The previous value is
+already back on the card and nothing was saved. Try a smaller step.</div>
+
+<h3>Connection and restart</h3>
+<div class="table-scroll">
+<table>
+<tr><th>Message</th><th>Means</th><th>What to do</th></tr>
+<tr><td>Miner is restarting to apply the new intensity…</td>
+    <td>Expected. Intensity needs a restart; systemd brings the miner back.</td>
+    <td>Wait. The page reconnects by itself, usually within 10–20 s.</td></tr>
+<tr><td>Miner restarted — running again</td>
+    <td>It came back and the new value is live.</td>
+    <td>Nothing. The banner clears itself after ten seconds.</td></tr>
+<tr><td>Miner did not come back</td>
+    <td>Sixty seconds passed with no answer. The miner failed to start.</td>
+    <td>Check the log: <code>journalctl -u bdag-miner -n 50</code></td></tr>
+<tr><td>Miner offline</td>
+    <td>/metrics stopped answering and this was not a restart you asked for.
+    The last known values stay on screen, dimmed.</td>
+    <td>Check the service: <code>systemctl status bdag-miner</code></td></tr>
+</table>
+</div>
+
+<h3>Controls unavailable</h3>
+<div class="table-scroll">
+<table>
+<tr><th>Message</th><th>Means</th><th>What to do</th></tr>
+<tr><td>Enter the control token to enable these controls.</td>
+    <td>No token has been entered in this browser. Reading works without one;
+    changing anything does not.</td>
+    <td>See <a href="#trouble">Troubleshooting</a> for where the token
+    lives.</td></tr>
+<tr><td>Rejected: invalid token.</td>
+    <td>The token is wrong, or it was regenerated since you saved it.</td>
+    <td>Read it again from the rig and paste it in.</td></tr>
+<tr><td>Controls unavailable: GPU mining is disabled</td>
+    <td>The miner was started with GPU mining off, so there is nothing to
+    tune.</td>
+    <td>Nothing here — that is a configuration choice on the rig.</td></tr>
+<tr><td>Controls unavailable: nvidia-smi not available</td>
+    <td>The NVIDIA tools are missing or the miner cannot run them.</td>
+    <td>Check that the driver is installed and the service runs as root.</td></tr>
+<tr><td>Controls unavailable: multi-GPU: needs PCI bus-ID mapping</td>
+    <td>More than one card. The miner numbers GPUs through OpenCL and NVIDIA
+    numbers them differently, and the two orders are not guaranteed to agree —
+    so a power limit could land on the wrong card. Controls are blocked
+    rather than risk it.</td>
+    <td>Tune multi-GPU rigs with another tool for now.</td></tr>
+<tr><td>Clock offsets unavailable: …</td>
+    <td>The NVIDIA management library could not be loaded or has no offset
+    support. Power limit still works; the offset and clock rows are hidden.</td>
+    <td>Check the driver version.</td></tr>
+</table>
+</div>
+
+<h3>Power limit</h3>
+<div class="table-scroll">
+<table>
+<tr><th>Message</th><th>Means</th><th>What to do</th></tr>
+<tr><td>Power limit confirmed at 300 W and saved.</td>
+    <td>Applied, read back from the card, and stored.</td>
+    <td>Nothing.</td></tr>
+<tr><td>Applied 280 W but the card reports 300 W.</td>
+    <td>The card accepted the request and then clamped it. Some cards refuse
+    values their firmware does not allow.</td>
+    <td>Try a value nearer the default.</td></tr>
+<tr><td>…but could not read it back from /metrics.</td>
+    <td>The change went through but the confirmation read failed.</td>
+    <td>Reload the page and look at the Power draw card.</td></tr>
+<tr><td>(NOT saved to overrides)</td>
+    <td>Applied to the card but not written to disk — it will be gone after a
+    restart. Almost always a permissions problem.</td>
+    <td>Check that the miner can write
+    <code>/var/lib/dagcore-miner/</code>.</td></tr>
+</table>
+</div>
+
+<h3>Clock warning</h3>
+<div class="note warn"><b>A saved clock step cannot be produced with the
+current offset.</b> The offset moved the table so far that the step you saved
+no longer has a frequency inside the range the card accepts. Apply a different
+value — it takes effect straight away — or press Default on that row.</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="trouble">
+<h2>7. Troubleshooting</h2>
+
+<h3>Rejected shares started appearing after an overclock</h3>
+<p>The card is computing wrong answers. It will not crash and the temperature
+may look fine — rejected shares are the only symptom. If you are inside a test,
+it reverts by itself within ten minutes. If the value was already saved, lower
+it: go back one step, Apply, and let the test confirm. Memory offset is the
+usual culprit; core offset is next.</p>
+
+<h3>Hashrate is drifting down while temperature looks fine</h3>
+<p>Almost always memory heat. The core temperature you can see says nothing
+about the memory, and on Linux the memory junction temperature is not exposed
+by the driver at all. Symptoms: hashrate sags over ten or twenty minutes with
+the core in the sixties, and improves after the rig is left idle.</p>
+<p>What helps: lower the memory offset a step, lower the power limit (less
+heat in the whole card), or improve airflow over the back of the board.</p>
+
+<h3>The miner did not come back after a restart</h3>
+<pre><code>systemctl status bdag-miner
+journalctl -u bdag-miner -n 50 --no-pager</code></pre>
+<p>The log shows what it refused at startup. A common one is a setting the card
+will not accept any more — the miner prints a warning naming the key and keeps
+mining without it.</p>
+
+<h3>I lost the control token</h3>
+<p>It is stored on the rig, readable only by root:</p>
+<pre><code>sudo cat /etc/dagcore-miner/api-token</code></pre>
+<p>It is also printed once, the first time it is created, in
+<code>journalctl -u bdag-miner</code>. To force a new one, delete the file and
+restart the miner — every browser that had the old token will need the new
+one.</p>
+
+<h3>Where the logs are</h3>
+<pre><code>journalctl -u bdag-miner -f            # live
+journalctl -u bdag-miner -n 100        # last 100 lines
+journalctl -u bdag-miner --since today</code></pre>
+
+<h3>Where the settings live</h3>
+<div class="table-scroll">
+<table>
+<tr><th>File</th><th>Who writes it</th><th>What is in it</th></tr>
+<tr><td>/etc/dagcore-miner/<br>config.env</td>
+    <td>You, by hand. The miner only reads it.</td>
+    <td>Wallet, pool, worker, threads, metrics port and bind address,
+    dashboard directory. The things that define the rig.</td></tr>
+<tr><td>/var/lib/dagcore-miner/<br>overrides.env</td>
+    <td>This dashboard.</td>
+    <td>Only tuning: power limit, intensity, clock steps, offsets. Loaded on
+    top of config.env at startup.</td></tr>
+</table>
+</div>
+<p>Two files on purpose: a change made in a browser can never corrupt the
+wallet or the pool address, and an operator editing configuration never fights
+the dashboard over the same file. To inspect them:</p>
+<pre><code>sudo cat /etc/dagcore-miner/config.env
+sudo cat /var/lib/dagcore-miner/overrides.env</code></pre>
+<p>To throw away all dashboard tuning and go back to the operator's
+configuration, delete the overrides file and restart.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<section id="security">
+<h2>8. Security</h2>
+
+<div class="note bad"><b>The metrics endpoint has no authentication and it
+serves your full wallet address.</b> Anyone who can reach
+<code>http://&lt;rig&gt;:8881/metrics</code> can read the wallet, the pool, the
+worker name and the hashrate. There is no password on reading.</div>
+
+<p>Changing settings does need the token, but that only protects writes. The
+token itself travels in plain HTTP — anyone who can watch the traffic on the
+network can copy it and then change your clocks.</p>
+
+<p><b>What that means in practice:</b></p>
+<ul>
+<li>The miner binds to <code>127.0.0.1</code> by default, so out of the box the
+dashboard is reachable only from the rig itself.</li>
+<li>To open it to your network, the rig must be started with
+<code>METRICS_BIND=0.0.0.0</code>, or better with the rig's own LAN address so
+it is not offered on every interface. The miner prints a warning in its log
+whenever it binds beyond localhost.</li>
+<li><b>Never expose this to the internet.</b> Not with a port forward, not
+through a router's "DMZ". It is a plain HTTP endpoint with a shared secret and
+your wallet address on it.</li>
+<li>If you want it from outside the LAN, tunnel instead of forwarding:
+<pre><code>ssh -L 8881:127.0.0.1:8881 user@rig</code></pre>
+then open <code>http://127.0.0.1:8881/</code> on your own machine. The traffic
+is encrypted and nothing is exposed.</li>
+<li>The token is stored in your browser's local storage, per browser. Clearing
+site data means entering it again.</li>
+</ul>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<footer>
+  DAGCore Miner &middot; dagcore.net &middot; based on DagTech Miner (MIT)
+</footer>
+
+</div>
+</body>
+</html>
