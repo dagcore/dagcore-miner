@@ -6,8 +6,6 @@
 #   make install        -> binar + kernel in $(PREFIX)/bin
 #
 # Variabile: NATIVE=1 (build local, -march=native), DEBUG=1, USE_OPENSSL=1, PREFIX=...
-#
-# NOTA: sursele se numesc inca dagtech_*; redenumirea vine separat.
 
 CC      ?= gcc
 NATIVE  ?= 0
@@ -38,9 +36,9 @@ ifeq ($(USE_OPENSSL),1)
   LDLIBS   += -lcrypto
 endif
 
-SRC    := dagtech_miner.c
-HDR    := dagtech_sha256.h
-KERNEL := dagtech_gpu.cl
+SRC    := dagcore_miner.c
+HDR    := dagcore_sha256.h
+KERNEL := dagcore_gpu.cl
 
 BIN_GPU := dagcore-miner
 BIN_CPU := dagcore-miner-cpu
