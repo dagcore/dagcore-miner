@@ -378,6 +378,28 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       </span>
     </div>
 
+    <div class="set-row" id="coreoffRow" hidden>
+      <span class="lab"><b>Core offset</b><small class="range" id="coreoffRange">&mdash;</small>
+        <span class="trial" id="coreoffTrial" hidden><i></i><span></span></span></span>
+      <span class="set-ctl">
+        <input type="range" id="coreoffSlider" min="-1000" max="1500" step="15" value="0" disabled>
+        <input type="number" id="coreoffNum" min="-1000" max="1500" step="15" disabled>
+        <button id="coreoffApply" type="button" disabled>Apply</button>
+        <button class="ghost" id="coreoffReset" type="button" disabled>Reset</button>
+      </span>
+    </div>
+
+    <div class="set-row" id="memoffRow" hidden>
+      <span class="lab"><b>Memory offset</b><small class="range" id="memoffRange">&mdash;</small>
+        <span class="trial" id="memoffTrial" hidden><i></i><span></span></span></span>
+      <span class="set-ctl">
+        <input type="range" id="memoffSlider" min="-2000" max="4000" step="50" value="0" disabled>
+        <input type="number" id="memoffNum" min="-2000" max="4000" step="50" disabled>
+        <button id="memoffApply" type="button" disabled>Apply</button>
+        <button class="ghost" id="memoffReset" type="button" disabled>Reset</button>
+      </span>
+    </div>
+
     <div class="set-row">
       <span class="lab"><b>GPU intensity</b><small>0&ndash;100. Applied on restart.</small></span>
       <span class="set-ctl">
@@ -737,7 +759,9 @@ function noteIdle(msg, cls){
 function controlsEnabled(on){
   var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply",
              "coreSlider","coreNum","coreApply","coreReset",
-             "memSlider","memNum","memApply","memReset"], i;
+             "memSlider","memNum","memApply","memReset",
+             "coreoffSlider","coreoffNum","coreoffApply","coreoffReset",
+             "memoffSlider","memoffNum","memoffApply","memoffReset"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
 }
 
@@ -765,13 +789,15 @@ function syncSettings(d){
   }
   syncClock(d, "core", "gpu_core_clock", "trial_core");
   syncClock(d, "mem",  "gpu_mem_clock",  "trial_mem");
+  syncOffset(d, "coreoff", "gpu_core_offset", "trial_coreoff");
+  syncOffset(d, "memoff",  "gpu_mem_offset",  "trial_memoff");
 
   if (!inTouched && typeof d.gpu_intensity === "number"){
     $("inRange").value = d.gpu_intensity; $("inNum").value = d.gpu_intensity;
   }
 }
 
-var clkTouched = { core: false, mem: false };
+var clkTouched = { core: false, mem: false, coreoff: false, memoff: false };
 
 /* One clock row. Hidden entirely when the card's supported range is unknown:
  * a slider with no bounds is worse than no slider. */
@@ -816,6 +842,45 @@ function syncClock(d, id, base, trialBase){
     label = val + " MHz passed its trial and was saved";
   } else {
     label = val + " MHz failed its trial (rejected shares moved) \u2014 not saved";
+  }
+  box.getElementsByTagName("span")[0].textContent = label;
+}
+
+/* Offset rows. Unlike the clock locks the bounds are fixed guards rather
+ * than something the card reports, so the row is hidden only when NVML itself
+ * is unavailable - with the reason shown once, on the core row. */
+function syncOffset(d, id, field, trialBase){
+  var row = $(id + "Row");
+  if (d.offset_available !== true){
+    row.hidden = true;
+    if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token)
+      noteIdle("Clock offsets unavailable: " + d.offset_reason, "err");
+    return;
+  }
+  row.hidden = false;
+
+  var cur = d[field];
+  txt(id + "Range", "currently " + (cur >= 0 ? "+" : "") + cur + " MHz");
+  if (!clkTouched[id] && typeof cur === "number"){
+    $(id + "Slider").value = cur; $(id + "Num").value = cur;
+  }
+
+  var st = d[trialBase + "_status"], val = d[trialBase + "_value"],
+      rem = d[trialBase + "_remaining"];
+  var box = $(id + "Trial");
+  if (!st || st === "none"){ box.hidden = true; return; }
+  box.hidden = false;
+  box.className = "trial " + st;
+  var sign = val >= 0 ? "+" : "";
+  var label;
+  if (st === "running"){
+    var m = Math.floor(rem / 60), sec = rem % 60;
+    label = "on trial at " + sign + val + " MHz \u2014 " + m + "m " +
+            (sec < 10 ? "0" : "") + sec + "s left before it is saved";
+  } else if (st === "saved"){
+    label = sign + val + " MHz passed its trial and was saved";
+  } else {
+    label = sign + val + " MHz failed its trial (rejected shares moved) \u2014 not saved";
   }
   box.getElementsByTagName("span")[0].textContent = label;
 }
@@ -902,6 +967,11 @@ function wireClock(id, path, label){
 }
 wireClock("core", "api/core-clock", "core");
 wireClock("mem",  "api/mem-clock",  "memory");
+
+link("coreoffSlider", "coreoffNum", function(){ clkTouched.coreoff = true; });
+link("memoffSlider",  "memoffNum",  function(){ clkTouched.memoff  = true; });
+wireClock("coreoff", "api/core-offset", "core offset");
+wireClock("memoff",  "api/mem-offset",  "memory offset");
 
 $("tokSave").addEventListener("click", function(){
   token = $("tokInput").value.replace(/\s+/g, "");
