@@ -413,6 +413,15 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       </span>
     </div>
 
+    <div class="set-row">
+      <span class="lab"><b>Adopt current state</b>
+        <small>Save the clocks and offsets the card is running right now,
+        without a trial. For a rig tuned outside this miner.</small></span>
+      <span class="set-ctl" style="justify-content:flex-end">
+        <button class="ghost" id="adoptBtn" type="button" disabled>Adopt current state</button>
+      </span>
+    </div>
+
     <div class="warn-row" id="staleWarn" hidden><i></i><span></span></div>
 
     <div class="set-note" id="setNote">Enter the control token to enable these controls.</div>
@@ -767,7 +776,8 @@ function controlsEnabled(on){
              "coreSlider","coreNum","coreApply","coreReset",
              "memSlider","memNum","memApply","memReset",
              "coreoffSlider","coreoffNum","coreoffApply","coreoffReset",
-             "memoffSlider","memoffNum","memoffApply","memoffReset"], i;
+             "memoffSlider","memoffNum","memoffApply","memoffReset",
+             "adoptBtn"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
 }
 
@@ -1006,6 +1016,27 @@ link("coreoffSlider", "coreoffNum", function(){ clkTouched.coreoff = true; });
 link("memoffSlider",  "memoffNum",  function(){ clkTouched.memoff  = true; });
 wireClock("coreoff", "api/core-offset", "core offset");
 wireClock("memoff",  "api/mem-offset",  "memory offset");
+
+/* Adopt writes straight to overrides.env - no trial - so it says exactly what
+ * it stored rather than a bare "done". */
+$("adoptBtn").addEventListener("click", function(){
+  note("Reading the card\u2019s current state (about 2 s)\u2026", "busy", 20000);
+  post("api/adopt", {}, function(st, d){
+    clkTouched.core = clkTouched.mem = clkTouched.coreoff = clkTouched.memoff = false;
+    if (st === 200 && d && d.ok){
+      var sgn = function(v){ return (v >= 0 ? "+" : "") + v; };
+      var parts = ["offsets core " + sgn(d.core_offset) + ", memory " + sgn(d.mem_offset)];
+      parts.push(d.core_pinned ? "core locked at " + d.core_clock + " MHz"
+                               : "core clock left to the driver (it was moving)");
+      parts.push(d.mem_pinned ? "memory locked at " + d.mem_clock + " MHz"
+                              : "memory clock left to the driver (it was moving)");
+      note("Adopted and saved \u2014 " + parts.join("; ") + ". " + d.keys +
+           " keys written; these are re-applied on every start.", "ok", 20000);
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
+  });
+});
 
 $("tokSave").addEventListener("click", function(){
   token = $("tokInput").value.replace(/\s+/g, "");
