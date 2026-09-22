@@ -155,7 +155,8 @@ static int  gpu_autotune_trial_seconds  = 60;    /* AUTOTUNE_TRIAL_SECONDS: per-
 static int  gpu_target_batch_ms         = 1500;  /* TARGET_BATCH_MS: latency penalty threshold for scoring */
 static char gpu_autotune_batches[256]   = "1024,2048,4096,8192";   /* AUTOTUNE_BATCHES: comma list */
 static char gpu_autotune_modes[64]      = "split,legacy";          /* AUTOTUNE_KERNEL_MODES: comma list */
-static char gpu_autotune_cache[512]     = "C:\\dagtech-gpu-miner\\autotune.json"; /* AUTOTUNE_CACHE: file path */
+static char gpu_autotune_cache[512]     = "";   /* AUTOTUNE_CACHE: file path; empty = resolved
+                                                   at startup, see dagtech_default_autotune_cache() */
 
 /* Stratum connection */
 static int sockfd = -1;
@@ -1410,8 +1411,13 @@ static void autotune_marker_path(char *out, size_t out_size) {
 static void autotune_write_marker(int trial, int total) {
     char path[600];
     autotune_marker_path(path, sizeof(path));
+    dagtech_mkdir_parents(path);
     FILE *f = fopen(path, "w");
-    if (!f) return;
+    if (!f) {
+        fprintf(stderr, "[Autotune] WARNING: cannot write progress marker %s: %s\n",
+                path, strerror(errno));
+        return;
+    }
     fprintf(f, "trial=%d\ntotal=%d\n", trial, total);
     fclose(f);
 }
@@ -2488,7 +2494,7 @@ static void *dagtech_metrics_thread(void *arg) {
         if (dashboard_dir[0] && strstr(reqbuf, "GET /metrics") == NULL
                               && strstr(reqbuf, "GET /") != NULL) {
             char html_path[600];
-            snprintf(html_path, sizeof(html_path), "%s\\index.html", dashboard_dir);
+            snprintf(html_path, sizeof(html_path), "%s/index.html", dashboard_dir);
             FILE *f = fopen(html_path, "rb");
             if (f) {
                 fseek(f, 0, SEEK_END);
@@ -2739,23 +2745,73 @@ static const char *dagtech_default_config_path(const char *exe_path) {
     return path;
 }
 
+/* Path separator test. On Windows both forms are accepted; on POSIX a
+ * backslash is an ordinary filename character and must not split a path. */
+#ifdef _WIN32
+  #define DT_IS_SEP(c) ((c) == '/' || (c) == '\\')
+#else
+  #define DT_IS_SEP(c) ((c) == '/')
+#endif
+
+static void dt_mkdir_one(const char *dir) {
+#ifdef _WIN32
+    CreateDirectoryA(dir, NULL);
+#else
+    mkdir(dir, 0700);
+#endif
+}
+
+/* Creates the directory that will hold `filepath`, including any missing
+ * intermediate components - the XDG cache default nests two levels deep
+ * ($XDG_CACHE_HOME/dagcore-miner) and the parent is not guaranteed to exist.
+ * Best-effort and silent: callers report the real error when the fopen() that
+ * follows fails, which is the only failure the user can act on. */
 static void dagtech_mkdir_parents(const char *filepath) {
     char tmp[512];
     strncpy(tmp, filepath, sizeof(tmp) - 1);
     tmp[sizeof(tmp) - 1] = '\0';
 
-    char *sep = strrchr(tmp, '/');
-#ifdef _WIN32
-    char *sep2 = strrchr(tmp, '\\');
-    if (sep2 > sep) sep = sep2;
-#endif
+    char *sep = NULL;
+    for (char *c = tmp; *c; c++)
+        if (DT_IS_SEP(*c)) sep = c;
     if (!sep) return;
     *sep = '\0';
 
+    /* Skip the root so we never try to create "/" or "C:". */
+    size_t start = 0;
+    if (tmp[0] && DT_IS_SEP(tmp[0])) start = 1;
 #ifdef _WIN32
-    CreateDirectoryA(tmp, NULL);
+    if (tmp[0] && tmp[1] == ':') start = DT_IS_SEP(tmp[2]) ? 3 : 2;
+#endif
+
+    for (size_t i = start; tmp[i]; i++) {
+        if (!DT_IS_SEP(tmp[i])) continue;
+        tmp[i] = '\0';
+        dt_mkdir_one(tmp);
+        tmp[i] = '/';
+    }
+    dt_mkdir_one(tmp);
+}
+
+/* Default autotune cache location.
+ *   Windows: unchanged - the path the installer provisions.
+ *   POSIX:   XDG basedir spec, $XDG_CACHE_HOME/dagcore-miner/autotune.json,
+ *            falling back to $HOME/.cache/dagcore-miner/autotune.json. Without
+ *            a usable HOME we land in the working directory so a service
+ *            account with no home still starts instead of failing to write.
+ * AUTOTUNE_CACHE (env var or config.env) overrides this; see main(). */
+static void dagtech_default_autotune_cache(char *out, size_t out_size) {
+#ifdef _WIN32
+    snprintf(out, out_size, "C:\\dagtech-gpu-miner\\autotune.json");
 #else
-    mkdir(tmp, 0700);
+    const char *xdg  = getenv("XDG_CACHE_HOME");
+    const char *home = getenv("HOME");
+    if (xdg && xdg[0])
+        snprintf(out, out_size, "%s/dagcore-miner/autotune.json", xdg);
+    else if (home && home[0])
+        snprintf(out, out_size, "%s/.cache/dagcore-miner/autotune.json", home);
+    else
+        snprintf(out, out_size, "autotune.json");
 #endif
 }
 
@@ -3033,6 +3089,10 @@ int main(int argc, char **argv) {
             gpu_autotune_cache[sizeof(gpu_autotune_cache) - 1] = '\0';
         }
     }
+
+    /* Platform default, only if neither config.env nor AUTOTUNE_CACHE set one. */
+    if (gpu_autotune_cache[0] == '\0')
+        dagtech_default_autotune_cache(gpu_autotune_cache, sizeof(gpu_autotune_cache));
 
     /* ---- Pass 2: full argument parsing ---- */
     int do_save_config = 0;
