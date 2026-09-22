@@ -3382,6 +3382,54 @@ static int json_is_true(const char *body, const char *key) {
     return strncmp(p, "true", 4) == 0;
 }
 
+/* The path out of a request line: "GET /help?x HTTP/1.1" -> "/help". */
+static void http_path(const char *req, char *out, size_t out_size) {
+    out[0] = '\0';
+    const char *sp = strchr(req, ' ');
+    if (!sp) return;
+    sp++;
+    size_t i = 0;
+    while (sp[i] && sp[i] != ' ' && sp[i] != '?' && sp[i] != '\r' && i + 1 < out_size) {
+        out[i] = sp[i];
+        i++;
+    }
+    out[i] = '\0';
+}
+
+/* Serve one file out of the dashboard directory.
+ *
+ * The name is chosen from a fixed set below, never taken from the request, so
+ * there is no path for a caller to traverse out of the directory. */
+static void serve_dashboard_file(int cfd, const char *name, const char *ctype,
+                                 const char *extra_hdr) {
+    char path[600];
+    snprintf(path, sizeof(path), "%s/%s", dashboard_dir, name);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        const char *nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        send(cfd, nf, (int)strlen(nf), 0);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc(fsize + 1);
+    if (buf) {
+        size_t got = fread(buf, 1, (size_t)fsize, f);
+        if (got != (size_t)fsize) fsize = (long)got;   /* serve what we read */
+        buf[fsize] = '\0';
+        char hdr[320];
+        snprintf(hdr, sizeof(hdr),
+                 "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n%s"
+                 "Connection: close\r\nContent-Length: %ld\r\n\r\n",
+                 ctype, extra_hdr ? extra_hdr : "", fsize);
+        send(cfd, hdr, (int)strlen(hdr), 0);
+        send(cfd, buf, (int)fsize, 0);
+        free(buf);
+    }
+    fclose(f);
+}
+
 /* Case-insensitive header lookup; copies the value into out. */
 static int http_header(const char *req, const char *name, char *out, size_t out_size) {
     size_t nl = strlen(name);
@@ -3936,34 +3984,27 @@ static void *dagtech_metrics_thread(void *arg) {
             continue;
         }
 
-        /* Serve dashboard HTML for any non-metrics GET */
-        if (dashboard_dir[0] && strstr(reqbuf, "GET /metrics") == NULL
-                              && strstr(reqbuf, "GET /") != NULL) {
-            char html_path[600];
-            snprintf(html_path, sizeof(html_path), "%s/index.html", dashboard_dir);
-            FILE *f = fopen(html_path, "rb");
-            if (f) {
-                fseek(f, 0, SEEK_END);
-                long fsize = ftell(f);
-                fseek(f, 0, SEEK_SET);
-                char *html = (char *)malloc(fsize + 1);
-                if (html) {
-                    size_t got = fread(html, 1, (size_t)fsize, f);
-                    if (got != (size_t)fsize) fsize = (long)got;  /* serve what we read */
-                    html[fsize] = '\0';
-                    char hdr[256];
-                    snprintf(hdr, sizeof(hdr),
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
-                        "Connection: close\r\nContent-Length: %ld\r\n\r\n", fsize);
-                    send(cfd, hdr, (int)strlen(hdr), 0);
-                    send(cfd, html, (int)fsize, 0);
-                    free(html);
-                }
-                fclose(f);
-            } else {
-                const char *nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                send(cfd, nf, (int)strlen(nf), 0);
+        /* Dashboard files. Anything that is not /metrics falls back to the
+         * dashboard itself, so a bookmark to any path still lands somewhere
+         * useful; the named paths get their own file. */
+        if (dashboard_dir[0] && strncmp(reqbuf, "GET ", 4) == 0 &&
+            strstr(reqbuf, "GET /metrics") == NULL) {
+            char path[256];
+            http_path(reqbuf, path, sizeof(path));
+            const char *name = "index.html", *ctype = "text/html", *extra = NULL;
+            if (strcmp(path, "/help") == 0 || strcmp(path, "/help.html") == 0) {
+                name = "help.html";
+            } else if (strcmp(path, "/fonts.css") == 0) {
+                name  = "fonts.css";
+                ctype = "text/css";
+                /* Both pages share it and it never changes between builds. */
+                extra = "Cache-Control: max-age=86400\r\n";
+            } else if (strcmp(path, "/logo.webp") == 0) {
+                name  = "logo.webp";
+                ctype = "image/webp";
+                extra = "Cache-Control: max-age=86400\r\n";
             }
+            serve_dashboard_file(cfd, name, ctype, extra);
             close(cfd);
             continue;
         }
