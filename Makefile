@@ -36,15 +36,17 @@ ifeq ($(USE_OPENSSL),1)
   LDLIBS   += -lcrypto
 endif
 
-SRC    := dagcore_miner.c
-HDR    := dagcore_sha256.h
-KERNEL := dagcore_gpu.cl
+SRC       := dagcore_miner.c
+HDR       := dagcore_sha256.h
+KERNEL    := dagcore_gpu.cl
+DASHBOARD := dashboard/index.html
 
 BIN_GPU := dagcore-miner
 BIN_CPU := dagcore-miner-cpu
 
-PREFIX ?= /usr/local
-BINDIR := $(PREFIX)/bin
+PREFIX   ?= /usr/local
+BINDIR   := $(PREFIX)/bin
+SHAREDIR := $(PREFIX)/share/dagcore-miner
 
 .PHONY: all cpu check warn install uninstall clean help
 all: $(BIN_GPU)
@@ -71,14 +73,21 @@ warn: $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(GPU_CPPFLAGS) -Wall -Wextra -Wshadow -fsyntax-only $<
 
 # Kernelul e cautat langa binar (calea vine din argv[0]), deci se instaleaza
-# in acelasi director, nu in share/.
+# in acelasi director, nu in share/. Dashboard-ul, in schimb, e dat explicit
+# prin --dashboard-dir, deci sta in share/.
 install: $(BIN_GPU)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(BIN_GPU) $(DESTDIR)$(BINDIR)/
 	install -m 0644 $(KERNEL)  $(DESTDIR)$(BINDIR)/
+	install -d $(DESTDIR)$(SHAREDIR)/dashboard
+	install -m 0644 $(DASHBOARD) $(DESTDIR)$(SHAREDIR)/dashboard/
+	@echo "dashboard instalat in $(SHAREDIR)/dashboard"
+	@echo "porneste minerul cu: --dashboard-dir $(SHAREDIR)/dashboard"
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
+	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html
+	-rmdir $(DESTDIR)$(SHAREDIR)/dashboard $(DESTDIR)$(SHAREDIR) 2>/dev/null
 
 clean:
 	$(RM) $(BIN_GPU) $(BIN_CPU)
