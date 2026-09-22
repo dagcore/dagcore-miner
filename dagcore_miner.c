@@ -180,12 +180,16 @@ static int  gpu_core_clock  = 0;      /* GPU_CORE_CLOCK, MHz; 0 = leave alone */
 static int  gpu_core_offset = DT_OFF_UNSET;   /* GPU_CORE_OFFSET, MHz */
 static int  gpu_mem_offset  = DT_OFF_UNSET;   /* GPU_MEM_OFFSET, MHz */
 static int  gpu_mem_clock   = 0;      /* GPU_MEM_CLOCK, MHz;  0 = leave alone */
-/* Clock envelope, queried once at startup - the supported list does not change
- * while the driver is loaded. The lockable range comes from
- * --query-supported-clocks, NOT from clocks.max.*: on an RTX 3080 the latter
- * reports 10101 MHz for memory while the highest value -lmc will accept is
- * 9501. Both are reported, so the dashboard can show the boost ceiling
- * separately from what can actually be locked. */
+/* Last-known clock envelope, refreshed from NVML on every control request.
+ * It is NOT static: a memory offset displaces the whole table, so the ceiling
+ * moves without a restart.
+ *
+ * An earlier version read this from --query-supported-clocks and treated
+ * clocks.max.* as a mere boost figure. That was backwards. The supported table
+ * is the BASE one, before any offset; clocks.max.* (and NVML's
+ * GetMaxClockInfo) already account for the offset. On rig1, with a +1200
+ * memory offset, the base table said 9501 while the card was happily running a
+ * 9851 MHz lock. */
 static int  g_core_lo = -1, g_core_hi = -1, g_core_boost = -1;
 static int  g_mem_lo  = -1, g_mem_hi  = -1, g_mem_boost  = -1;
 static char g_api_token[80] = "";     /* empty = control API disabled */
@@ -2706,10 +2710,6 @@ static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, doubl
  *
  * DAGCORE_NVML_LIB redirects the library, which is what makes this testable
  * without touching a real card. */
-#define DT_CORE_OFF_MIN (-1000)
-#define DT_CORE_OFF_MAX  (1500)
-#define DT_MEM_OFF_MIN  (-2000)
-#define DT_MEM_OFF_MAX   (4000)
 
 #ifndef _WIN32
 typedef int (*nvml_init_fn)(void);
@@ -2717,19 +2717,34 @@ typedef int (*nvml_shutdown_fn)(void);
 typedef int (*nvml_handle_fn)(unsigned int, void **);
 typedef int (*nvml_get_off_fn)(void *, int *);
 typedef int (*nvml_set_off_fn)(void *, int);
+typedef int (*nvml_minmax_off_fn)(void *, int *, int *);
+typedef int (*nvml_lock_fn)(void *, unsigned int, unsigned int);
+typedef int (*nvml_unlock_fn)(void *);
+typedef int (*nvml_clkinfo_fn)(void *, int, unsigned int *);
+typedef int (*nvml_supmem_fn)(void *, unsigned int *, unsigned int *);
+typedef int (*nvml_pstate_fn)(void *, int, int, unsigned int *, unsigned int *);
 typedef const char *(*nvml_errstr_fn)(int);
+
+#define NVML_CLK_GRAPHICS 0
+#define NVML_CLK_MEM      2
 
 static struct {
     int   tried;          /* 0 = not attempted yet */
     int   ok;             /* 1 = usable */
     void *lib;
     void *dev;
-    nvml_shutdown_fn shutdown;
-    nvml_get_off_fn  get_core, get_mem;
-    nvml_set_off_fn  set_core, set_mem;
-    nvml_errstr_fn   errstr;
+    nvml_shutdown_fn   shutdown;
+    nvml_get_off_fn    get_core, get_mem;
+    nvml_set_off_fn    set_core, set_mem;
+    nvml_minmax_off_fn range_core, range_mem;
+    nvml_lock_fn       lock_core, lock_mem;
+    nvml_unlock_fn     unlock_core, unlock_mem;
+    nvml_clkinfo_fn    max_clk;
+    nvml_supmem_fn     sup_mem;
+    nvml_pstate_fn     pstate;
+    nvml_errstr_fn     errstr;
     char  why[160];       /* why it is unusable, for the dashboard */
-} g_nvml = { 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, "not initialised" };
+} g_nvml;
 
 static const char *nvml_err(int rc) {
     if (g_nvml.errstr) return g_nvml.errstr(rc);
@@ -2740,6 +2755,7 @@ static const char *nvml_err(int rc) {
 static int nvml_load(void) {
     if (g_nvml.tried) return g_nvml.ok;
     g_nvml.tried = 1;
+    snprintf(g_nvml.why, sizeof(g_nvml.why), "not initialised");
 
     const char *libname = getenv("DAGCORE_NVML_LIB");
     if (!libname || !libname[0]) libname = "libnvidia-ml.so.1";
@@ -2756,12 +2772,22 @@ static int nvml_load(void) {
     g_nvml.set_core     = (nvml_set_off_fn)dlsym(g_nvml.lib, "nvmlDeviceSetGpcClkVfOffset");
     g_nvml.get_mem      = (nvml_get_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMemClkVfOffset");
     g_nvml.set_mem      = (nvml_set_off_fn)dlsym(g_nvml.lib, "nvmlDeviceSetMemClkVfOffset");
+    g_nvml.range_core   = (nvml_minmax_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetGpcClkMinMaxVfOffset");
+    g_nvml.range_mem    = (nvml_minmax_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMemClkMinMaxVfOffset");
+    g_nvml.lock_core    = (nvml_lock_fn)dlsym(g_nvml.lib, "nvmlDeviceSetGpuLockedClocks");
+    g_nvml.lock_mem     = (nvml_lock_fn)dlsym(g_nvml.lib, "nvmlDeviceSetMemoryLockedClocks");
+    g_nvml.unlock_core  = (nvml_unlock_fn)dlsym(g_nvml.lib, "nvmlDeviceResetGpuLockedClocks");
+    g_nvml.unlock_mem   = (nvml_unlock_fn)dlsym(g_nvml.lib, "nvmlDeviceResetMemoryLockedClocks");
+    g_nvml.max_clk      = (nvml_clkinfo_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMaxClockInfo");
+    g_nvml.sup_mem      = (nvml_supmem_fn)dlsym(g_nvml.lib, "nvmlDeviceGetSupportedMemoryClocks");
+    g_nvml.pstate       = (nvml_pstate_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMinMaxClockOfPState");
     g_nvml.errstr       = (nvml_errstr_fn)dlsym(g_nvml.lib, "nvmlErrorString");
 
     if (!init || !hnd || !g_nvml.get_core || !g_nvml.set_core ||
-        !g_nvml.get_mem || !g_nvml.set_mem) {
+        !g_nvml.get_mem || !g_nvml.set_mem || !g_nvml.lock_core || !g_nvml.lock_mem ||
+        !g_nvml.unlock_core || !g_nvml.unlock_mem || !g_nvml.max_clk || !g_nvml.sup_mem) {
         snprintf(g_nvml.why, sizeof(g_nvml.why),
-                 "%s lacks the clock-offset entry points", libname);
+                 "%s lacks the clock entry points", libname);
         return 0;
     }
     int rc = init();
@@ -2796,58 +2822,118 @@ static int nvml_write_offset(int is_mem, int mhz, char *err, size_t err_size) {
     if (rc != 0) { snprintf(err, err_size, "%s", nvml_err(rc)); return -1; }
     return 0;
 }
+
+/* The offset range the card itself permits. Replaces the constants this code
+ * used to carry: on an RTX 3080 those were wrong in both directions - core
+ * guarded to +1500 where the card allows +1000, memory to +4000 where it
+ * allows +6000. */
+static int nvml_offset_bounds(int is_mem, int *lo, int *hi) {
+    if (!nvml_load()) return -1;
+    nvml_minmax_off_fn f = is_mem ? g_nvml.range_mem : g_nvml.range_core;
+    if (!f) return -1;
+    int a = 0, b = 0;
+    if (f(g_nvml.dev, &a, &b) != 0) return -1;
+    if (lo) *lo = a;
+    if (hi) *hi = b;
+    return 0;
+}
+
+/* How far a memory offset displaces the clock table.
+ *
+ * The memory offset is expressed in data-rate MHz, and the clock moves by half
+ * of it. Measured on an RTX 3080 with offset +1200: the base table tops out at
+ * 9501 MHz, the card reports a 10101 MHz ceiling (9501 + 600), and a lock of
+ * 9851 MHz - the value nvidia_oc had applied - is exactly 9251 + 600, the
+ * second entry of the displaced table. Two exact matches, so the halving is
+ * measured rather than assumed.
+ *
+ * The graphics offset is taken as 1:1, which is the conventional behaviour but
+ * could not be verified here: the core offset on this card is 0, so there is
+ * nothing to measure against. The ceiling does not depend on it either way -
+ * that comes from the card - so only the floor would shift. */
+static int nvml_mem_shift(void) {
+    int off = 0;
+    if (!nvml_load()) return 0;
+    if (g_nvml.get_mem(g_nvml.dev, &off) != 0) return 0;
+    return off / 2;
+}
+
+/* What a lock will actually accept, asked fresh every time: a new offset moves
+ * the whole table, so a value cached at startup goes stale the moment someone
+ * changes one. */
+static int nvml_clock_bounds(int is_mem, int *lo, int *hi) {
+    if (!nvml_load()) return -1;
+    unsigned int top = 0;
+    if (g_nvml.max_clk(g_nvml.dev, is_mem ? NVML_CLK_MEM : NVML_CLK_GRAPHICS, &top) != 0)
+        return -1;
+
+    unsigned int bottom = 0;
+    if (is_mem) {
+        /* Lowest entry of the base table, displaced like the rest of it. */
+        unsigned int n = 32, tab[32];
+        if (g_nvml.sup_mem(g_nvml.dev, &n, tab) != 0 || n == 0) return -1;
+        bottom = tab[0];
+        for (unsigned int i = 1; i < n; i++) if (tab[i] < bottom) bottom = tab[i];
+        int shift = nvml_mem_shift();
+        long b = (long)bottom + shift;
+        bottom = (unsigned int)(b < 0 ? 0 : b);
+    } else if (g_nvml.pstate) {
+        unsigned int a = 0, b = 0;
+        if (g_nvml.pstate(g_nvml.dev, NVML_CLK_GRAPHICS, 0, &a, &b) == 0) bottom = a;
+    }
+    if (lo) *lo = (int)bottom;
+    if (hi) *hi = (int)top;
+    return 0;
+}
+
+/* Lock a domain to a single clock. This is what nvidia_oc does, and what
+ * nvidia-smi -lgc/-lmc does underneath - but going straight to NVML avoids
+ * nvidia-smi's own client-side validation, which rejects values the driver
+ * accepts once an offset has moved the table. */
+static int nvml_lock_clock(int is_mem, int mhz, char *err, size_t err_size) {
+    if (!nvml_load()) { snprintf(err, err_size, "%s", g_nvml.why); return -1; }
+    nvml_lock_fn f = is_mem ? g_nvml.lock_mem : g_nvml.lock_core;
+    int rc = f(g_nvml.dev, (unsigned int)mhz, (unsigned int)mhz);
+    if (rc != 0) { snprintf(err, err_size, "%s", nvml_err(rc)); return -1; }
+    return 0;
+}
+
+static int nvml_unlock_clock(int is_mem, char *err, size_t err_size) {
+    if (!nvml_load()) { snprintf(err, err_size, "%s", g_nvml.why); return -1; }
+    nvml_unlock_fn f = is_mem ? g_nvml.unlock_mem : g_nvml.unlock_core;
+    int rc = f(g_nvml.dev);
+    if (rc != 0) { snprintf(err, err_size, "%s", nvml_err(rc)); return -1; }
+    return 0;
+}
+
+/* Clock currently reported for a domain, used to spot a lock that no longer
+ * matches the table after an offset change. */
+static int nvml_current_clock(int is_mem, int *mhz) {
+    if (!nvml_load()) return -1;
+    nvml_clkinfo_fn f = (nvml_clkinfo_fn)dlsym(g_nvml.lib, "nvmlDeviceGetClockInfo");
+    if (!f) return -1;
+    unsigned int v = 0;
+    if (f(g_nvml.dev, is_mem ? NVML_CLK_MEM : NVML_CLK_GRAPHICS, &v) != 0) return -1;
+    *mhz = (int)v;
+    return 0;
+}
 #else
 static int nvml_load(void) { return 0; }
 static int nvml_read_offsets(int *c, int *m) { (void)c; (void)m; return -1; }
 static int nvml_write_offset(int a, int b, char *e, size_t n) {
-    (void)a; (void)b; snprintf(e, n, "NVML offsets are not supported on Windows"); return -1;
+    (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
 }
+static int nvml_offset_bounds(int a, int *l, int *h) { (void)a; (void)l; (void)h; return -1; }
+static int nvml_clock_bounds(int a, int *l, int *h)  { (void)a; (void)l; (void)h; return -1; }
+static int nvml_mem_shift(void) { return 0; }
+static int nvml_lock_clock(int a, int b, char *e, size_t n) {
+    (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
+}
+static int nvml_unlock_clock(int a, char *e, size_t n) {
+    (void)a; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
+}
+static int nvml_current_clock(int a, int *m) { (void)a; (void)m; return -1; }
 #endif
-
-/* Lowest and highest clock the driver will accept for a lock, read from the
- * supported-clocks table. Returns 0 on success. */
-static int nvsmi_query_supported_range(int idx, const char *domain, int *lo, int *hi) {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-             "nvidia-smi --query-supported-clocks=%s --format=csv,noheader,nounits -i %d 2>/dev/null",
-             domain, idx);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return -1;
-    char line[128];
-    int mn = -1, mx = -1, n = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        int v = atoi(line);
-        if (v <= 0) continue;
-        if (mn < 0 || v < mn) mn = v;
-        if (v > mx) mx = v;
-        n++;
-    }
-    int rc = pclose(fp);
-    if (rc != 0 || n == 0) return -1;
-    if (lo) *lo = mn;
-    if (hi) *hi = mx;
-    return 0;
-}
-
-/* The boost ceilings the card advertises (clocks.max.*). Informational: these
- * can sit above the highest lockable value. */
-static int nvsmi_query_clock_boost(int idx, int *core, int *mem) {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-             "nvidia-smi --query-gpu=clocks.max.graphics,clocks.max.memory "
-             "--format=csv,noheader,nounits -i %d 2>/dev/null", idx);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return -1;
-    char buf[128];
-    char *got = fgets(buf, sizeof(buf), fp);
-    int rc = pclose(fp);
-    if (!got || rc != 0) return -1;
-    int a, b;
-    if (sscanf(buf, "%d , %d", &a, &b) != 2) return -1;
-    if (core) *core = a;
-    if (mem) *mem = b;
-    return 0;
-}
 
 /* Apply a power limit. Needs root (the service runs as root); nvidia-smi
  * prints the reason on failure, so it is captured and logged rather than
@@ -2868,45 +2954,6 @@ static int nvsmi_set_power_limit(int idx, int watts, char *err, size_t err_size)
     }
     int rc = pclose(fp);
     if (rc != 0) {
-        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
-        return -1;
-    }
-    return 0;
-}
-
-/* Lock a clock domain. -lgc/-lmc take min,max; the same value twice pins it.
- * "gc" = graphics, "mc" = memory. */
-static int nvsmi_lock_clock(int idx, const char *dom, int mhz, char *err, size_t err_size) {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %d -l%s %d,%d 2>&1", idx, dom, mhz, mhz);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) { snprintf(err, err_size, "cannot run nvidia-smi"); return -1; }
-    char line[256], last[256] = "";
-    while (fgets(line, sizeof(line), fp)) {
-        size_t l = strlen(line);
-        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
-        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
-    }
-    if (pclose(fp) != 0) {
-        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
-        return -1;
-    }
-    return 0;
-}
-
-/* Hand the domain back to the driver's own management (-rgc / -rmc). */
-static int nvsmi_reset_clock(int idx, const char *dom, char *err, size_t err_size) {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %d -r%s 2>&1", idx, dom);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) { snprintf(err, err_size, "cannot run nvidia-smi"); return -1; }
-    char line[256], last[256] = "";
-    while (fgets(line, sizeof(line), fp)) {
-        size_t l = strlen(line);
-        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
-        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
-    }
-    if (pclose(fp) != 0) {
         snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
         return -1;
     }
@@ -3170,14 +3217,16 @@ static void control_init(void) {
         snprintf(g_control_reason, sizeof(g_control_reason), "nvidia-smi not available");
         return;
     }
-    /* Clock envelope. A failure here does not disable the controls: power
-     * limit still works, and the page hides the clock rows when the range is
-     * unknown rather than offering a slider with no bounds. */
-    if (nvsmi_query_supported_range(gpu_device, "gr", &g_core_lo, &g_core_hi) != 0)
-        fprintf(stderr, "[DagCore] WARNING: could not read supported core clocks\n");
-    if (nvsmi_query_supported_range(gpu_device, "mem", &g_mem_lo, &g_mem_hi) != 0)
-        fprintf(stderr, "[DagCore] WARNING: could not read supported memory clocks\n");
-    nvsmi_query_clock_boost(gpu_device, &g_core_boost, &g_mem_boost);
+    /* Clock envelope now comes from NVML, and is re-read per request rather
+     * than cached: an offset change moves the whole table. A failure here does
+     * not disable the controls - the power limit still works and the page
+     * hides the clock rows when the range is unknown. */
+    if (nvml_clock_bounds(0, &g_core_lo, &g_core_hi) != 0)
+        fprintf(stderr, "[DagCore] WARNING: no core clock range from NVML\n");
+    if (nvml_clock_bounds(1, &g_mem_lo, &g_mem_hi) != 0)
+        fprintf(stderr, "[DagCore] WARNING: no memory clock range from NVML\n");
+    g_core_boost = g_core_hi;
+    g_mem_boost  = g_mem_hi;
 
     g_control_ok = 1;
     snprintf(g_control_reason, sizeof(g_control_reason), "ok");
@@ -3356,17 +3405,20 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
      * the domain back to the driver. */
     {
         int which = -1;
-        const char *dom = NULL;
-        if (strncmp(req, "POST /api/core-clock", 20) == 0) { which = 0; dom = "gc"; }
-        else if (strncmp(req, "POST /api/mem-clock", 19) == 0) { which = 1; dom = "mc"; }
+        if (strncmp(req, "POST /api/core-clock", 20) == 0) which = 0;
+        else if (strncmp(req, "POST /api/mem-clock", 19) == 0) which = 1;
 
         if (which >= 0) {
-            int lo = which ? g_mem_lo : g_core_lo;
-            int hi = which ? g_mem_hi : g_core_hi;
+            /* Fresh bounds: an offset set a moment ago has already moved them. */
+            int lo = -1, hi = -1;
+            if (nvml_clock_bounds(which, &lo, &hi) == 0) {
+                if (which) { g_mem_lo = lo; g_mem_hi = hi; g_mem_boost = hi; }
+                else       { g_core_lo = lo; g_core_hi = hi; g_core_boost = hi; }
+            }
             char err[200] = "";
 
             if (json_is_true(body, "reset")) {
-                if (nvsmi_reset_clock(gpu_device, dom, err, sizeof(err)) != 0) {
+                if (nvml_unlock_clock(which, err, sizeof(err)) != 0) {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "nvidia-smi: %s", err);
                     http_send_err(cfd, 500, "Internal Server Error", msg);
@@ -3402,9 +3454,9 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
                 http_send_err(cfd, 400, "Bad Request", msg);
                 return;
             }
-            if (nvsmi_lock_clock(gpu_device, dom, (int)mhz, err, sizeof(err)) != 0) {
+            if (nvml_lock_clock(which, (int)mhz, err, sizeof(err)) != 0) {
                 char msg[256];
-                snprintf(msg, sizeof(msg), "nvidia-smi: %s", err);
+                snprintf(msg, sizeof(msg), "NVML: %s", err);
                 fprintf(stderr, "[DagCore] %s lock %ld MHz rejected: %s\n",
                         which ? "Memory clock" : "Core clock", mhz, err);
                 http_send_err(cfd, 500, "Internal Server Error", msg);
@@ -3428,14 +3480,16 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
      * too far shows up as rejected shares, not as a refusal. */
     {
         int which = -1, is_mem = 0, omin = 0, omax = 0;
-        if (strncmp(req, "POST /api/core-offset", 21) == 0) {
-            which = 2; is_mem = 0; omin = DT_CORE_OFF_MIN; omax = DT_CORE_OFF_MAX;
-        } else if (strncmp(req, "POST /api/mem-offset", 20) == 0) {
-            which = 3; is_mem = 1; omin = DT_MEM_OFF_MIN; omax = DT_MEM_OFF_MAX;
-        }
+        if (strncmp(req, "POST /api/core-offset", 21) == 0) { which = 2; is_mem = 0; }
+        else if (strncmp(req, "POST /api/mem-offset", 20) == 0) { which = 3; is_mem = 1; }
 
         if (which >= 0) {
             char err[200] = "";
+            /* The card states its own permitted offset range. */
+            if (nvml_offset_bounds(is_mem, &omin, &omax) != 0) {
+                http_send_err(cfd, 409, "Conflict", "NVML did not report an offset range");
+                return;
+            }
             long mhz;
             int reset = json_is_true(body, "reset");
             if (reset) mhz = 0;
@@ -3646,6 +3700,19 @@ static void *dagtech_metrics_thread(void *arg) {
             off_why = g_control_reason;
         }
 
+        /* An offset moves the table a lock was chosen from, but the card does
+         * not rescale an existing lock. Spot the mismatch here so the page can
+         * say so instead of showing two numbers that quietly disagree. */
+        int mem_shift = off_ok ? nvml_mem_shift() : 0;
+        int lock_stale = 0;
+        if (off_ok) {
+            int live = 0;
+            if (gpu_mem_clock > 0 && nvml_current_clock(1, &live) == 0 &&
+                live != gpu_mem_clock) lock_stale = 1;
+            if (gpu_core_clock > 0 && nvml_current_clock(0, &live) == 0 &&
+                live != gpu_core_clock) lock_stale = 1;
+        }
+
         /* Build JSON metrics response */
         pthread_mutex_lock(&stats_mtx);
         time_t uptime = time(NULL) - start_time;
@@ -3699,6 +3766,8 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"trial_memoff_status\":\"%s\","
             "\"trial_memoff_value\":%d,"
             "\"trial_memoff_remaining\":%d,"
+            "\"gpu_mem_clock_shift\":%d,"
+            "\"clock_lock_stale\":%s,"
             "\"control_available\":%s,"
             "\"control_reason\":\"%s\","
             "\"total_hashes\":%" DT_PRIu64 ","
@@ -3738,6 +3807,7 @@ static void *dagtech_metrics_thread(void *arg) {
             off_ok ? "true" : "false", off_why,
             g_trial[2].status, g_trial[2].value, trial_remaining_s(2),
             g_trial[3].status, g_trial[3].value, trial_remaining_s(3),
+            mem_shift, lock_stale ? "true" : "false",
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
             (unsigned long long)total_submitted,
@@ -4551,31 +4621,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Clock locks saved by a previous session (a trial that passed, or a value
-     * the operator put in config.env). A trial that never finished left
-     * nothing on disk, so it is simply not here. */
-    if (g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
-        char err[200] = "";
-        if (gpu_core_clock > 0) {
-            if (nvsmi_lock_clock(gpu_device, "gc", gpu_core_clock, err, sizeof(err)) != 0)
-                fprintf(stderr, "[DagCore] WARNING: could not lock core clock to %d MHz: %s\n",
-                        gpu_core_clock, err);
-            else
-                printf("[DagCore] Core clock locked to %d MHz\n", gpu_core_clock);
-        }
-        if (gpu_mem_clock > 0) {
-            if (nvsmi_lock_clock(gpu_device, "mc", gpu_mem_clock, err, sizeof(err)) != 0)
-                fprintf(stderr, "[DagCore] WARNING: could not lock memory clock to %d MHz: %s\n",
-                        gpu_mem_clock, err);
-            else
-                printf("[DagCore] Memory clock locked to %d MHz\n", gpu_mem_clock);
-        }
-    } else if (!g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
-        fprintf(stderr, "[DagCore] WARNING: clock locks ignored (%s)\n", g_control_reason);
-    }
-
-    /* Offsets saved by a previous session, same rule as the clock locks: only
-     * a value that passed its trial is on disk. */
+    /* Offsets first, then the locks. An offset moves the table of clocks a
+     * lock may use, so locking before offsetting would validate - and clamp -
+     * against the old table. */
     if (g_control_ok && (gpu_core_offset != DT_OFF_UNSET || gpu_mem_offset != DT_OFF_UNSET)) {
         char err[200] = "";
         if (gpu_core_offset != DT_OFF_UNSET) {
@@ -4592,6 +4640,30 @@ int main(int argc, char **argv) {
             else
                 printf("[DagCore] Memory clock offset %+d MHz\n", gpu_mem_offset);
         }
+    }
+
+
+    /* Clock locks saved by a previous session (a trial that passed, or a value
+     * the operator put in config.env). A trial that never finished left
+     * nothing on disk, so it is simply not here. */
+    if (g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
+        char err[200] = "";
+        if (gpu_core_clock > 0) {
+            if (nvml_lock_clock(0, gpu_core_clock, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not lock core clock to %d MHz: %s\n",
+                        gpu_core_clock, err);
+            else
+                printf("[DagCore] Core clock locked to %d MHz\n", gpu_core_clock);
+        }
+        if (gpu_mem_clock > 0) {
+            if (nvml_lock_clock(1, gpu_mem_clock, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not lock memory clock to %d MHz: %s\n",
+                        gpu_mem_clock, err);
+            else
+                printf("[DagCore] Memory clock locked to %d MHz\n", gpu_mem_clock);
+        }
+    } else if (!g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
+        fprintf(stderr, "[DagCore] WARNING: clock locks ignored (%s)\n", g_control_reason);
     }
 
     /* Start metrics server thread */
