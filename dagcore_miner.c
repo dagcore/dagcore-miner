@@ -123,6 +123,34 @@ static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle
 static volatile int running    = 1;
 static volatile int keep_alive = 1;  /* 0 = clean program exit; stays 1 across reconnects */
 static int  metrics_port       = 8881;  /* built-in metrics/dashboard endpoint */
+/* METRICS_BIND / --metrics-bind: interface the metrics + dashboard server binds.
+ * Loopback by default. Until this existed the server bound INADDR_ANY, so the
+ * endpoint - which serves wallet_full, pool, worker and hashrate with no
+ * authentication - was reachable from the whole LAN. Pass 0.0.0.0 to get the
+ * old behaviour back deliberately. */
+static char metrics_bind[64]   = "127.0.0.1";
+
+/* Validate a --metrics-bind / METRICS_BIND value: a dotted-quad IPv4 address on
+ * this host. Returns 0 and stores it, or -1 if inet_addr() refuses it. */
+static int metrics_parse_bind(const char *val) {
+    if (!val || !val[0]) return -1;
+    /* INADDR_NONE doubles as the error return, so 255.255.255.255 needs the
+     * explicit pass - binding it is useless, but rejecting it as "malformed"
+     * would be a lie. */
+    if (inet_addr(val) == INADDR_NONE && strcmp(val, "255.255.255.255") != 0) return -1;
+    strncpy(metrics_bind, val, sizeof(metrics_bind) - 1);
+    metrics_bind[sizeof(metrics_bind) - 1] = '\0';
+    return 0;
+}
+
+static void metrics_bind_reject(const char *val, const char *origin) {
+    fprintf(stderr,
+            "[DagCore] ERROR: invalid %s value \"%s\".\n"
+            "          Use an IPv4 address: 127.0.0.1 (default), 0.0.0.0 for the\n"
+            "          whole LAN, or the address of one interface.\n",
+            origin, val ? val : "");
+    exit(1);
+}
 static char dashboard_dir[512] = "";
 
 /* Detected host CPU, shown at startup and in the metrics JSON. */
@@ -2583,16 +2611,19 @@ static void *dagtech_metrics_thread(void *arg) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_addr.s_addr = inet_addr(metrics_bind);
     addr.sin_port = htons(metrics_port);
 
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "[DagCore] Metrics bind failed on port %d\n", metrics_port);
+        fprintf(stderr, "[DagCore] Metrics bind failed on %s:%d\n", metrics_bind, metrics_port);
         close(srv);
         return NULL;
     }
     listen(srv, 5);
-    printf("[DagCore] Metrics server on http://127.0.0.1:%d/metrics\n", metrics_port);
+    printf("[DagCore] Metrics server on http://%s:%d/metrics\n", metrics_bind, metrics_port);
+    if (strcmp(metrics_bind, "127.0.0.1") != 0)
+        printf("[DagCore] NOTE: metrics are reachable beyond localhost "
+               "(wallet and pool details are served unauthenticated)\n");
 
     while (keep_alive) {
         struct sockaddr_in client;
@@ -2781,6 +2812,8 @@ static void dagtech_usage(void) {
     printf("    --cpu-limit <n>        CPU usage limit percent per thread (1-100, default: 100)\n");
     printf("    --low-priority         Run at lowest CPU priority\n");
     printf("    --metrics-port <n>     Metrics HTTP port (default: %d)\n", metrics_port);
+    printf("    --metrics-bind <ip>    Interface for metrics/dashboard (default: %s;\n", metrics_bind);
+    printf("                             0.0.0.0 exposes them to the LAN)\n");
     printf("    --gpu                  Force enable GPU mining\n");
     printf("    --no-gpu               Disable GPU mining\n");
     printf("    --gpu-intensity <n|list>  GPU intensity per card: 80, 80,60 (default: 80)\n");
@@ -2796,8 +2829,8 @@ static void dagtech_usage(void) {
     printf("    --help                 Show this help\n");
     printf("\n");
     printf("  Config file keys: WALLET, POOL, PORT, THREADS, WORKER, CPU_LIMIT,\n");
-    printf("    GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE, GPU_PLATFORM, GPU_DEVICE,\n");
-    printf("    GPU_ALIGN\n");
+    printf("    METRICS_PORT, METRICS_BIND, GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE,\n");
+    printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN\n");
     printf("\n");
 }
 
@@ -2978,6 +3011,9 @@ static void dagtech_load_config(const char *path) {
         else if (strcmp(key, "CPU_LIMIT")    == 0) { cpu_limit = atoi(val); if (cpu_limit < 1) cpu_limit = 1; if (cpu_limit > 100) cpu_limit = 100; }
         else if (strcmp(key, "GPU_THROTTLE") == 0) { gpu_throttle = atoi(val); if (gpu_throttle < 1) gpu_throttle = 1; if (gpu_throttle > 100) gpu_throttle = 100; }
         else if (strcmp(key, "METRICS_PORT") == 0) metrics_port  = atoi(val);
+        else if (strcmp(key, "METRICS_BIND") == 0) {
+            if (metrics_parse_bind(val) != 0) metrics_bind_reject(val, "METRICS_BIND");
+        }
         else if (strcmp(key, "DASHBOARD_DIR")== 0) strncpy(dashboard_dir,val, sizeof(dashboard_dir)- 1);
         else if (strcmp(key, "GPU_ENABLED")  == 0) gpu_enabled   = atoi(val);
         else if (strcmp(key, "GPU_ALIGN")    == 0) {
@@ -3071,6 +3107,7 @@ static int dagtech_save_config(const char *path) {
     fprintf(f, "CPU_LIMIT=%d\n",     cpu_limit);
     fprintf(f, "GPU_THROTTLE=%d\n",  gpu_throttle);
     fprintf(f, "METRICS_PORT=%d\n",  metrics_port);
+    fprintf(f, "METRICS_BIND=%s\n",  metrics_bind);
     fprintf(f, "GPU_ENABLED=%d\n",   gpu_enabled);
     if (gpu_align > 0) fprintf(f, "GPU_ALIGN=%d\n", gpu_align);
     else               fprintf(f, "GPU_ALIGN=pow2\n");
@@ -3265,6 +3302,10 @@ int main(int argc, char **argv) {
             cpu_priority = 1;
         else if (strcmp(argv[i], "--metrics-port") == 0 && i + 1 < argc)
             metrics_port = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--metrics-bind") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (metrics_parse_bind(v) != 0) metrics_bind_reject(v, "--metrics-bind");
+        }
         else if (strcmp(argv[i], "--dashboard-dir") == 0 && i + 1 < argc)
             strncpy(dashboard_dir, argv[++i], sizeof(dashboard_dir) - 1);
         else if (strcmp(argv[i], "--gpu") == 0)
