@@ -218,7 +218,6 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
     </div>
     <div class="meta">
       <div class="item"><span class="k">Pool</span><span class="v" id="pool">&mdash;</span></div>
-      <div class="item"><span class="k">Worker</span><span class="v" id="worker">&mdash;</span></div>
       <div class="item"><span class="k">Wallet</span><span class="v" id="wallet">&mdash;</span></div>
       <div class="status" id="status"><span class="dot"></span><span id="statusText">connecting</span></div>
     </div>
@@ -540,7 +539,10 @@ function render(d){
 
   txt("version", "v" + (d.version || "?"));
   txt("pool", d.pool || "--");
-  txt("worker", d.worker || "--");
+  /* Worker is deliberately not shown: it is sent as the Stratum password
+   * field and the pool ignores it, so displaying it would suggest the name
+   * is in use somewhere. The value is still in /metrics for anything that
+   * wants it. */
   txt("wallet", d.wallet || "--");       /* abbreviated field, never wallet_full */
 
   /* shares */
