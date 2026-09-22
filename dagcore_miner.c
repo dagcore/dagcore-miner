@@ -1,6 +1,7 @@
 /*
  * DagTech GPU Miner - High Performance CPU+GPU Mining Engine
  * Copyright (c) 2024-2026 DagTech Ltd / Dawie Nel
+ * Portions Copyright (c) 2026 DagCore Community
  * https://dagtech.network
  *
  * Licensed under the MIT License.
@@ -15,7 +16,7 @@
  *
  * Author:  Dawie Nel <dawie@dagtech.network>
  * Project: DagTech Mining Suite
- * Version: GPU-2026.0628.1
+ * Version: DagCore 1.0.0 (derived from DagTech GPU-2026.0628.1)
  */
 
 #ifdef _WIN32
@@ -48,7 +49,7 @@
   #define DT_SHA256_Update(ctx, d, l)     SHA256_Update(ctx, d, l)
   #define DT_SHA256_Final(out, ctx)       SHA256_Final(out, ctx)
 #else
-  #include "dagtech_sha256.h"
+  #include "dagcore_sha256.h"
   #define DT_SHA256(data, len, out)       dagtech_sha256(data, len, out)
   #define DT_SHA256_CTX                   DAGTECH_SHA256_CTX
   #define DT_SHA256_Init(ctx)             dagtech_sha256_init(ctx)
@@ -94,10 +95,11 @@
 /* =========================================================================
  * DagTech GPU Miner Configuration
  * ========================================================================= */
-#define DAGTECH_VERSION       "GPU-2026.0628.1"
-#define DAGTECH_BANNER        "DagTech GPU Miner v" DAGTECH_VERSION " - dagtech.network"
+/* DagCore versioning restarts at 1.0.0; derived from DagTech GPU-2026.0628.1. */
+#define DAGTECH_VERSION       "1.0.0"
+#define DAGTECH_BANNER        "DagCore Miner v" DAGTECH_VERSION " - dagcore.net"
 #define DAGTECH_AUTHOR        "Dawie Nel / DagTech Ltd"
-#define DAGTECH_DEFAULT_POOL  "excalibur.dagtech.network"
+#define DAGTECH_DEFAULT_POOL  "stratum.dagcore.net"
 #define DAGTECH_DEFAULT_PORT  3334
 
 /* Scrypt parameters - fixed for this algorithm */
@@ -111,7 +113,7 @@
 static char pool_host[256]     = DAGTECH_DEFAULT_POOL;
 static int  pool_port          = DAGTECH_DEFAULT_PORT;
 static char wallet[128]        = "";
-static char worker_name[64]    = "dagtech";
+static char worker_name[64]    = "dagcore";
 static char password[32]       = "";
 static int  num_threads        = 0;  /* CPU mining threads: 0 = none (GPU-only, the
                                         default), <0 = auto-detect, N = exactly N */
@@ -524,7 +526,7 @@ static size_t gpu_fit_global_size(cl_device_id dev, size_t desired, int gpu_inde
     if (desired <= max_items) return desired;
 
     size_t fitted = max_items;
-    printf("[DagTech GPU] GPU %d: requested %zu work-items needs %.1f GB; device caps at "
+    printf("[DagCore GPU] GPU %d: requested %zu work-items needs %.1f GB; device caps at "
            "%.1f GB (max-alloc %.1f GB) -> clamping to %zu.\n",
            gpu_index, desired, (double)desired * per_item / (1024.0*1024.0*1024.0),
            (double)budget / (1024.0*1024.0*1024.0),
@@ -536,7 +538,7 @@ static size_t gpu_fit_global_size(cl_device_id dev, size_t desired, int gpu_inde
 static char *gpu_load_kernel_source(const char *exe_path, size_t *src_len) {
     char cl_path[1024];
 
-    /* Build path: replace binary name with dagtech_gpu.cl */
+    /* Build path: replace binary name with dagcore_gpu.cl */
     strncpy(cl_path, exe_path, sizeof(cl_path) - 1);
     cl_path[sizeof(cl_path) - 1] = '\0';
 
@@ -550,14 +552,14 @@ static char *gpu_load_kernel_source(const char *exe_path, size_t *src_len) {
 #endif
     if (sep) {
         *(sep + 1) = '\0';
-        strncat(cl_path, "dagtech_gpu.cl", sizeof(cl_path) - strlen(cl_path) - 1);
+        strncat(cl_path, "dagcore_gpu.cl", sizeof(cl_path) - strlen(cl_path) - 1);
     } else {
-        strncpy(cl_path, "dagtech_gpu.cl", sizeof(cl_path) - 1);
+        strncpy(cl_path, "dagcore_gpu.cl", sizeof(cl_path) - 1);
     }
 
     FILE *f = fopen(cl_path, "rb");
     if (!f) {
-        fprintf(stderr, "[DagTech GPU] ERROR: Cannot open kernel: %s\n", cl_path);
+        fprintf(stderr, "[DagCore GPU] ERROR: Cannot open kernel: %s\n", cl_path);
         return NULL;
     }
     fseek(f, 0, SEEK_END);
@@ -577,12 +579,12 @@ static void gpu_list_devices(void) {
     cl_uint num_platforms = 0;
     clGetPlatformIDs(0, NULL, &num_platforms);
     if (num_platforms == 0) {
-        printf("[DagTech GPU] No OpenCL platforms found.\n");
+        printf("[DagCore GPU] No OpenCL platforms found.\n");
         return;
     }
     cl_platform_id *platforms = (cl_platform_id *)malloc(num_platforms * sizeof(cl_platform_id));
     clGetPlatformIDs(num_platforms, platforms, NULL);
-    printf("[DagTech GPU] Detected OpenCL devices:\n");
+    printf("[DagCore GPU] Detected OpenCL devices:\n");
     for (cl_uint p = 0; p < num_platforms; p++) {
         cl_uint num_devices = 0;
         clGetDeviceIDs(platforms[p], CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
@@ -591,7 +593,7 @@ static void gpu_list_devices(void) {
             clGetDeviceIDs(platforms[p], CL_DEVICE_TYPE_GPU, d + 1, &dev, NULL);
             char name[256] = {0};
             clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(name), name, NULL);
-            printf("[DagTech GPU]   Platform %u Device %u: %s\n", p, d, name);
+            printf("[DagCore GPU]   Platform %u Device %u: %s\n", p, d, name);
         }
     }
     free(platforms);
@@ -607,7 +609,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     cl_uint num_devices = 0;
     clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
     if (num_devices == 0 || (cl_uint)device_idx >= num_devices) {
-        fprintf(stderr, "[DagTech GPU] Device %d not available on platform %d (only %u found).\n",
+        fprintf(stderr, "[DagCore GPU] Device %d not available on platform %d (only %u found).\n",
                 device_idx, platform_idx, num_devices);
         return -1;
     }
@@ -622,18 +624,18 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     ctx->ready        = 0;
 
     clGetDeviceInfo(ctx->device, CL_DEVICE_NAME, sizeof(ctx->name), ctx->name, NULL);
-    printf("[DagTech GPU] GPU %d: %s (platform %d, device %d)\n",
+    printf("[DagCore GPU] GPU %d: %s (platform %d, device %d)\n",
            gpu_index, ctx->name, platform_idx, device_idx);
 
     /* Per-GPU context and command queue */
     ctx->ctx = clCreateContext(NULL, 1, &ctx->device, NULL, NULL, &err);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "[DagTech GPU] clCreateContext failed (GPU %d): %d\n", gpu_index, err);
+        fprintf(stderr, "[DagCore GPU] clCreateContext failed (GPU %d): %d\n", gpu_index, err);
         return -1;
     }
     ctx->queue = clCreateCommandQueue(ctx->ctx, ctx->device, 0, &err);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "[DagTech GPU] clCreateCommandQueue failed (GPU %d): %d\n", gpu_index, err);
+        fprintf(stderr, "[DagCore GPU] clCreateCommandQueue failed (GPU %d): %d\n", gpu_index, err);
         clReleaseContext(ctx->ctx); ctx->ctx = NULL;
         return -1;
     }
@@ -641,7 +643,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     /* Compile kernel for this device */
     ctx->program = clCreateProgramWithSource(ctx->ctx, 1, &src, &src_len, &err);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "[DagTech GPU] clCreateProgramWithSource failed (GPU %d): %d\n", gpu_index, err);
+        fprintf(stderr, "[DagCore GPU] clCreateProgramWithSource failed (GPU %d): %d\n", gpu_index, err);
         clReleaseCommandQueue(ctx->queue); ctx->queue = NULL;
         clReleaseContext(ctx->ctx);        ctx->ctx   = NULL;
         return -1;
@@ -655,7 +657,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
             clGetProgramBuildInfo(ctx->program, ctx->device, CL_PROGRAM_BUILD_LOG,
                                   log_size, log, NULL);
             log[log_size] = '\0';
-            fprintf(stderr, "[DagTech GPU] Kernel build error (GPU %d):\n%s\n", gpu_index, log);
+            fprintf(stderr, "[DagCore GPU] Kernel build error (GPU %d):\n%s\n", gpu_index, log);
             free(log);
         }
         clReleaseProgram(ctx->program);    ctx->program = NULL;
@@ -665,7 +667,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     }
     ctx->kernel = clCreateKernel(ctx->program, "dagtech_search", &err);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "[DagTech GPU] clCreateKernel failed (GPU %d): %d\n", gpu_index, err);
+        fprintf(stderr, "[DagCore GPU] clCreateKernel failed (GPU %d): %d\n", gpu_index, err);
         clReleaseProgram(ctx->program);    ctx->program = NULL;
         clReleaseCommandQueue(ctx->queue); ctx->queue   = NULL;
         clReleaseContext(ctx->ctx);        ctx->ctx     = NULL;
@@ -678,11 +680,11 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     ctx->global_size = gpu_intensity_to_global_size(ctx->intensity);
     /* Clamp to what this device can actually allocate (VRAM + max-alloc cap). */
     ctx->global_size = gpu_fit_global_size(ctx->device, ctx->global_size, gpu_index);
-    printf("[DagTech GPU] GPU %d: global work size %zu (intensity %d)\n",
+    printf("[DagCore GPU] GPU %d: global work size %zu (intensity %d)\n",
            gpu_index, ctx->global_size, ctx->intensity);
 
     size_t v_bytes = ctx->global_size * 1024 * 32 * sizeof(cl_uint);
-    printf("[DagTech GPU] GPU %d: allocating V buffer %.1f MB\n",
+    printf("[DagCore GPU] GPU %d: allocating V buffer %.1f MB\n",
            gpu_index, v_bytes / (1024.0 * 1024.0));
     ctx->V_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE, v_bytes, NULL, &err);
     /* Belt-and-suspenders: if the driver still refuses (VRAM fragmented or in
@@ -693,7 +695,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
         while (err != CL_SUCCESS && ctx->global_size > ((size_t)1 << 12) && v_retries < 6) {
             ctx->global_size >>= 1;
             v_bytes = ctx->global_size * 1024 * 32 * sizeof(cl_uint);
-            printf("[DagTech GPU] GPU %d: V buffer alloc failed (err %d); retrying at "
+            printf("[DagCore GPU] GPU %d: V buffer alloc failed (err %d); retrying at "
                    "work size %zu (%.1f MB)\n",
                    gpu_index, err, ctx->global_size, v_bytes / (1024.0 * 1024.0));
             ctx->V_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE, v_bytes, NULL, &err);
@@ -701,8 +703,8 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
         }
     }
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "[DagTech GPU] V buffer failed (GPU %d, %zu bytes): %d\n"
-                        "[DagTech GPU] Try reducing --gpu-intensity.\n", gpu_index, v_bytes, err);
+        fprintf(stderr, "[DagCore GPU] V buffer failed (GPU %d, %zu bytes): %d\n"
+                        "[DagCore GPU] Try reducing --gpu-intensity.\n", gpu_index, v_bytes, err);
         clReleaseKernel(ctx->kernel);      ctx->kernel  = NULL;
         clReleaseProgram(ctx->program);    ctx->program = NULL;
         clReleaseCommandQueue(ctx->queue); ctx->queue   = NULL;
@@ -713,7 +715,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     /* Output buffer: [0]=best_nonce, [1]=found_count */
     ctx->output_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE, 2 * sizeof(cl_uint), NULL, &err);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "[DagTech GPU] Output buffer failed (GPU %d): %d\n", gpu_index, err);
+        fprintf(stderr, "[DagCore GPU] Output buffer failed (GPU %d): %d\n", gpu_index, err);
         clReleaseMemObject(ctx->V_buf);    ctx->V_buf   = NULL;
         clReleaseKernel(ctx->kernel);      ctx->kernel  = NULL;
         clReleaseProgram(ctx->program);    ctx->program = NULL;
@@ -760,7 +762,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
             ctx->kernel_romix = clCreateKernel(ctx->program, "dagtech_romix", &e2);
             ctx->kernel_post  = clCreateKernel(ctx->program, "dagtech_post",  &e3);
             if (e1 != CL_SUCCESS || e2 != CL_SUCCESS || e3 != CL_SUCCESS) {
-                fprintf(stderr, "[DagTech GPU] GPU %d: split-kernel create failed "
+                fprintf(stderr, "[DagCore GPU] GPU %d: split-kernel create failed "
                                 "(pre=%d romix=%d post=%d) — falling back to legacy.\n",
                                 gpu_index, e1, e2, e3);
                 if (ctx->kernel_pre)   { clReleaseKernel(ctx->kernel_pre);   ctx->kernel_pre   = NULL; }
@@ -771,19 +773,19 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
                 cl_int xerr = 0;
                 ctx->X_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE, x_bytes, NULL, &xerr);
                 if (xerr != CL_SUCCESS) {
-                    fprintf(stderr, "[DagTech GPU] GPU %d: X_buf alloc failed (err %d) "
+                    fprintf(stderr, "[DagCore GPU] GPU %d: X_buf alloc failed (err %d) "
                                     "— falling back to legacy.\n", gpu_index, xerr);
                     clReleaseKernel(ctx->kernel_pre);   ctx->kernel_pre   = NULL;
                     clReleaseKernel(ctx->kernel_romix); ctx->kernel_romix = NULL;
                     clReleaseKernel(ctx->kernel_post);  ctx->kernel_post  = NULL;
                 } else {
                     ctx->kernel_mode = 1;
-                    printf("[DagTech GPU] GPU %d: split-kernel mode (X_buf %.2f MB)\n",
+                    printf("[DagCore GPU] GPU %d: split-kernel mode (X_buf %.2f MB)\n",
                            gpu_index, x_bytes / (1024.0 * 1024.0));
                 }
             }
         } else {
-            printf("[DagTech GPU] GPU %d: legacy single-kernel mode (GPU_KERNEL_MODE=legacy)\n",
+            printf("[DagCore GPU] GPU %d: legacy single-kernel mode (GPU_KERNEL_MODE=legacy)\n",
                    gpu_index);
         }
 
@@ -792,7 +794,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
             cl_int ce = 0;
             ctx->kernel_romix_coop = clCreateKernel(ctx->program, "dagtech_romix_coop", &ce);
             if (ce != CL_SUCCESS || ctx->kernel_romix_coop == NULL) {
-                fprintf(stderr, "[DagTech GPU] GPU %d: coop kernel create failed (err %d) "
+                fprintf(stderr, "[DagCore GPU] GPU %d: coop kernel create failed (err %d) "
                                 "— staying in split mode.\n", gpu_index, ce);
                 ctx->kernel_romix_coop = NULL;
             } else {
@@ -809,7 +811,7 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
                 ctx->coop_local_size  = 32;
                 ctx->coop_local_bytes = (ctx->coop_local_size / 4) * 32 * sizeof(cl_uint);
                 ctx->kernel_mode = 2;
-                printf("[DagTech GPU] GPU %d: coop-kernel mode (4 threads/hash, lws=%zu, "
+                printf("[DagCore GPU] GPU %d: coop-kernel mode (4 threads/hash, lws=%zu, "
                        "local=%.1f KB/WG)\n",
                        gpu_index, ctx->coop_local_size,
                        ctx->coop_local_bytes / 1024.0);
@@ -832,11 +834,11 @@ static int gpu_init_all(const char *exe_path) {
     cl_uint num_platforms = 0;
     clGetPlatformIDs(0, NULL, &num_platforms);
     if (num_platforms == 0) {
-        fprintf(stderr, "[DagTech GPU] No OpenCL platforms found.\n");
+        fprintf(stderr, "[DagCore GPU] No OpenCL platforms found.\n");
         free(src); return -1;
     }
     if ((cl_uint)gpu_platform >= num_platforms) {
-        fprintf(stderr, "[DagTech GPU] Platform %d not available (only %u found).\n",
+        fprintf(stderr, "[DagCore GPU] Platform %d not available (only %u found).\n",
                 gpu_platform, num_platforms);
         free(src); return -1;
     }
@@ -849,7 +851,7 @@ static int gpu_init_all(const char *exe_path) {
     cl_uint num_devices = 0;
     clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
     if (num_devices == 0) {
-        fprintf(stderr, "[DagTech GPU] No GPU devices on platform %d.\n", gpu_platform);
+        fprintf(stderr, "[DagCore GPU] No GPU devices on platform %d.\n", gpu_platform);
         free(src); return -1;
     }
 
@@ -878,13 +880,13 @@ static int gpu_init_all(const char *exe_path) {
                          dev_list[i], g_num_gpus, src, src_len) == 0) {
             g_num_gpus++;
         } else {
-            fprintf(stderr, "[DagTech GPU] Skipping device %d (init failed).\n", dev_list[i]);
+            fprintf(stderr, "[DagCore GPU] Skipping device %d (init failed).\n", dev_list[i]);
         }
     }
 
     free(src);
     if (g_num_gpus == 0) return -1;
-    printf("[DagTech GPU] Initialised %d GPU(s) successfully.\n", g_num_gpus);
+    printf("[DagCore GPU] Initialised %d GPU(s) successfully.\n", g_num_gpus);
     return 0;
 }
 
@@ -1580,7 +1582,7 @@ static void *dagtech_gpu_thread(void *arg) {
     int gpu_idx = ctx->gpu_index;
 
     if (!ctx->ready) {
-        fprintf(stderr, "[DagTech GPU] GPU %d not ready, thread exiting.\n", gpu_idx);
+        fprintf(stderr, "[DagCore GPU] GPU %d not ready, thread exiting.\n", gpu_idx);
         return NULL;
     }
 
@@ -1622,13 +1624,13 @@ static void *dagtech_gpu_thread(void *arg) {
     uint32_t nonce_base   = 0x80000000u + (uint32_t)gpu_idx * (uint32_t)ctx->global_size;
     uint32_t nonce_stride = (uint32_t)g_num_gpus  * (uint32_t)ctx->global_size;
 
-    printf("[DagTech GPU] Worker %d started: %s (nonce base 0x%08x, stride 0x%x)\n",
+    printf("[DagCore GPU] Worker %d started: %s (nonce base 0x%08x, stride 0x%x)\n",
            gpu_idx, ctx->name, nonce_base, nonce_stride);
 
     /* Per-thread scratch buffer for CPU re-verification */
     uint32_t *V_cpu = (uint32_t *)malloc(SCRYPT_N * 128);
     if (!V_cpu) {
-        fprintf(stderr, "[DagTech GPU] Out of memory for CPU verify buffer (GPU %d).\n", gpu_idx);
+        fprintf(stderr, "[DagCore GPU] Out of memory for CPU verify buffer (GPU %d).\n", gpu_idx);
         return NULL;
     }
 
@@ -1768,7 +1770,7 @@ static void *dagtech_gpu_thread(void *arg) {
             if (err != CL_SUCCESS) {
                 kernel_errors++;
                 if (kernel_errors <= 3 || (kernel_errors % 50) == 0)
-                    fprintf(stderr, "[DagTech GPU] GPU %d kernel launch error: %d (count=%llu)\n",
+                    fprintf(stderr, "[DagCore GPU] GPU %d kernel launch error: %d (count=%llu)\n",
                             gpu_idx, err, (unsigned long long)kernel_errors);
                 usleep(500000);
                 break;
@@ -1785,7 +1787,7 @@ static void *dagtech_gpu_thread(void *arg) {
             if (werr != CL_SUCCESS) {
                 kernel_errors++;
                 if (kernel_errors <= 3 || (kernel_errors % 50) == 0)
-                    fprintf(stderr, "[DagTech GPU] GPU %d kernel did not complete "
+                    fprintf(stderr, "[DagCore GPU] GPU %d kernel did not complete "
                             "(clWaitForEvents=%d, count=%llu) - not counting batch. "
                             "Check driver timeout (TDR) or lower --gpu-intensity.\n",
                             gpu_idx, werr, (unsigned long long)kernel_errors);
@@ -1802,7 +1804,7 @@ static void *dagtech_gpu_thread(void *arg) {
             if (gpu_elapsed < 2) {
                 kernel_errors++;
                 if (kernel_errors <= 3 || (kernel_errors % 50) == 0)
-                    fprintf(stderr, "[DagTech GPU] GPU %d batch finished implausibly fast "
+                    fprintf(stderr, "[DagCore GPU] GPU %d batch finished implausibly fast "
                             "(%lld ms for %zu hashes, count=%llu) - kernel not doing real "
                             "work; not counting. Update GPU drivers / OpenCL runtime.\n",
                             gpu_idx, gpu_elapsed, ctx->global_size, (unsigned long long)kernel_errors);
@@ -1817,7 +1819,7 @@ static void *dagtech_gpu_thread(void *arg) {
             if (rerr != CL_SUCCESS) {
                 kernel_errors++;
                 if (kernel_errors <= 3 || (kernel_errors % 50) == 0)
-                    fprintf(stderr, "[DagTech GPU] GPU %d result read failed "
+                    fprintf(stderr, "[DagCore GPU] GPU %d result read failed "
                             "(clEnqueueReadBuffer=%d, count=%llu) - not counting batch.\n",
                             gpu_idx, rerr, (unsigned long long)kernel_errors);
                 usleep(500000);
@@ -1877,7 +1879,7 @@ static void *dagtech_gpu_thread(void *arg) {
                                         0xFFFFFFFFFFFFFFFFULL : (uint64_t)threshold_d;
 
                 if (hash_top64 <= threshold64) {
-                    printf("[DagTech GPU] ** SHARE FOUND ** GPU %d nonce=0x%08x\n",
+                    printf("[DagCore GPU] ** SHARE FOUND ** GPU %d nonce=0x%08x\n",
                            gpu_idx, cand_nonce);
 
                     /* Re-read job under lock before submitting */
@@ -1922,7 +1924,7 @@ static int dagtech_connect_pool(void) {
 
     int rc = getaddrinfo(pool_host, port_str, &hints, &res);
     if (rc != 0) {
-        fprintf(stderr, "[DagTech] DNS resolution failed for %s: %s\n",
+        fprintf(stderr, "[DagCore] DNS resolution failed for %s: %s\n",
                 pool_host, gai_strerror(rc));
         return -1;
     }
@@ -1937,7 +1939,7 @@ static int dagtech_connect_pool(void) {
     freeaddrinfo(res);
 
     if (sockfd < 0) {
-        fprintf(stderr, "[DagTech] Failed to connect to %s:%d\n", pool_host, pool_port);
+        fprintf(stderr, "[DagCore] Failed to connect to %s:%d\n", pool_host, pool_port);
         return -1;
     }
 
@@ -1950,7 +1952,7 @@ static int dagtech_connect_pool(void) {
     int nodelay = 1;
     if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY,
                    (const char *)&nodelay, sizeof(nodelay)) != 0)
-        fprintf(stderr, "[DagTech] WARNING: could not set TCP_NODELAY\n");
+        fprintf(stderr, "[DagCore] WARNING: could not set TCP_NODELAY\n");
 
     return 0;
 }
@@ -1966,7 +1968,7 @@ static void dagtech_send(const char *line) {
 static void dagtech_subscribe_authorize(void) {
     char buf[512];
     snprintf(buf, sizeof(buf),
-        "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"DagTech/" DAGTECH_VERSION "\"]}");
+        "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"DagCore/" DAGTECH_VERSION "\"]}");
     dagtech_send(buf);
 
     /* Pool requires a bare EVM address as the stratum username.
@@ -2011,14 +2013,14 @@ static void dagtech_parse_stratum(const char *line) {
                 strspn(strings[i], "0123456789abcdef") == 8) {
                 strncpy(extranonce1_global, strings[i],
                         sizeof(extranonce1_global) - 1);
-                printf("[DagTech] Subscribed - extranonce1=%s\n", extranonce1_global);
+                printf("[DagCore] Subscribed - extranonce1=%s\n", extranonce1_global);
                 break;
             }
         }
     }
     /* Authorize response — id:2, result:true, not a share accept */
     else if (strstr(line, "\"id\":2,") && strstr(line, "\"result\":true")) {
-        printf("[DagTech] Authorized\n");
+        printf("[DagCore] Authorized\n");
     }
     /* Difficulty update */
     else if (strstr(line, "mining.set_difficulty")) {
@@ -2032,7 +2034,7 @@ static void dagtech_parse_stratum(const char *line) {
                 if (current_job.valid)
                     current_job.difficulty = new_diff;
                 pthread_mutex_unlock(&job_mtx);
-                printf("[DagTech] Difficulty: %.8f\n", current_difficulty);
+                printf("[DagCore] Difficulty: %.8f\n", current_difficulty);
             }
         }
     }
@@ -2061,7 +2063,7 @@ static void dagtech_parse_stratum(const char *line) {
             strncpy(current_job.ntime,      strings[offset+4], sizeof(current_job.ntime) - 1);
             strncpy(current_job.extranonce1, extranonce1_global, sizeof(current_job.extranonce1) - 1);
             pthread_mutex_unlock(&job_mtx);
-            printf("[DagTech] New job: %s (diff %.8f)\n",
+            printf("[DagCore] New job: %s (diff %.8f)\n",
                    current_job.job_id, current_job.difficulty);
         }
     }
@@ -2083,7 +2085,7 @@ static void dagtech_parse_stratum(const char *line) {
         if (src == 1) gpu_accepted++;
         else if (src == 0) cpu_accepted++;
         pthread_mutex_unlock(&stats_mtx);
-        printf("[DagTech] Share ACCEPTED (%lu total | CPU:%lu GPU:%lu)\n",
+        printf("[DagCore] Share ACCEPTED (%lu total | CPU:%lu GPU:%lu)\n",
                (unsigned long)total_accepted,
                (unsigned long)cpu_accepted,
                (unsigned long)gpu_accepted);
@@ -2108,7 +2110,7 @@ static void dagtech_parse_stratum(const char *line) {
             total_stale++;
             if (src == 1) gpu_stale++;    else if (src == 0) cpu_stale++;
             pthread_mutex_unlock(&stats_mtx);
-            printf("[DagTech] Share stale (job expired) (%lu total stale)\n",
+            printf("[DagCore] Share stale (job expired) (%lu total stale)\n",
                    (unsigned long)total_stale);
         } else {
             total_rejected++;
@@ -2122,10 +2124,10 @@ static void dagtech_parse_stratum(const char *line) {
             if (is_lowdiff && auto_threshold) {
                 active_margin *= 1.05;
                 if (active_margin > 8.0) active_margin = 8.0;
-                printf("[DagTech] Low-difficulty reject -> submit margin now %.3f\n",
+                printf("[DagCore] Low-difficulty reject -> submit margin now %.3f\n",
                        active_margin);
             }
-            printf("[DagTech] Share REJECTED: %s\n", line);
+            printf("[DagCore] Share REJECTED: %s\n", line);
         }
     }
 }
@@ -2139,7 +2141,7 @@ static void *dagtech_recv_thread(void *arg) {
     while (running) {
         ssize_t n = recv(sockfd, buf, sizeof(buf) - 1, 0);
         if (n <= 0) {
-            if (running) printf("[DagTech] Pool connection lost\n");
+            if (running) printf("[DagCore] Pool connection lost\n");
             running = 0;
             break;
         }
@@ -2288,11 +2290,11 @@ static void *dagtech_mine_thread(void *arg) {
 
     uint32_t *V = (uint32_t *)malloc(SCRYPT_N * 128);
     if (!V) {
-        fprintf(stderr, "[DagTech] FATAL: Worker %d out of memory\n", tid);
+        fprintf(stderr, "[DagCore] FATAL: Worker %d out of memory\n", tid);
         return NULL;
     }
 
-    printf("[DagTech] CPU Worker %d started (nonce range 0x%08x)\n", tid, nonce);
+    printf("[DagCore] CPU Worker %d started (nonce range 0x%08x)\n", tid, nonce);
 
     while (running) {
         DagTechJob j;
@@ -2317,7 +2319,7 @@ static void *dagtech_mine_thread(void *arg) {
             local_hashes++;
 
             if (dagtech_check_target(hash, j.difficulty)) {
-                printf("[DagTech] ** SHARE FOUND ** CPU Worker %d, nonce=0x%08x\n", tid, nonce);
+                printf("[DagCore] ** SHARE FOUND ** CPU Worker %d, nonce=0x%08x\n", tid, nonce);
                 dagtech_submit_share(&j, nonce, 0);  /* CPU */
             }
 
@@ -2455,7 +2457,7 @@ static void *dagtech_metrics_thread(void *arg) {
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     #endif
     if (srv < 0) {
-        fprintf(stderr, "[DagTech] Metrics server failed to create socket\n");
+        fprintf(stderr, "[DagCore] Metrics server failed to create socket\n");
         return NULL;
     }
 
@@ -2469,12 +2471,12 @@ static void *dagtech_metrics_thread(void *arg) {
     addr.sin_port = htons(metrics_port);
 
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "[DagTech] Metrics bind failed on port %d\n", metrics_port);
+        fprintf(stderr, "[DagCore] Metrics bind failed on port %d\n", metrics_port);
         close(srv);
         return NULL;
     }
     listen(srv, 5);
-    printf("[DagTech] Metrics server on http://127.0.0.1:%d/metrics\n", metrics_port);
+    printf("[DagCore] Metrics server on http://127.0.0.1:%d/metrics\n", metrics_port);
 
     while (keep_alive) {
         struct sockaddr_in client;
@@ -2635,7 +2637,7 @@ static void *dagtech_metrics_thread(void *arg) {
  * ========================================================================= */
 static void dagtech_signal(int sig) {
     (void)sig;
-    printf("\n[DagTech] Shutting down...\n");
+    printf("\n[DagCore] Shutting down...\n");
     keep_alive = 0;
     running = 0;
 }
@@ -2647,7 +2649,7 @@ static void dagtech_usage(void) {
     printf("\n");
     printf("  %s\n", DAGTECH_BANNER);
     printf("  %s\n\n", DAGTECH_AUTHOR);
-    printf("  Usage: dagtech-gpu-miner [options]\n\n");
+    printf("  Usage: dagcore-miner [options]\n\n");
     printf("  Options:\n");
     printf("    --wallet <addr>        Your wallet address (REQUIRED)\n");
     printf("    --pool <host>          Pool hostname (default: %s)\n", DAGTECH_DEFAULT_POOL);
@@ -2907,7 +2909,7 @@ static void dagtech_load_config(const char *path) {
         }
     }
     fclose(f);
-    printf("[DagTech] Config loaded from %s\n", path);
+    printf("[DagCore] Config loaded from %s\n", path);
 }
 
 static int dagtech_save_config(const char *path) {
@@ -2915,12 +2917,12 @@ static int dagtech_save_config(const char *path) {
 
     FILE *f = fopen(path, "w");
     if (!f) {
-        fprintf(stderr, "[DagTech] ERROR: Cannot write config to %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "[DagCore] ERROR: Cannot write config to %s: %s\n", path, strerror(errno));
         return -1;
     }
 
     fprintf(f, "# DagTech GPU Miner configuration\n");
-    fprintf(f, "# Generated by dagtech-gpu-miner --save-config\n");
+    fprintf(f, "# Generated by dagcore-miner --save-config\n");
     fprintf(f, "# Edit manually or re-run with --save-config to update.\n\n");
 
     fprintf(f, "WALLET=%s\n",        wallet);
@@ -2959,7 +2961,7 @@ static int dagtech_save_config(const char *path) {
         fprintf(f, "DASHBOARD_DIR=%s\n", dashboard_dir);
 
     fclose(f);
-    printf("[DagTech] Config saved to %s\n", path);
+    printf("[DagCore] Config saved to %s\n", path);
     return 0;
 }
 
@@ -3191,7 +3193,7 @@ int main(int argc, char **argv) {
         printf("  %s\n", DAGTECH_BANNER);
         printf("  ============================================\n\n");
         if (wallet[0] == 0) {
-            fprintf(stderr, "[DagTech] ERROR: --wallet is required when saving config.\n");
+            fprintf(stderr, "[DagCore] ERROR: --wallet is required when saving config.\n");
             return 1;
         }
         return dagtech_save_config(config_path) == 0 ? 0 : 1;
@@ -3206,12 +3208,12 @@ int main(int argc, char **argv) {
 
     /* Validate wallet */
     if (wallet[0] == 0) {
-        fprintf(stderr, "[DagTech] ERROR: Wallet address is required!\n");
+        fprintf(stderr, "[DagCore] ERROR: Wallet address is required!\n");
         dagtech_usage();
         return 1;
     }
     if (strncmp(wallet, "0x", 2) != 0 || strlen(wallet) != 42) {
-        fprintf(stderr, "[DagTech] WARNING: Wallet format looks unusual (expected 0x + 40 hex chars)\n");
+        fprintf(stderr, "[DagCore] WARNING: Wallet format looks unusual (expected 0x + 40 hex chars)\n");
     }
 
     /* Detect CPU model + logical core count for display (matches installer). */
@@ -3235,15 +3237,15 @@ int main(int argc, char **argv) {
         #else
         nice(19);
         #endif
-        printf("[DagTech] Running at LOW CPU priority\n");
+        printf("[DagCore] Running at LOW CPU priority\n");
     }
 
-    printf("[DagTech] CPU:     %s\n", g_cpu_brand);
-    printf("[DagTech] Cores:   %d logical (CPU thread range 1-%d)\n", g_cpu_cores, g_cpu_cores);
-    printf("[DagTech] Wallet:  %s\n", wallet);
-    printf("[DagTech] Pool:    %s:%d\n", pool_host, pool_port);
-    printf("[DagTech] Threads: %d (CPU)\n", num_threads);
-    printf("[DagTech] Worker:  %s\n", worker_name);
+    printf("[DagCore] CPU:     %s\n", g_cpu_brand);
+    printf("[DagCore] Cores:   %d logical (CPU thread range 1-%d)\n", g_cpu_cores, g_cpu_cores);
+    printf("[DagCore] Wallet:  %s\n", wallet);
+    printf("[DagCore] Pool:    %s:%d\n", pool_host, pool_port);
+    printf("[DagCore] Threads: %d (CPU)\n", num_threads);
+    printf("[DagCore] Worker:  %s\n", worker_name);
 
 #ifdef DAGTECH_GPU
     /* List and initialize GPU */
@@ -3254,25 +3256,25 @@ int main(int argc, char **argv) {
         use_gpu = 1;
     } else if (gpu_enabled == 0) {
         use_gpu = 0;
-        printf("[DagTech GPU] GPU disabled by config/flag.\n");
+        printf("[DagCore GPU] GPU disabled by config/flag.\n");
     } else {
         /* auto: try to init GPU */
         use_gpu = 1;
-        printf("[DagTech GPU] Auto-detecting GPU (use --no-gpu to disable)...\n");
+        printf("[DagCore GPU] Auto-detecting GPU (use --no-gpu to disable)...\n");
     }
 
     if (use_gpu) {
         if (gpu_init_all(argv[0]) == 0) {
             gpu_enabled = 1;
-            printf("[DagTech GPU] Intensity: %d | Platform: %d | GPUs active: %d\n",
+            printf("[DagCore GPU] Intensity: %d | Platform: %d | GPUs active: %d\n",
                    gpu_intensity, gpu_platform, g_num_gpus);
         } else {
-            fprintf(stderr, "[DagTech GPU] GPU init failed - running CPU only.\n");
+            fprintf(stderr, "[DagCore GPU] GPU init failed - running CPU only.\n");
             gpu_enabled = 0;
         }
     }
 #else
-    printf("[DagTech] Built without GPU support (no -DDAGTECH_GPU).\n");
+    printf("[DagCore] Built without GPU support (no -DDAGTECH_GPU).\n");
     gpu_enabled = 0;
 #endif
 
@@ -3303,13 +3305,13 @@ int main(int argc, char **argv) {
         }
 #endif
 
-        printf("[DagTech] Connecting to pool %s:%d...\n", pool_host, pool_port);
+        printf("[DagCore] Connecting to pool %s:%d...\n", pool_host, pool_port);
         if (dagtech_connect_pool() < 0) {
-            fprintf(stderr, "[DagTech] Cannot connect - retrying in 10s\n");
+            fprintf(stderr, "[DagCore] Cannot connect - retrying in 10s\n");
             sleep(10);
             continue;
         }
-        printf("[DagTech] Connected!\n");
+        printf("[DagCore] Connected!\n");
         dagtech_subscribe_authorize();
 
         /* Start receiver thread */
@@ -3317,12 +3319,12 @@ int main(int argc, char **argv) {
         pthread_create(&recv_tid, NULL, dagtech_recv_thread, NULL);
 
         /* Wait for first job */
-        printf("[DagTech] Waiting for work from pool...\n");
+        printf("[DagCore] Waiting for work from pool...\n");
         for (int i = 0; i < 100 && running && !current_job.valid; i++)
             usleep(100000);
 
         if (!current_job.valid) {
-            fprintf(stderr, "[DagTech] No job received - will retry in 10s\n");
+            fprintf(stderr, "[DagCore] No job received - will retry in 10s\n");
             running = 0;
             pthread_join(recv_tid, NULL);
             close(sockfd);
@@ -3359,7 +3361,7 @@ int main(int argc, char **argv) {
             if (gpu_enabled == 1)
                 snprintf(_gs, sizeof(_gs), "%d active", g_num_gpus);
 #endif
-            printf("[DagTech] Mining started! CPU workers: %d | GPU: %s\n\n",
+            printf("[DagCore] Mining started! CPU workers: %d | GPU: %s\n\n",
                    num_threads, _gs);
         }
 
@@ -3419,7 +3421,7 @@ int main(int argc, char **argv) {
                                      _gi, g_gpus[_gi].hashrate);
                             strncat(_gd, _t, sizeof(_gd) - strlen(_gd) - 1);
                         }
-                        printf("[DagTech] %.2f H/s | CPU: %.2f H/s%s | "
+                        printf("[DagCore] %.2f H/s | CPU: %.2f H/s%s | "
                                "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
                                " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
                                current_hashrate, cpu_hashrate, _gd,
@@ -3432,7 +3434,7 @@ int main(int argc, char **argv) {
                     } else
 #endif
                     {
-                    printf("[DagTech] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
+                    printf("[DagCore] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
                            " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
@@ -3444,7 +3446,7 @@ int main(int argc, char **argv) {
                            up_h, up_m);
                     }
                 } else {
-                    printf("[DagTech] %.1f H/s | "
+                    printf("[DagCore] %.1f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
                            " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
                            current_hashrate,
@@ -3474,7 +3476,7 @@ int main(int argc, char **argv) {
         close(sockfd);
 
         if (keep_alive) {
-            printf("[DagTech] Reconnecting in 10s...\n");
+            printf("[DagCore] Reconnecting in 10s...\n");
             sleep(10);
         }
     }
@@ -3488,7 +3490,7 @@ int main(int argc, char **argv) {
     WSACleanup();
     #endif
 
-    printf("[DagTech] Shutdown complete. Total hashes: %" DT_PRIu64 "\n",
+    printf("[DagCore] Shutdown complete. Total hashes: %" DT_PRIu64 "\n",
            (unsigned long long)total_hashes);
     return 0;
 }

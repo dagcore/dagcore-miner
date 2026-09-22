@@ -1,6 +1,7 @@
 /*
  * DagTech SHA-256 Implementation
  * Copyright (c) 2024-2026 DagTech Ltd / Dawie Nel
+ * Portions Copyright (c) 2026 DagCore Community
  *
  * Standalone SHA-256 implementation for portability.
  * Used when OpenSSL is not available on the build system.
