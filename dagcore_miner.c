@@ -3581,38 +3581,35 @@ int main(int argc, char **argv) {
                         }
                         printf("[DagCore] %.2f H/s | CPU: %.2f H/s%s | "
                                "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                               " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
+                               " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
                                current_hashrate, cpu_hashrate, _gd,
                                (unsigned long long)total_submitted,
                                (unsigned long long)total_accepted,
                                (unsigned long long)total_rejected,
                                (unsigned long long)total_stale,
-                               (unsigned long long)rate_limited_shares,
                                up_h, up_m);
                     } else
 #endif
                     {
                     printf("[DagCore] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                           " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
+                           " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
                            (unsigned long long)total_submitted,
                            (unsigned long long)total_accepted,
                            (unsigned long long)total_rejected,
                            (unsigned long long)total_stale,
-                           (unsigned long long)rate_limited_shares,
                            up_h, up_m);
                     }
                 } else {
                     printf("[DagCore] %.1f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                           " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
+                           " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
                            current_hashrate,
                            (unsigned long long)total_submitted,
                            (unsigned long long)total_accepted,
                            (unsigned long long)total_rejected,
                            (unsigned long long)total_stale,
-                           (unsigned long long)rate_limited_shares,
                            up_h, up_m);
                 }
 
