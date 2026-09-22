@@ -214,6 +214,23 @@ details.adv > summary::before{content:"\25B8";font-size:11px;transition:transfor
 details.adv[open] > summary::before{transform:rotate(90deg)}
 details.adv > summary:hover{color:var(--text-2)}
 .adv-note{font-size:12px;color:var(--muted-2);line-height:1.6;margin:2px 0 2px}
+
+/* Trial banner: the one thing in Settings that must not be missed. */
+#trialBar{border-radius:var(--radius);padding:14px 16px;margin:0 0 16px;
+  border:1px solid rgba(255,171,46,.45);background:rgba(255,171,46,.10)}
+#trialBar .row1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#trialBar .dot{width:9px;height:9px;border-radius:50%;background:var(--mine);
+  flex:0 0 auto;animation:pulse 1.4s ease-in-out infinite}
+#trialBar .title{font-weight:700;font-size:14px;color:var(--mine);flex:1 1 auto;min-width:0}
+#trialBar .sub{font-size:12.5px;color:var(--muted);margin-top:7px;line-height:1.6}
+#trialBar .rej{font-weight:700}
+#trialBar button{width:auto;min-width:112px;flex:0 0 auto}
+#trialBar.done{border-color:rgba(63,224,138,.5);background:rgba(63,224,138,.10)}
+#trialBar.done .title{color:var(--ok)} #trialBar.done .dot{background:var(--ok);animation:none}
+#trialBar.bad{border-color:rgba(244,162,156,.5);background:rgba(244,162,156,.10)}
+#trialBar.bad .title{color:var(--bad)} #trialBar.bad .dot{background:var(--bad);animation:none}
+#trialBar .rej.hot{color:var(--bad)}
+.locked-note{font-size:12px;color:var(--warn);margin-top:6px}
 #restartOverlay{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   background:rgba(255,171,46,.10);border:1px solid rgba(255,171,46,.45);
   color:var(--mine);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
@@ -383,6 +400,15 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
   <section class="card" style="margin-bottom:14px">
     <h2>Settings</h2>
+    <div id="trialBar" hidden>
+      <span class="row1">
+        <span class="dot"></span>
+        <span class="title" id="trialTitle">&mdash;</span>
+        <button class="ghost" id="trialCancel" type="button">Cancel test</button>
+      </span>
+      <div class="sub" id="trialSub">&mdash;</div>
+    </div>
+
     <p class="set-help">Change one setting at a time. Clock changes are tested for
     10 minutes before being saved; if the card becomes unstable, the previous
     value comes back automatically.</p>
@@ -407,7 +433,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <div class="set-row" id="memoffRow" hidden>
       <span class="lab"><b>Memory offset</b><small class="range" id="memoffRange">&mdash;</small>
-        <span class="trial" id="memoffTrial" hidden><i></i><span></span></span></span>
+        <span class="trial" id="memoffTrial" hidden><i></i><span></span></span>
+        <span class="locked-note" id="memoffLocked" hidden>Locked while another test is running.</span></span>
       <span class="set-ctl">
         <input type="range" id="memoffSlider" min="-2000" max="4000" step="50" value="0" disabled>
         <input type="number" id="memoffNum" min="-2000" max="4000" step="50" disabled>
@@ -434,7 +461,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <div class="set-row" id="coreRow" hidden>
       <span class="lab"><b>Core clock</b><small class="range" id="coreRange">&mdash;</small>
-        <span class="trial" id="coreTrial" hidden><i></i><span></span></span></span>
+        <span class="trial" id="coreTrial" hidden><i></i><span></span></span>
+        <span class="locked-note" id="coreLocked" hidden>Locked while another test is running.</span></span>
       <span class="set-ctl">
         <input type="range" id="coreSlider" min="0" max="100" value="0" disabled>
         <input type="number" id="coreNum" disabled>
@@ -445,7 +473,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <div class="set-row" id="memRow" hidden>
       <span class="lab"><b>Memory clock</b><small class="range" id="memRange">&mdash;</small>
-        <span class="trial" id="memTrial" hidden><i></i><span></span></span></span>
+        <span class="trial" id="memTrial" hidden><i></i><span></span></span>
+        <span class="locked-note" id="memLocked" hidden>Locked while another test is running.</span></span>
       <span class="set-ctl">
         <input type="range" id="memSlider" min="0" max="100" value="0" disabled>
         <input type="number" id="memNum" disabled>
@@ -456,7 +485,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <div class="set-row" id="coreoffRow" hidden>
       <span class="lab"><b>Core offset</b><small class="range" id="coreoffRange">&mdash;</small>
-        <span class="trial" id="coreoffTrial" hidden><i></i><span></span></span></span>
+        <span class="trial" id="coreoffTrial" hidden><i></i><span></span></span>
+        <span class="locked-note" id="coreoffLocked" hidden>Locked while another test is running.</span></span>
       <span class="set-ctl">
         <input type="range" id="coreoffSlider" min="-1000" max="1500" step="15" value="0" disabled>
         <input type="number" id="coreoffNum" min="-1000" max="1500" step="15" disabled>
@@ -883,6 +913,7 @@ function syncSettings(d){
     r.min = n2.min = d.gpu_power_min; r.max = n2.max = d.gpu_power_max;
     if (!plTouched && d.gpu_power_limit > 0){ r.value = d.gpu_power_limit; n2.value = d.gpu_power_limit; }
   }
+  renderTrialBar(d);
   syncClock(d, "core", "gpu_core_clock", "trial_core");
   syncClock(d, "mem",  "gpu_mem_clock",  "trial_mem");
   syncOffset(d, "coreoff", "gpu_core_offset", "trial_coreoff");
@@ -891,6 +922,8 @@ function syncSettings(d){
   /* A new offset moves the table a lock was picked from, and the card does not
    * rescale the lock. Two numbers that quietly disagree are worse than a
    * warning that says which one to re-apply. */
+  applyTrialLock();
+
   var sw = $("staleWarn");
   if (d.clock_lock_stale === true){
     sw.hidden = false;
@@ -1028,6 +1061,101 @@ function syncOffset(d, id, field, trialBase){
   box.getElementsByTagName("span")[0].textContent = label;
 }
 
+/* The trial banner owns the whole Settings card while a test runs: it names
+ * the value under test, counts down, shows the rejected shares that decide the
+ * verdict, and offers the way out. Everything else clock-related is locked so
+ * a second change cannot muddy the measurement. */
+var TRIAL_ROWS = [
+  { id: "core",    key: "trial_core",    domain: "core-clock",  label: "core clock",    unit: " MHz" },
+  { id: "mem",     key: "trial_mem",     domain: "mem-clock",   label: "memory clock",  unit: " MHz" },
+  { id: "coreoff", key: "trial_coreoff", domain: "core-offset", label: "core offset",   unit: " MHz" },
+  { id: "memoff",  key: "trial_memoff",  domain: "mem-offset",  label: "memory offset", unit: " MHz" }
+];
+var trialLockedIds = [];
+var activeTrial = null;      /* the row object whose test is running */
+var lastVerdict = null;      /* {row, status, value, prev, rejected} until dismissed */
+
+function signed(v){ return (v >= 0 ? "+" : "") + v; }
+
+function trialRowValue(row, d, suffix){
+  var v = d[row.key + suffix];
+  return (typeof v === "number") ? v : 0;
+}
+
+function renderTrialBar(d){
+  var bar = $("trialBar"), i, running = null, verdict = null;
+  for (i = 0; i < TRIAL_ROWS.length; i++){
+    var r = TRIAL_ROWS[i], st = d[r.key + "_status"];
+    if (st === "running") running = r;
+    else if ((st === "saved" || st === "failed") && !verdict) verdict = { row: r, st: st };
+  }
+  activeTrial = running;
+
+  if (running){
+    lastVerdict = null;
+    var val = trialRowValue(running, d, "_value");
+    var rem = trialRowValue(running, d, "_remaining");
+    var rej = trialRowValue(running, d, "_rejected");
+    var mins = Math.max(0, Math.ceil(rem / 60));
+    bar.hidden = false;
+    bar.className = "";
+    $("trialCancel").hidden = false;
+    txt("trialTitle", "Testing " + signed(val) + running.unit + " " + running.label +
+                      " \u2014 " + mins + " min left");
+    $("trialSub").innerHTML =
+      "Watch rejected shares. Other clock settings are locked until the test ends."
+      + "<br>Rejected so far: <span class=\"rej" + (rej > 0 ? " hot" : "") + "\">"
+      + rej + "</span>";
+    return;
+  }
+
+  if (verdict && (!lastVerdict || lastVerdict.row !== verdict.row || lastVerdict.st !== verdict.st))
+    lastVerdict = { row: verdict.row, st: verdict.st,
+                    value: trialRowValue(verdict.row, d, "_value"),
+                    prev: trialRowValue(verdict.row, d, "_prev"),
+                    rejected: trialRowValue(verdict.row, d, "_rejected") };
+
+  if (lastVerdict){
+    bar.hidden = false;
+    bar.className = lastVerdict.st === "saved" ? "done" : "bad";
+    $("trialCancel").hidden = true;
+    if (lastVerdict.st === "saved"){
+      txt("trialTitle", "Test passed \u2014 " + signed(lastVerdict.value) + " saved");
+      txt("trialSub", "The value is now applied on every start.");
+    } else {
+      txt("trialTitle", "Test failed \u2014 rejected shares appeared, reverted to " +
+                        signed(lastVerdict.prev));
+      txt("trialSub", lastVerdict.rejected + " rejected share" +
+          (lastVerdict.rejected === 1 ? "" : "s") + " during the test. " +
+          "The previous value is back; nothing was saved.");
+    }
+    return;
+  }
+  bar.hidden = true;
+}
+
+/* While a test runs, every other clock control is off - with the reason on the
+ * row, not buried in a tooltip. */
+function applyTrialLock(){
+  var i, r;
+  for (i = 0; i < TRIAL_ROWS.length; i++){
+    r = TRIAL_ROWS[i];
+    var lock = activeTrial && activeTrial.id !== r.id;
+    var ids = [r.id + "Slider", r.id + "Num", r.id + "Apply", r.id + "Default"];
+    for (var k = 0; k < ids.length; k++){
+      var e = $(ids[k]);
+      if (e && lock) e.disabled = true;
+    }
+    if (lock) applyWanted[r.id] = undefined;
+    var note = $(r.id + "Locked");
+    if (note) note.hidden = !lock;
+  }
+  /* Adopt writes four keys at once; that is exactly the parallel change a
+   * running test must not see. */
+  var ab = $("adoptBtn");
+  if (ab && activeTrial) ab.disabled = true;
+}
+
 function restartBanner(cls, text, detail){
   var o = $("restartOverlay");
   o.hidden = false;
@@ -1122,6 +1250,19 @@ wireClock("memoff",  "api/mem-offset",  "memory offset");
 
 /* Adopt writes straight to overrides.env - no trial - so it says exactly what
  * it stored rather than a bare "done". */
+$("trialCancel").addEventListener("click", function(){
+  if (!activeTrial) return;
+  var row = activeTrial;
+  note("Cancelling the test\u2026", "busy", 15000);
+  post("api/cancel-trial", { domain: row.domain }, function(st, d){
+    if (st === 200 && d && d.ok)
+      note("Test cancelled \u2014 " + row.label + " back to " +
+           signed(d.reverted_to) + ".", "ok", 10000);
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
+  });
+});
+
 $("adoptBtn").addEventListener("click", function(){
   var pick = { core: $("adoptCore").checked, mem: $("adoptMem").checked };
   note("Reading the card\u2019s current state\u2026", "busy", 15000);
@@ -1200,7 +1341,9 @@ $("plApply").addEventListener("click", function(){
   post("api/power-limit", { watts: w }, function(st, d){
     plTouched = false;
     if (st === 200 && d && d.ok){
-      note("Applied " + d.applied + " W, verifying\u2026", "busy", 15000);
+      note("Applied " + d.applied + " W, verifying\u2026" +
+           (d.tests_restarted ? " The running test restarted from zero \u2014 the " +
+            "power cap changes what it was measuring." : ""), "busy", 15000);
       verifyPowerLimit(d.applied, d.saved === true, 0);
     }
     else if (st === 401) note("Rejected: invalid token.", "err", 8000);
