@@ -2752,14 +2752,133 @@ static int nvsmi_set_power_limit(int idx, int watts, char *err, size_t err_size)
     return 0;
 }
 
-/* Only these two keys may ever be written by the API. Anything else - wallet,
+/* Lock a clock domain. -lgc/-lmc take min,max; the same value twice pins it.
+ * "gc" = graphics, "mc" = memory. */
+static int nvsmi_lock_clock(int idx, const char *dom, int mhz, char *err, size_t err_size) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %d -l%s %d,%d 2>&1", idx, dom, mhz, mhz);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) { snprintf(err, err_size, "cannot run nvidia-smi"); return -1; }
+    char line[256], last[256] = "";
+    while (fgets(line, sizeof(line), fp)) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
+        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
+    }
+    if (pclose(fp) != 0) {
+        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
+        return -1;
+    }
+    return 0;
+}
+
+/* Hand the domain back to the driver's own management (-rgc / -rmc). */
+static int nvsmi_reset_clock(int idx, const char *dom, char *err, size_t err_size) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %d -r%s 2>&1", idx, dom);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) { snprintf(err, err_size, "cannot run nvidia-smi"); return -1; }
+    char line[256], last[256] = "";
+    while (fgets(line, sizeof(line), fp)) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
+        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
+    }
+    if (pclose(fp) != 0) {
+        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
+        return -1;
+    }
+    return 0;
+}
+
+/* Defined below, next to the rest of the override handling. */
+static int overrides_set(const char *key, const char *value);
+
+/* ---- Clock trial (#47) --------------------------------------------------
+ * A clock lock is applied live but NOT persisted straight away. It has to
+ * survive ten minutes without the rejected-share counter moving before it is
+ * written to overrides.env. Until then a crash, a hang or any restart brings
+ * the card back to the last setting that actually proved itself, because
+ * nothing on disk mentions the new one.
+ *
+ * Core and memory each get their own trial, so tuning one does not silently
+ * discard the other's probation. A reset is saved immediately: returning to
+ * the driver's own management is the safe direction and needs no proof. */
+#define TRIAL_MS (10 * 60 * 1000)
+typedef struct {
+    int      active;
+    int      value;              /* MHz under test */
+    uint64_t start_ms;
+    uint64_t rejected_at_start;
+    char     status[16];         /* none | running | saved | failed */
+} ClockTrial;
+static ClockTrial g_trial[2] = { {0,0,0,0,"none"}, {0,0,0,0,"none"} };  /* [0] core, [1] mem */
+static const char *TRIAL_KEY[2] = { "GPU_CORE_CLOCK", "GPU_MEM_CLOCK" };
+
+static void trial_start(int which, int mhz) {
+    g_trial[which].active = 1;
+    g_trial[which].value = mhz;
+    g_trial[which].start_ms = dagtech_now_ms();
+    pthread_mutex_lock(&stats_mtx);
+    g_trial[which].rejected_at_start = total_rejected;
+    pthread_mutex_unlock(&stats_mtx);
+    snprintf(g_trial[which].status, sizeof(g_trial[which].status), "running");
+}
+
+static int trial_remaining_s(int which) {
+    if (!g_trial[which].active) return 0;
+    uint64_t gone = dagtech_now_ms() - g_trial[which].start_ms;
+    if (gone >= TRIAL_MS) return 0;
+    return (int)((TRIAL_MS - gone) / 1000);
+}
+
+/* Called once a second from the statistics loop. */
+static void trial_tick(void) {
+    for (int i = 0; i < 2; i++) {
+        if (!g_trial[i].active) continue;
+        pthread_mutex_lock(&stats_mtx);
+        uint64_t rej = total_rejected;
+        pthread_mutex_unlock(&stats_mtx);
+
+        if (rej != g_trial[i].rejected_at_start) {
+            g_trial[i].active = 0;
+            snprintf(g_trial[i].status, sizeof(g_trial[i].status), "failed");
+            fprintf(stderr, "[DagCore] Clock trial FAILED: rejected shares went %"
+                    DT_PRIu64 " -> %" DT_PRIu64 "; %s=%d not saved (still applied - "
+                    "reset it or restart to drop it)\n",
+                    (unsigned long long)g_trial[i].rejected_at_start,
+                    (unsigned long long)rej, TRIAL_KEY[i], g_trial[i].value);
+            continue;
+        }
+        if (dagtech_now_ms() - g_trial[i].start_ms < TRIAL_MS) continue;
+
+        char val[16];
+        snprintf(val, sizeof(val), "%d", g_trial[i].value);
+        if (overrides_set(TRIAL_KEY[i], val) == 0) {
+            snprintf(g_trial[i].status, sizeof(g_trial[i].status), "saved");
+            printf("[DagCore] Clock trial passed: %s=%d saved after 10 min with no new rejects\n",
+                   TRIAL_KEY[i], g_trial[i].value);
+        } else {
+            snprintf(g_trial[i].status, sizeof(g_trial[i].status), "failed");
+            fprintf(stderr, "[DagCore] Clock trial passed but overrides could not be written\n");
+        }
+        g_trial[i].active = 0;
+    }
+}
+
+/* Only these keys may ever be written by the API. Anything else - wallet,
  * pool, metrics bind - stays the operator's to set in config.env. */
 static int overrides_key_allowed(const char *key) {
-    return strcmp(key, "GPU_POWER_LIMIT") == 0 || strcmp(key, "GPU_INTENSITY") == 0;
+    return strcmp(key, "GPU_POWER_LIMIT") == 0 ||
+           strcmp(key, "GPU_INTENSITY")   == 0 ||
+           strcmp(key, "GPU_CORE_CLOCK")  == 0 ||
+           strcmp(key, "GPU_MEM_CLOCK")   == 0;
 }
 
 static void overrides_apply(const char *key, const char *val) {
     if (strcmp(key, "GPU_POWER_LIMIT") == 0) gpu_power_limit = atoi(val);
+    else if (strcmp(key, "GPU_CORE_CLOCK") == 0) gpu_core_clock = atoi(val);
+    else if (strcmp(key, "GPU_MEM_CLOCK")  == 0) gpu_mem_clock  = atoi(val);
     else if (strcmp(key, "GPU_INTENSITY") == 0) {
         int v = atoi(val);
         if (v >= 0 && v <= 100) { gpu_intensity = v; gpu_intensity_count = 0; }
@@ -2968,6 +3087,20 @@ static int json_get_int(const char *body, const char *key, long *out) {
     return 0;
 }
 
+/* True when the body carries "<key>": true. The bodies this API accepts are
+ * one key and one value, so this is enough. */
+static int json_is_true(const char *body, const char *key) {
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(body, pat);
+    if (!p) return 0;
+    p = strchr(p + strlen(pat), ':');
+    if (!p) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    return strncmp(p, "true", 4) == 0;
+}
+
 /* Case-insensitive header lookup; copies the value into out. */
 static int http_header(const char *req, const char *name, char *out, size_t out_size) {
     size_t nl = strlen(name);
@@ -3085,6 +3218,77 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
         }
         return;
+    }
+
+    /* Clock endpoints. Both take {"mhz":N} to lock, or {"reset":true} to hand
+     * the domain back to the driver. */
+    {
+        int which = -1;
+        const char *dom = NULL;
+        if (strncmp(req, "POST /api/core-clock", 20) == 0) { which = 0; dom = "gc"; }
+        else if (strncmp(req, "POST /api/mem-clock", 19) == 0) { which = 1; dom = "mc"; }
+
+        if (which >= 0) {
+            int lo = which ? g_mem_lo : g_core_lo;
+            int hi = which ? g_mem_hi : g_core_hi;
+            char err[200] = "";
+
+            if (json_is_true(body, "reset")) {
+                if (nvsmi_reset_clock(gpu_device, dom, err, sizeof(err)) != 0) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "nvidia-smi: %s", err);
+                    http_send_err(cfd, 500, "Internal Server Error", msg);
+                    return;
+                }
+                if (which) gpu_mem_clock = 0; else gpu_core_clock = 0;
+                g_trial[which].active = 0;
+                snprintf(g_trial[which].status, sizeof(g_trial[which].status), "none");
+                /* A reset is saved at once: it is the safe direction. */
+                int saved = (overrides_set(TRIAL_KEY[which], "0") == 0);
+                printf("[DagCore] %s reset to driver default via control API%s\n",
+                       which ? "Memory clock" : "Core clock", saved ? "" : " (NOT saved)");
+                char resp[128];
+                snprintf(resp, sizeof(resp),
+                         "{\"ok\":true,\"reset\":true,\"saved\":%s}", saved ? "true" : "false");
+                http_send_json(cfd, 200, "OK", resp);
+                return;
+            }
+
+            long mhz;
+            if (json_get_int(body, "mhz", &mhz) != 0) {
+                http_send_err(cfd, 400, "Bad Request",
+                              "body must contain \\\"mhz\\\" or \\\"reset\\\":true");
+                return;
+            }
+            if (lo < 0 || hi < 0) {
+                http_send_err(cfd, 409, "Conflict", "supported clock range is unknown");
+                return;
+            }
+            if (mhz < lo || mhz > hi) {
+                char msg[160];
+                snprintf(msg, sizeof(msg), "mhz must be between %d and %d", lo, hi);
+                http_send_err(cfd, 400, "Bad Request", msg);
+                return;
+            }
+            if (nvsmi_lock_clock(gpu_device, dom, (int)mhz, err, sizeof(err)) != 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "nvidia-smi: %s", err);
+                fprintf(stderr, "[DagCore] %s lock %ld MHz rejected: %s\n",
+                        which ? "Memory clock" : "Core clock", mhz, err);
+                http_send_err(cfd, 500, "Internal Server Error", msg);
+                return;
+            }
+            if (which) gpu_mem_clock = (int)mhz; else gpu_core_clock = (int)mhz;
+            trial_start(which, (int)mhz);
+            printf("[DagCore] %s locked to %ld MHz - on trial for %d min\n",
+                   which ? "Memory clock" : "Core clock", mhz, TRIAL_MS / 60000);
+            char resp[180];
+            snprintf(resp, sizeof(resp),
+                     "{\"ok\":true,\"applied\":%ld,\"trial\":true,\"trial_seconds\":%d}",
+                     mhz, TRIAL_MS / 1000);
+            http_send_json(cfd, 200, "OK", resp);
+            return;
+        }
     }
 
     http_send_err(cfd, 404, "Not Found", "unknown endpoint");
@@ -3270,6 +3474,12 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"gpu_mem_clock_max\":%d,"
             "\"gpu_mem_clock_boost\":%d,"
             "\"gpu_mem_clock_lock\":%d,"
+            "\"trial_core_status\":\"%s\","
+            "\"trial_core_value\":%d,"
+            "\"trial_core_remaining\":%d,"
+            "\"trial_mem_status\":\"%s\","
+            "\"trial_mem_value\":%d,"
+            "\"trial_mem_remaining\":%d,"
             "\"control_available\":%s,"
             "\"control_reason\":\"%s\","
             "\"total_hashes\":%" DT_PRIu64 ","
@@ -3303,6 +3513,8 @@ static void *dagtech_metrics_thread(void *arg) {
             g_pl_current, g_pl_min, g_pl_max, g_pl_default, gpu_intensity,
             gpu_core_cur, g_core_lo, g_core_hi, g_core_boost, gpu_core_clock,
             gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,  gpu_mem_clock,
+            g_trial[0].status, g_trial[0].value, trial_remaining_s(0),
+            g_trial[1].status, g_trial[1].value, trial_remaining_s(1),
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
             (unsigned long long)total_submitted,
@@ -4114,6 +4326,29 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Clock locks saved by a previous session (a trial that passed, or a value
+     * the operator put in config.env). A trial that never finished left
+     * nothing on disk, so it is simply not here. */
+    if (g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
+        char err[200] = "";
+        if (gpu_core_clock > 0) {
+            if (nvsmi_lock_clock(gpu_device, "gc", gpu_core_clock, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not lock core clock to %d MHz: %s\n",
+                        gpu_core_clock, err);
+            else
+                printf("[DagCore] Core clock locked to %d MHz\n", gpu_core_clock);
+        }
+        if (gpu_mem_clock > 0) {
+            if (nvsmi_lock_clock(gpu_device, "mc", gpu_mem_clock, err, sizeof(err)) != 0)
+                fprintf(stderr, "[DagCore] WARNING: could not lock memory clock to %d MHz: %s\n",
+                        gpu_mem_clock, err);
+            else
+                printf("[DagCore] Memory clock locked to %d MHz\n", gpu_mem_clock);
+        }
+    } else if (!g_control_ok && (gpu_core_clock > 0 || gpu_mem_clock > 0)) {
+        fprintf(stderr, "[DagCore] WARNING: clock locks ignored (%s)\n", g_control_reason);
+    }
+
     /* Start metrics server thread */
     pthread_t metrics_tid;
     pthread_create(&metrics_tid, NULL, dagtech_metrics_thread, NULL);
@@ -4225,6 +4460,7 @@ int main(int argc, char **argv) {
         while (running) {
             sleep(1);
             if (!running) break;
+            trial_tick();
             time_t now = time(NULL);
             double elapsed = difftime(now, last_report);
             if (elapsed >= 10) {
