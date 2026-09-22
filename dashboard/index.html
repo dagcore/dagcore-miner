@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>DAGCore Miner</title>
+<style>
+/* ------------------------------------------------------------------ *
+ * DAGCore Miner dashboard - single file, no external resources.
+ * Served by the miner itself from --dashboard-dir; rigs may be offline,
+ * so every byte here is local: system fonts, hand-drawn canvas chart.
+ * ------------------------------------------------------------------ */
+:root{
+  --bg:#0a0d12; --panel:#11161e; --panel-2:#161d27; --line:#222b38;
+  --fg:#e8eef5; --muted:#8492a6; --dim:#5d6a7d;
+  --accent:#2fd4a8; --accent-soft:rgba(47,212,168,.14);
+  --ok:#35c77f; --warn:#e8b23a; --bad:#ef5f5f;
+  --radius:14px;
+  --pad-top:env(safe-area-inset-top,0px);
+  --pad-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--bg); color:var(--fg);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;
+  font-variant-numeric:tabular-nums;
+  padding:calc(var(--pad-top) + 18px) 16px calc(var(--pad-bottom) + 28px);
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto}
+img{max-width:100%}
+[hidden]{display:none!important}
+
+/* ---------- offline banner ---------- */
+#offline{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:rgba(239,95,95,.12); border:1px solid rgba(239,95,95,.4);
+  color:#ffd9d9; border-radius:var(--radius);
+  padding:12px 16px; margin-bottom:18px; font-weight:600;
+}
+#offline .pulse{width:9px;height:9px;border-radius:50%;background:var(--bad);flex:0 0 auto;
+  animation:pulse 1.6s ease-in-out infinite}
+#offline small{font-weight:400;color:#f0b9b9}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ---------- header ---------- */
+header{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--line);
+}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{
+  width:36px;height:36px;border-radius:10px;flex:0 0 auto;
+  background:linear-gradient(140deg,var(--accent),#1b8f77);
+  display:grid;place-items:center;color:#06231c;font-weight:800;font-size:15px;letter-spacing:-.5px;
+}
+.brand h1{margin:0;font-size:19px;font-weight:700;letter-spacing:-.2px;white-space:nowrap}
+.brand .ver{color:var(--dim);font-size:12px;font-weight:500}
+.meta{display:flex;gap:22px;flex-wrap:wrap;margin-left:auto;align-items:center}
+.meta .item{min-width:0}
+.meta .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.9px;display:block}
+.meta .v{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:230px;display:block}
+.status{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13px;
+  border:1px solid var(--line);border-radius:999px;padding:6px 13px;background:var(--panel)}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+.status.on{color:var(--ok);border-color:rgba(53,199,127,.35)}
+.status.on .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(53,199,127,.16)}
+.status.off{color:var(--bad);border-color:rgba(239,95,95,.35)}
+.status.off .dot{background:var(--bad)}
+
+/* ---------- layout ---------- */
+.grid{display:grid;gap:14px}
+.stats{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-bottom:14px}
+.cols{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin-bottom:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.card h2{margin:0 0 14px;font-size:11px;font-weight:700;letter-spacing:1.1px;
+  text-transform:uppercase;color:var(--dim)}
+
+/* ---------- stat cards ---------- */
+.stat .label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.9px;font-weight:600}
+.stat .big{font-size:clamp(26px,5.2vw,34px);font-weight:700;letter-spacing:-1px;line-height:1.15;margin-top:8px}
+.stat .big .u{font-size:.46em;font-weight:600;color:var(--muted);margin-left:5px;letter-spacing:0}
+.stat .sub{color:var(--dim);font-size:12px;margin-top:5px}
+.stat.primary{background:linear-gradient(160deg,var(--accent-soft),transparent 70%);border-color:rgba(47,212,168,.3)}
+.stat.primary .big{color:var(--accent)}
+
+/* ---------- chart ---------- */
+.chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.chart-legend{display:flex;gap:16px;color:var(--dim);font-size:11px}
+.chart-legend b{color:var(--fg);font-weight:600}
+.canvas-box{position:relative;width:100%;height:210px;margin-top:12px}
+canvas{width:100%;height:100%;display:block}
+#chartEmpty{position:absolute;inset:0;display:grid;place-items:center;color:var(--dim);font-size:12px}
+
+/* ---------- rows / bars ---------- */
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0}
+.row + .row{border-top:1px solid var(--line)}
+.row .k{color:var(--muted);font-size:13px}
+.row .v{font-weight:650;font-size:14px;text-align:right;white-space:nowrap}
+.row .v.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;
+  font-weight:500;overflow:hidden;text-overflow:ellipsis;max-width:58vw}
+.bar{display:flex;height:8px;border-radius:99px;overflow:hidden;background:var(--panel-2);margin:14px 0 10px}
+.bar span{display:block;height:100%;transition:width .5s ease}
+.bar .a{background:var(--ok)} .bar .r{background:var(--bad)} .bar .s{background:var(--warn)}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.legend i{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:6px}
+
+/* gauge rows (temp / load / mem) */
+.gauge{margin:0 0 4px}
+.gauge .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.gauge .name{color:var(--muted);font-size:13px}
+.gauge .val{font-weight:700;font-size:15px}
+.gauge .track{height:6px;border-radius:99px;background:var(--panel-2);margin-top:7px;overflow:hidden}
+.gauge .fill{height:100%;border-radius:99px;background:var(--accent);transition:width .5s ease,background .3s}
+.gauge + .gauge{margin-top:14px}
+.t-ok{color:var(--ok)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)}
+.f-ok{background:var(--ok)!important} .f-warn{background:var(--warn)!important} .f-bad{background:var(--bad)!important}
+
+/* multi-GPU table */
+.gputable{width:100%;border-collapse:collapse;font-size:13px}
+.gputable th{text-align:left;color:var(--dim);font-size:10px;letter-spacing:.9px;
+  text-transform:uppercase;font-weight:700;padding:0 10px 9px 0}
+.gputable td{padding:9px 10px 9px 0;border-top:1px solid var(--line)}
+.gputable td:last-child,.gputable th:last-child{text-align:right;padding-right:0}
+.gputable .idx{color:var(--accent);font-weight:700}
+.table-scroll{overflow-x:auto}
+
+footer{margin-top:26px;text-align:center;color:var(--dim);font-size:11.5px;line-height:1.7}
+.stale{opacity:.5;transition:opacity .3s}
+@media (max-width:560px){
+  .meta{gap:14px;width:100%;margin-left:0}
+  .meta .v{max-width:150px}
+  header{gap:12px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="offline" hidden>
+    <span class="pulse"></span>
+    <span>Miner offline</span>
+    <small id="offlineDetail">no response from /metrics &mdash; showing last known values</small>
+  </div>
+
+  <header>
+    <div class="brand">
+      <div class="logo">DC</div>
+      <div>
+        <h1>DAGCore Miner</h1>
+        <span class="ver" id="version">&mdash;</span>
+      </div>
+    </div>
+    <div class="meta">
+      <div class="item"><span class="k">Pool</span><span class="v" id="pool">&mdash;</span></div>
+      <div class="item"><span class="k">Worker</span><span class="v" id="worker">&mdash;</span></div>
+      <div class="item"><span class="k">Wallet</span><span class="v" id="wallet">&mdash;</span></div>
+      <div class="status" id="status"><span class="dot"></span><span id="statusText">connecting</span></div>
+    </div>
+  </header>
+
+  <section class="grid stats">
+    <div class="card stat primary">
+      <span class="label">Total hashrate</span>
+      <div class="big"><span id="hrTotal">&mdash;</span><span class="u" id="hrTotalU"></span></div>
+      <div class="sub" id="hrTotalSub">&nbsp;</div>
+    </div>
+    <div class="card stat">
+      <span class="label">GPU hashrate</span>
+      <div class="big"><span id="hrGpu">&mdash;</span><span class="u" id="hrGpuU"></span></div>
+      <div class="sub" id="hrGpuSub">&nbsp;</div>
+    </div>
+    <div class="card stat">
+      <span class="label">CPU hashrate</span>
+      <div class="big"><span id="hrCpu">&mdash;</span><span class="u" id="hrCpuU"></span></div>
+      <div class="sub" id="hrCpuSub">&nbsp;</div>
+    </div>
+    <div class="card stat">
+      <span class="label">Efficiency</span>
+      <div class="big"><span id="eff">&mdash;</span><span class="u">kH/W</span></div>
+      <div class="sub" id="effSub">&nbsp;</div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="chart-head">
+      <h2 style="margin:0">Hashrate &mdash; last 30 minutes</h2>
+      <div class="chart-legend">
+        <span>now <b id="cNow">&mdash;</b></span>
+        <span>avg <b id="cAvg">&mdash;</b></span>
+        <span>peak <b id="cMax">&mdash;</b></span>
+      </div>
+    </div>
+    <div class="canvas-box">
+      <canvas id="chart"></canvas>
+      <div id="chartEmpty">collecting samples&hellip;</div>
+    </div>
+  </section>
+
+  <section class="grid cols">
+    <div class="card">
+      <h2>Shares</h2>
+      <div class="bar">
+        <span class="a" id="barA" style="width:0"></span>
+        <span class="r" id="barR" style="width:0"></span>
+        <span class="s" id="barS" style="width:0"></span>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--ok)"></i>Accepted</span>
+        <span><i style="background:var(--bad)"></i>Rejected</span>
+        <span><i style="background:var(--warn)"></i>Stale</span>
+      </div>
+      <div style="margin-top:6px">
+        <div class="row"><span class="k">Accepted</span><span class="v t-ok" id="shAcc">&mdash;</span></div>
+        <div class="row"><span class="k">Rejected</span><span class="v" id="shRej">&mdash;</span></div>
+        <div class="row"><span class="k">Stale</span><span class="v" id="shStale">&mdash;</span></div>
+        <div class="row"><span class="k">Submitted</span><span class="v" id="shSub">&mdash;</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>GPU &amp; thermals</h2>
+      <div class="gauge">
+        <div class="top"><span class="name">GPU temperature</span><span class="val" id="gTempV">&mdash;</span></div>
+        <div class="track"><span class="fill" id="gTempF" style="width:0"></span></div>
+      </div>
+      <div class="gauge">
+        <div class="top"><span class="name">GPU load</span><span class="val" id="gLoadV">&mdash;</span></div>
+        <div class="track"><span class="fill" id="gLoadF" style="width:0"></span></div>
+      </div>
+      <div class="gauge">
+        <div class="top"><span class="name">CPU temperature</span><span class="val" id="cTempV">&mdash;</span></div>
+        <div class="track"><span class="fill" id="cTempF" style="width:0"></span></div>
+      </div>
+      <div style="margin-top:16px">
+        <div class="row"><span class="k">Power draw</span><span class="v" id="gPower">&mdash;</span></div>
+        <div class="row"><span class="k">Memory used</span><span class="v" id="gMem">&mdash;</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="gpuListCard" hidden style="margin-bottom:14px">
+    <h2>Per-GPU hashrate</h2>
+    <div class="table-scroll">
+      <table class="gputable">
+        <thead><tr><th>GPU</th><th>Hashrate</th><th>Share of total</th></tr></thead>
+        <tbody id="gpuRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="grid cols">
+    <div class="card">
+      <h2>Session</h2>
+      <div class="row"><span class="k">Uptime</span><span class="v" id="uptime">&mdash;</span></div>
+      <div class="row"><span class="k">Difficulty</span><span class="v" id="diff">&mdash;</span></div>
+      <div class="row"><span class="k">Total hashes</span><span class="v" id="totalHashes">&mdash;</span></div>
+      <div class="row"><span class="k">Current job</span><span class="v mono" id="job">&mdash;</span></div>
+    </div>
+    <div class="card">
+      <h2>Rig</h2>
+      <div class="row"><span class="k">CPU</span><span class="v" id="cpuName">&mdash;</span></div>
+      <div class="row"><span class="k">Mining threads</span><span class="v" id="threads">&mdash;</span></div>
+      <div class="row"><span class="k">GPUs active</span><span class="v" id="gpuCount">&mdash;</span></div>
+      <div class="row"><span class="k">Last update</span><span class="v" id="lastUpdate">&mdash;</span></div>
+    </div>
+  </section>
+
+  <footer>
+    DAGCore Miner &middot; dagcore.net &middot; based on DagTech Miner (MIT)
+  </footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var POLL_MS   = 5000;
+var WINDOW_MS = 30 * 60 * 1000;   /* chart keeps ~30 minutes in page memory */
+var history   = [];               /* [{t, total}] - never persisted */
+var last      = null;             /* last good payload, kept for offline display */
+var online    = null;
+
+function $(id){ return document.getElementById(id); }
+function txt(id, s){ var e = $(id); if (e) e.textContent = s; }
+
+/* ---- formatting -------------------------------------------------- */
+function hashParts(h){
+  if (!isFinite(h) || h < 0) return ["--", "H/s"];
+  if (h >= 1e9) return [(h/1e9).toFixed(2), "GH/s"];
+  if (h >= 1e6) return [(h/1e6).toFixed(2), "MH/s"];
+  if (h >= 1e3) return [(h/1e3).toFixed(2), "kH/s"];
+  return [h.toFixed(1), "H/s"];
+}
+function hashStr(h){ var p = hashParts(h); return p[0] + " " + p[1]; }
+function num(n){
+  if (!isFinite(n)) return "--";
+  return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+function pct(part, whole){
+  if (!whole) return "0.0%";
+  return (100 * part / whole).toFixed(1) + "%";
+}
+function uptimeStr(sec){
+  if (!isFinite(sec) || sec < 0) return "--";
+  var d = Math.floor(sec / 86400),
+      h = Math.floor((sec % 86400) / 3600),
+      m = Math.floor((sec % 3600) / 60);
+  if (d) return d + "d " + h + "h " + m + "m";
+  if (h) return h + "h " + m + "m";
+  return m + "m " + Math.floor(sec % 60) + "s";
+}
+/* <70 green, 70-80 amber, >80 red - the thresholds the spec asks for */
+function tempClass(c){ return c > 80 ? "bad" : (c >= 70 ? "warn" : "ok"); }
+
+function setGauge(valId, fillId, value, text, ratio, cls){
+  var v = $(valId), f = $(fillId);
+  if (v){ v.textContent = text; v.className = "val" + (cls ? " t-" + cls : ""); }
+  if (f){
+    f.style.width = Math.max(0, Math.min(100, ratio * 100)).toFixed(1) + "%";
+    f.className = "fill" + (cls ? " f-" + cls : "");
+  }
+}
+
+/* ---- chart (hand-drawn, no libraries) ---------------------------- */
+var cv = $("chart"), ctx = cv.getContext("2d");
+
+function sizeCanvas(){
+  var dpr = window.devicePixelRatio || 1;
+  var r = cv.getBoundingClientRect();
+  cv.width  = Math.max(1, Math.round(r.width  * dpr));
+  cv.height = Math.max(1, Math.round(r.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { w: r.width, h: r.height };
+}
+
+function drawChart(){
+  var s = sizeCanvas(), w = s.w, h = s.h;
+  ctx.clearRect(0, 0, w, h);
+  if (history.length < 2){ $("chartEmpty").hidden = false; return; }
+  $("chartEmpty").hidden = true;
+
+  var padL = 54, padR = 8, padT = 10, padB = 20;
+  var cw = Math.max(1, w - padL - padR), ch = Math.max(1, h - padT - padB);
+
+  var max = 0, sum = 0, i;
+  for (i = 0; i < history.length; i++){
+    if (history[i].v > max) max = history[i].v;
+    sum += history[i].v;
+  }
+  var top = max > 0 ? max * 1.18 : 1;
+
+  var css = getComputedStyle(document.documentElement);
+  var accent = css.getPropertyValue("--accent").trim() || "#2fd4a8";
+  var line   = css.getPropertyValue("--line").trim()   || "#222b38";
+  var dim    = css.getPropertyValue("--dim").trim()    || "#5d6a7d";
+
+  /* grid + y labels */
+  ctx.font = "10px -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "right";
+  for (i = 0; i <= 4; i++){
+    var y = padT + ch * (i / 4);
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, Math.round(y) + 0.5);
+    ctx.lineTo(padL + cw, Math.round(y) + 0.5);
+    ctx.stroke();
+    ctx.fillStyle = dim;
+    ctx.fillText(hashStr(top * (1 - i / 4)), padL - 8, y);
+  }
+
+  /* x axis: oldest sample .. now, fixed 30 min span */
+  var now = Date.now(), t0 = now - WINDOW_MS;
+  function px(t){ return padL + cw * Math.max(0, Math.min(1, (t - t0) / WINDOW_MS)); }
+  function py(v){ return padT + ch * (1 - v / top); }
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = dim;
+  for (i = 0; i <= 3; i++){
+    var tm = t0 + WINDOW_MS * (i / 3);
+    var mins = Math.round((now - tm) / 60000);
+    ctx.fillText(mins === 0 ? "now" : "-" + mins + "m", px(tm), h - padB / 2 + 2);
+  }
+
+  /* area fill */
+  ctx.beginPath();
+  ctx.moveTo(px(history[0].t), padT + ch);
+  for (i = 0; i < history.length; i++) ctx.lineTo(px(history[i].t), py(history[i].v));
+  ctx.lineTo(px(history[history.length - 1].t), padT + ch);
+  ctx.closePath();
+  var g = ctx.createLinearGradient(0, padT, 0, padT + ch);
+  g.addColorStop(0, "rgba(47,212,168,0.28)");
+  g.addColorStop(1, "rgba(47,212,168,0.02)");
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  /* line */
+  ctx.beginPath();
+  for (i = 0; i < history.length; i++){
+    var x = px(history[i].t), y2 = py(history[i].v);
+    if (i === 0) ctx.moveTo(x, y2); else ctx.lineTo(x, y2);
+  }
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  /* head dot */
+  var lastPt = history[history.length - 1];
+  ctx.beginPath();
+  ctx.arc(px(lastPt.t), py(lastPt.v), 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = accent;
+  ctx.fill();
+
+  txt("cNow", hashStr(lastPt.v));
+  txt("cAvg", hashStr(sum / history.length));
+  txt("cMax", hashStr(max));
+}
+
+/* ---- rendering --------------------------------------------------- */
+function render(d){
+  var p;
+  p = hashParts(d.hashrate);     txt("hrTotal", p[0]); txt("hrTotalU", p[1]);
+  p = hashParts(d.gpu_hashrate); txt("hrGpu",   p[0]); txt("hrGpuU",   p[1]);
+  p = hashParts(d.cpu_hashrate); txt("hrCpu",   p[0]); txt("hrCpuU",   p[1]);
+
+  var tot = d.hashrate || 0;
+  txt("hrTotalSub", num(d.total_hashes) + " hashes this session");
+  txt("hrGpuSub", tot ? pct(d.gpu_hashrate, tot) + " of total" : " ");
+  txt("hrCpuSub", tot ? pct(d.cpu_hashrate, tot) + " of total" : " ");
+
+  /* efficiency: GPU kH per watt - only meaningful with a power reading */
+  if (d.gpu_power > 0 && d.gpu_hashrate > 0){
+    txt("eff", ((d.gpu_hashrate / 1000) / d.gpu_power).toFixed(2));
+    txt("effSub", d.gpu_power.toFixed(0) + " W on GPU");
+  } else {
+    txt("eff", "--");
+    txt("effSub", "no power reading");
+  }
+
+  txt("version", "v" + (d.version || "?"));
+  txt("pool", d.pool || "--");
+  txt("worker", d.worker || "--");
+  txt("wallet", d.wallet || "--");       /* abbreviated field, never wallet_full */
+
+  /* shares */
+  var a = d.accepted || 0, r = d.rejected || 0, st = d.stale || 0;
+  var resolved = a + r + st;
+  txt("shAcc",   num(a) + "  (" + pct(a, resolved) + ")");
+  txt("shRej",   num(r) + "  (" + pct(r, resolved) + ")");
+  txt("shStale", num(st) + "  (" + pct(st, resolved) + ")");
+  txt("shSub",   num(d.submitted));
+  $("shRej").className = "v" + (r > 0 ? " t-bad" : "");
+  $("shStale").className = "v" + (st > 0 ? " t-warn" : "");
+  var base = resolved || 1;
+  $("barA").style.width = (100 * a  / base) + "%";
+  $("barR").style.width = (100 * r  / base) + "%";
+  $("barS").style.width = (100 * st / base) + "%";
+
+  /* thermals - the miner sends -1 when a reading is unavailable */
+  if (d.gpu_temp >= 0)
+    setGauge("gTempV", "gTempF", d.gpu_temp, d.gpu_temp.toFixed(0) + " °C",
+             d.gpu_temp / 100, tempClass(d.gpu_temp));
+  else setGauge("gTempV", "gTempF", 0, "n/a", 0, "");
+
+  if (d.gpu_usage >= 0)
+    setGauge("gLoadV", "gLoadF", d.gpu_usage, d.gpu_usage.toFixed(0) + " %", d.gpu_usage / 100, "");
+  else setGauge("gLoadV", "gLoadF", 0, "n/a", 0, "");
+
+  if (d.cpu_temp >= 0)
+    setGauge("cTempV", "cTempF", d.cpu_temp, d.cpu_temp.toFixed(0) + " °C",
+             d.cpu_temp / 100, tempClass(d.cpu_temp));
+  else setGauge("cTempV", "cTempF", 0, "n/a", 0, "");
+
+  txt("gPower", d.gpu_power >= 0 ? d.gpu_power.toFixed(1) + " W" : "n/a");
+  txt("gMem",   d.gpu_memory >= 0 ? num(d.gpu_memory) + " MB" : "n/a");
+
+  /* session / rig */
+  txt("uptime", uptimeStr(d.uptime));
+  txt("diff", (typeof d.difficulty === "number") ? d.difficulty.toFixed(6) : "--");
+  txt("totalHashes", num(d.total_hashes));
+  txt("job", d.job_id || "--");
+  txt("cpuName", d.cpu_name || "--");
+  txt("threads", num(d.threads));
+  txt("gpuCount", d.gpu_enabled ? num(d.gpu_count) : "disabled");
+
+  /* multi-GPU breakdown, only when it adds information */
+  var list = d.gpu_hashrates;
+  if (Object.prototype.toString.call(list) === "[object Array]" && d.gpu_count > 1){
+    var gtot = 0, k;
+    for (k = 0; k < list.length; k++) gtot += list[k] || 0;
+    var html = "";
+    for (k = 0; k < list.length; k++){
+      html += "<tr><td class=\"idx\">GPU " + k + "</td><td>" + hashStr(list[k] || 0) +
+              "</td><td>" + pct(list[k] || 0, gtot) + "</td></tr>";
+    }
+    $("gpuRows").innerHTML = html;
+    $("gpuListCard").hidden = false;
+  } else {
+    $("gpuListCard").hidden = true;
+  }
+}
+
+function setOnline(ok, detail){
+  if (online === ok && !detail) return;
+  online = ok;
+  var s = $("status");
+  s.className = "status " + (ok ? "on" : "off");
+  txt("statusText", ok ? "online" : "offline");
+  $("offline").hidden = ok;
+  if (!ok && detail) txt("offlineDetail", detail);
+  document.querySelector(".wrap").classList.toggle("stale", !ok && !!last);
+}
+
+/* ---- polling ----------------------------------------------------- */
+function poll(){
+  var done = false;
+  var xhr = new XMLHttpRequest();
+  var timer = setTimeout(function(){ if (!done){ done = true; try{ xhr.abort(); }catch(e){} fail("request timed out"); } }, 4000);
+
+  function fail(why){
+    clearTimeout(timer);
+    setOnline(false, last
+      ? "no response from /metrics (" + why + ") — showing last known values"
+      : "no response from /metrics (" + why + ") — waiting for the miner");
+  }
+
+  xhr.open("GET", "metrics?t=" + Date.now(), true);   /* same origin, relative */
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4 || done) return;
+    done = true; clearTimeout(timer);
+    if (xhr.status !== 200) return fail("HTTP " + xhr.status);
+    var d;
+    try { d = JSON.parse(xhr.responseText); }
+    catch (e){ return fail("bad JSON"); }
+    last = d;
+    setOnline(true);
+    render(d);
+    var now = Date.now();
+    history.push({ t: now, v: d.hashrate || 0 });
+    while (history.length && history[0].t < now - WINDOW_MS) history.shift();
+    drawChart();
+    txt("lastUpdate", new Date().toLocaleTimeString());
+  };
+  xhr.onerror = function(){ if (!done){ done = true; fail("connection refused"); } };
+  try { xhr.send(); } catch (e){ if (!done){ done = true; fail("send failed"); } }
+}
+
+var rt;
+window.addEventListener("resize", function(){
+  clearTimeout(rt);
+  rt = setTimeout(drawChart, 120);
+});
+
+drawChart();
+poll();
+setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>
