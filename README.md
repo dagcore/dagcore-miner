@@ -78,7 +78,7 @@ tuning moves the number and core clock mostly does not.
 
 ## Contributors
 
-- Valeriu Stefan
+- [@dagcore](https://github.com/dagcore)
 
 ## Licence and attribution
 
