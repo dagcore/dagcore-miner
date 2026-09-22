@@ -1,0 +1,603 @@
+#!/usr/bin/env bash
+#
+# DAGCore Miner installer.
+#
+# Written for someone who has a graphics card and a wallet address, and no
+# reason to know what a compiler is. Every step says what it is about to do in
+# plain words; anything that changes the system asks first, and --dry-run
+# shows the whole run without touching anything.
+#
+#   ./install.sh                    interactive
+#   ./install.sh --wallet 0x... --yes   unattended, for a fleet
+#   ./install.sh --dry-run          show what would happen
+#
+set -euo pipefail
+
+# ---------------------------------------------------------------- defaults --
+PREFIX="/opt/dagcore-miner"
+CONFDIR="/etc/dagcore-miner"
+STATEDIR="/var/lib/dagcore-miner"
+SERVICE="dagcore-miner"
+UNIT="/etc/systemd/system/${SERVICE}.service"
+
+DEF_POOL="stratum.dagcore.net"
+DEF_PORT="3334"
+DEF_WORKER="$(hostname -s 2>/dev/null || echo rig)"
+DEF_THREADS="0"
+MIN_DISK_MB=300
+
+WALLET=""; POOL=""; PORT=""; WORKER=""; THREADS=""
+LAN=""; ASSUME_YES=0; DRY_RUN=0; WANT_SERVICE=""; WANT_START=""
+MODE=""                       # install | upgrade | reconfigure
+
+# ------------------------------------------------------------------ output --
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
+  GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; CYAN=$'\033[36m'
+else
+  B=""; DIM=""; R=""; GREEN=""; YELLOW=""; RED=""; CYAN=""
+fi
+
+step()  { printf '\n%s==>%s %s%s%s\n' "$CYAN" "$R" "$B" "$*" "$R"; }
+say()   { printf '    %s\n' "$*"; }
+ok()    { printf '    %s✓%s %s\n' "$GREEN" "$R" "$*"; }
+# For lines that assert an action completed: silent during a dry run, where
+# nothing completed.
+did()   { [ "$DRY_RUN" = 1 ] || ok "$*"; }
+warn()  { printf '    %s!%s  %s\n' "$YELLOW" "$R" "$*"; }
+fail()  { printf '\n%sSomething went wrong:%s %s\n' "$RED" "$R" "$*" >&2; }
+die()   { fail "$*"; printf '\nNothing further was changed.\n\n' >&2; exit 1; }
+
+# Everything that changes the system goes through here, so --dry-run is honest.
+run() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '    %swould run:%s %s\n' "$DIM" "$R" "$*"
+    return 0
+  fi
+  "$@"
+}
+# Same, for writing a file from stdin.
+run_write() {
+  local dest="$1"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '    %swould write:%s %s\n' "$DIM" "$R" "$dest"
+    # Show the contents too - a dry run you cannot read is not much of a check.
+    sed 's/^/      | /'
+    return 0
+  fi
+  cat > "$dest"
+}
+
+usage() {
+  cat <<USAGE
+DAGCore Miner installer
+
+  ./install.sh [options]
+
+Options
+  --wallet 0x...      wallet address (required when not asked interactively)
+  --pool HOST         pool hostname            (default: $DEF_POOL)
+  --port N            pool port                (default: $DEF_PORT)
+  --worker NAME       worker name              (default: this host's name)
+  --threads N         CPU mining threads, 0 = GPU only   (default: $DEF_THREADS)
+  --lan               serve the dashboard to the local network, not just this
+                      machine. Read the security note before using it.
+  --no-service        do not create a systemd service
+  --start             start mining at the end (implied by --yes)
+  --yes               take every default and ask nothing
+  --prefix DIR        install location         (default: $PREFIX)
+  --dry-run           print what would happen; change nothing
+  --help              this text
+USAGE
+}
+
+# -------------------------------------------------------------- arguments ---
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wallet)  WALLET="${2:-}"; shift 2 ;;
+    --pool)    POOL="${2:-}";   shift 2 ;;
+    --port)    PORT="${2:-}";   shift 2 ;;
+    --worker)  WORKER="${2:-}"; shift 2 ;;
+    --threads) THREADS="${2:-}"; shift 2 ;;
+    --prefix)  PREFIX="${2:-}"; shift 2 ;;
+    --lan)     LAN=1; shift ;;
+    --no-service) WANT_SERVICE=n; shift ;;
+    --start)   WANT_START=y; shift ;;
+    --yes|-y)  ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; die "unknown option: $1" ;;
+  esac
+done
+
+# ----------------------------------------------------------------- asking ---
+ask() {            # ask "question" "default" -> echoes the answer
+  local q="$1" def="$2" ans=""
+  if [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then printf '%s' "$def"; return; fi
+  printf '    %s [%s]: ' "$q" "$def" >&2
+  IFS= read -r ans || true
+  printf '%s' "${ans:-$def}"
+}
+
+confirm() {        # confirm "question" "y|n" -> 0 for yes
+  local q="$1" def="${2:-y}" ans=""
+  if [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then [ "$def" = y ]; return; fi
+  local hint="[Y/n]"; [ "$def" = y ] || hint="[y/N]"
+  while :; do
+    printf '    %s %s ' "$q" "$hint" >&2
+    IFS= read -r ans || true
+    ans="${ans:-$def}"
+    case "$ans" in [Yy]*) return 0 ;; [Nn]*) return 1 ;; esac
+    printf '    Please answer y or n.\n' >&2
+  done
+}
+
+valid_wallet() { printf '%s' "$1" | grep -Eq '^0x[0-9a-fA-F]{40}$'; }
+
+# ------------------------------------------------------------ preflight -----
+need_root() {
+  if [ "$(id -u)" != 0 ] && [ "$DRY_RUN" != 1 ]; then
+    die "this installer needs to write to $PREFIX and $CONFDIR.
+    Run it again with sudo:  sudo ./install.sh $*"
+  fi
+}
+
+check_platform() {
+  step "Checking this machine"
+  [ "$(uname -s)" = "Linux" ] || die "this miner runs on Linux; found $(uname -s)."
+  case "$(uname -m)" in
+    x86_64|amd64) ok "Linux on x86-64" ;;
+    *) die "this miner is built for 64-bit Intel/AMD machines; found $(uname -m)." ;;
+  esac
+}
+
+# Look for an NVIDIA card without needing lspci: the kernel lists every PCI
+# device's vendor ID, and 0x10de is NVIDIA.
+check_card() {
+  local found=0 d
+  for d in /sys/bus/pci/devices/*/vendor; do
+    [ -r "$d" ] || continue
+    if [ "$(cat "$d")" = "0x10de" ]; then found=1; break; fi
+  done
+  if [ "$found" = 0 ]; then
+    die "no NVIDIA graphics card found on this machine.
+    This miner needs one. If the card is installed, check that it is seated
+    properly and that the machine sees it."
+  fi
+  ok "NVIDIA graphics card detected"
+}
+
+driver_hint() {
+  case "$PKG" in
+    apt)    echo "sudo apt update && sudo apt install nvidia-driver-570" ;;
+    dnf)    echo "sudo dnf install akmod-nvidia  (needs the RPM Fusion repository)" ;;
+    pacman) echo "sudo pacman -S nvidia nvidia-utils" ;;
+    *)      echo "install the NVIDIA driver package for your distribution" ;;
+  esac
+}
+
+check_driver() {
+  if [ -r /proc/driver/nvidia/version ]; then
+    local ver
+    ver="$(grep -o '[0-9]\{3,\}\.[0-9.]*' /proc/driver/nvidia/version 2>/dev/null | head -1)"
+    ok "NVIDIA driver loaded${ver:+ (version $ver)}"
+    return
+  fi
+  die "the NVIDIA driver is not installed, or is not loaded.
+    The card is there but the system cannot talk to it yet.
+
+    Install the driver, reboot, then run this installer again:
+      $(driver_hint)
+
+    This installer will not install a graphics driver by itself: it needs a
+    reboot and can leave a machine without a display if it goes wrong."
+}
+
+check_disk() {
+  local target="$PREFIX" avail
+  while [ ! -d "$target" ] && [ "$target" != "/" ]; do target="$(dirname "$target")"; done
+  avail="$(df -Pm "$target" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [ -z "$avail" ]; then warn "could not check free disk space; continuing"; return; fi
+  if [ "$avail" -lt "$MIN_DISK_MB" ]; then
+    die "not enough free space on $target: ${avail} MB free, about ${MIN_DISK_MB} MB needed."
+  fi
+  ok "disk space: ${avail} MB free"
+}
+
+detect_pkg() {
+  if command -v apt-get >/dev/null 2>&1; then PKG=apt
+  elif command -v dnf >/dev/null 2>&1; then PKG=dnf
+  elif command -v pacman >/dev/null 2>&1; then PKG=pacman
+  else PKG=""; fi
+}
+
+# --------------------------------------------------------- dependencies -----
+have_cc()      { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; }
+have_make()    { command -v make >/dev/null 2>&1; }
+have_cl_hdr()  { [ -r /usr/include/CL/cl.h ]; }
+have_cl_lib()  { ldconfig -p 2>/dev/null | grep -q 'libOpenCL\.so'; }
+have_cl_icd()  { ls /etc/OpenCL/vendors/*.icd >/dev/null 2>&1; }
+
+pkgs_for() {
+  case "$PKG" in
+    apt)    echo "build-essential ocl-icd-opencl-dev opencl-headers" ;;
+    dnf)    echo "gcc make ocl-icd-devel opencl-headers" ;;
+    pacman) echo "base-devel ocl-icd opencl-headers" ;;
+  esac
+}
+
+install_pkgs() {
+  local list="$1"
+  case "$PKG" in
+    apt)    run apt-get update -qq && run apt-get install -y $list ;;
+    dnf)    run dnf install -y $list ;;
+    pacman) run pacman -Sy --needed --noconfirm $list ;;
+  esac
+}
+
+check_deps() {
+  step "Checking what is needed to build the miner"
+  local missing=""
+  have_cc   || missing="$missing compiler"
+  have_make || missing="$missing make"
+  have_cl_hdr || missing="$missing OpenCL-headers"
+  have_cl_lib || missing="$missing OpenCL-library"
+
+  if [ -z "$missing" ]; then
+    ok "everything needed is already installed"
+  else
+    say "These are missing:$missing"
+    if [ -z "$PKG" ]; then
+      die "could not find apt, dnf or pacman, so the missing pieces cannot be
+    installed automatically. Install the development tools and the OpenCL
+    headers for your distribution, then run this installer again."
+    fi
+    local list; list="$(pkgs_for)"
+    say ""
+    say "They come from these packages:"
+    say "  $list"
+    if ! confirm "Install them now with $PKG?" y; then
+      die "cannot continue without them. Install them yourself and run this again."
+    fi
+    step "Installing packages"
+    install_pkgs "$list" || die "the package manager could not install them.
+    Check the output above, fix the problem, and run this installer again."
+    have_cl_hdr || die "the OpenCL headers are still missing after installing.
+    Your distribution may name that package differently."
+    ok "packages installed"
+  fi
+
+  # The ICD is what lets a program find the NVIDIA OpenCL driver at runtime.
+  if ! have_cl_icd; then
+    warn "no OpenCL driver registration found in /etc/OpenCL/vendors."
+    say  "The miner will build, but it may not see the card. This normally"
+    say  "comes with the NVIDIA driver package; on Debian and Ubuntu it is"
+    say  "nvidia-opencl-icd. Install it if the miner reports no GPU."
+  else
+    ok "OpenCL driver registration present"
+  fi
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    ok "nvidia-smi present - power limit and clock controls will work"
+  else
+    warn "nvidia-smi was not found."
+    say  "Mining will work. These dashboard features will not:"
+    say  "  - power limit"
+    say  "  - core and memory clock locks"
+    say  "  - clock offsets"
+    say  "It usually comes with the driver package as nvidia-utils."
+  fi
+}
+
+# --------------------------------------------------------------- build ------
+build_and_install() {
+  step "Building the miner"
+  [ -f Makefile ] || die "this script must be run from the folder it came in;
+    Makefile is not here. cd into the DAGCore folder and try again."
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '    %swould run:%s make clean && make\n' "$DIM" "$R"
+  else
+    make clean >/dev/null 2>&1 || true
+    if ! make >/tmp/dagcore-build.log 2>&1; then
+      tail -n 20 /tmp/dagcore-build.log >&2
+      die "the miner did not build. The last lines of the build log are above,
+    and the whole log is in /tmp/dagcore-build.log."
+    fi
+    ok "built"
+  fi
+
+  step "Installing into $PREFIX"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '    %swould run:%s make install PREFIX=%s SYSCONFDIR=%s\n' \
+      "$DIM" "$R" "$PREFIX" "$CONFDIR"
+  else
+    make install PREFIX="$PREFIX" SYSCONFDIR="$CONFDIR" >/dev/null 2>&1 || \
+      die "could not copy the files into $PREFIX.
+    Check that there is space and that you ran this with sudo."
+    ok "miner, GPU kernel and dashboard installed"
+  fi
+}
+
+# ---------------------------------------------------------- configuration ---
+ask_settings() {
+  step "Mining settings"
+
+  while :; do
+    [ -n "$WALLET" ] || WALLET="$(ask 'Your wallet address (0x...)' '')"
+    if valid_wallet "$WALLET"; then break; fi
+    if [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then
+      die "a wallet address is required. Pass it with --wallet 0x...
+    It must be 0x followed by 40 hexadecimal characters."
+    fi
+    warn "that does not look like a wallet address."
+    say  "It must be 0x followed by 40 characters, digits and a-f."
+    WALLET=""
+  done
+  ok "wallet $(printf '%s' "$WALLET" | cut -c1-10)...$(printf '%s' "$WALLET" | tail -c 5)"
+
+  [ -n "$POOL" ]    || POOL="$(ask 'Pool address' "$DEF_POOL")"
+  [ -n "$PORT" ]    || PORT="$(ask 'Pool port' "$DEF_PORT")"
+  [ -n "$WORKER" ]  || WORKER="$(ask 'A name for this machine' "$DEF_WORKER")"
+  [ -n "$THREADS" ] || THREADS="$(ask 'CPU mining threads (0 = graphics card only)' "$DEF_THREADS")"
+
+  printf '%s' "$PORT" | grep -Eq '^[0-9]+$' || die "the pool port must be a number; got '$PORT'."
+  printf '%s' "$THREADS" | grep -Eq '^-?[0-9]+$' || die "CPU threads must be a number; got '$THREADS'."
+
+  if [ -z "$LAN" ]; then
+    say ""
+    say "The dashboard is a web page this miner serves, showing hashrate and"
+    say "temperatures, and letting you tune the card."
+    say ""
+    if confirm "Keep it reachable only from this machine? (recommended)" y; then
+      LAN=0
+    else
+      LAN=1
+    fi
+  fi
+  if [ "$LAN" = 1 ]; then
+    BIND="0.0.0.0"
+    warn "the dashboard will be reachable from your whole local network."
+    say  "Anyone on that network can read your wallet address from it."
+    say  "Never forward this port to the internet."
+  else
+    BIND="127.0.0.1"
+    ok "dashboard reachable from this machine only"
+    say "To see it from another computer later, use an SSH tunnel:"
+    say "  ssh -L 8881:127.0.0.1:8881 $(id -un)@$(hostname -s 2>/dev/null || echo this-machine)"
+  fi
+}
+
+write_config() {
+  step "Writing configuration"
+  if [ -f "$CONFDIR/config.env" ] && [ "$MODE" != reconfigure ]; then
+    ok "kept the existing $CONFDIR/config.env"
+    say "Nothing in it was changed. Re-run with the reconfigure option to replace it."
+    return
+  fi
+  run mkdir -p "$CONFDIR"
+  run_write "$CONFDIR/config.env" <<CFG
+# DAGCore Miner - written by install.sh on $(date -u '+%Y-%m-%d %H:%M UTC')
+# Settings you change from the dashboard are kept separately, in
+# $STATEDIR/overrides.env, and are loaded on top of this file.
+WALLET=$WALLET
+POOL=$POOL
+PORT=$PORT
+WORKER=$WORKER
+THREADS=$THREADS
+GPU_ENABLED=1
+GPU_PLATFORM=0
+GPU_DEVICE=0
+GPU_INTENSITY=100
+GPU_ALIGN=pow2
+METRICS_PORT=8881
+METRICS_BIND=$BIND
+DASHBOARD_DIR=$PREFIX/share/dagcore-miner/dashboard
+CFG
+  run chmod 0640 "$CONFDIR/config.env"
+  did "wrote $CONFDIR/config.env"
+}
+
+# -------------------------------------------------------------- service -----
+in_container() {
+  [ -f /.dockerenv ] && return 0
+  command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt --container -q && return 0
+  return 1
+}
+has_systemd() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
+
+write_start_script() {
+  run_write "$PREFIX/start.sh" <<START
+#!/bin/sh
+# Start the DAGCore miner in the foreground. Press Ctrl+C to stop it.
+exec $PREFIX/bin/dagcore-miner --config $CONFDIR/config.env
+START
+  run chmod 0755 "$PREFIX/start.sh"
+  did "wrote $PREFIX/start.sh"
+}
+
+setup_service() {
+  step "Starting automatically"
+
+  if ! has_systemd || in_container; then
+    if in_container; then
+      warn "this looks like a container, which has no service manager of its own."
+    else
+      warn "this system does not use systemd, so no service can be created."
+    fi
+    say "The miner will not start on its own. Start it by hand with:"
+    say "  sudo $PREFIX/start.sh"
+    write_start_script
+    WANT_SERVICE=n
+    return
+  fi
+
+  if [ -z "$WANT_SERVICE" ]; then
+    say "A service makes the miner start when the machine boots, and restart"
+    say "by itself if it ever stops."
+    if confirm "Create it?" y; then WANT_SERVICE=y; else WANT_SERVICE=n; fi
+  fi
+
+  if [ "$WANT_SERVICE" != y ]; then
+    say "No service created."
+    write_start_script
+    say "Start the miner by hand with:  sudo $PREFIX/start.sh"
+    return
+  fi
+
+  run_write "$UNIT" <<UNITFILE
+[Unit]
+Description=DAGCore Miner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$PREFIX/bin
+ExecStart=$PREFIX/bin/dagcore-miner --config $CONFDIR/config.env
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNITFILE
+  run systemctl daemon-reload
+  run systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+  did "service created and enabled at boot"
+}
+
+# ---------------------------------------------------------------- start -----
+start_mining() {
+  step "Starting"
+  if [ -z "$WANT_START" ]; then
+    if confirm "Start mining now?" y; then WANT_START=y; else WANT_START=n; fi
+  fi
+  if [ "$WANT_START" != y ]; then
+    say "Not started."
+    return
+  fi
+  if [ "$WANT_SERVICE" = y ]; then
+    run systemctl restart "$SERVICE" || die "the service would not start.
+    See what it said with:  journalctl -u $SERVICE -n 30"
+    [ "$DRY_RUN" = 1 ] || sleep 4
+    if [ "$DRY_RUN" != 1 ] && ! systemctl is-active --quiet "$SERVICE"; then
+      die "the miner started and then stopped.
+    See why with:  journalctl -u $SERVICE -n 30"
+    fi
+    did "mining"
+  else
+    say "Start it when you are ready:  sudo $PREFIX/start.sh"
+    WANT_START=n
+  fi
+}
+
+# -------------------------------------------------------------- summary -----
+show_token() {
+  local f="$CONFDIR/api-token"
+  if [ "$DRY_RUN" = 1 ]; then
+    say "Control token:   created at first start, in $f"
+    return
+  fi
+  if [ -r "$f" ]; then
+    say "Control token:   $(cat "$f")"
+    say "                 (paste it into the dashboard to change settings)"
+  else
+    say "Control token:   appears in $f the first time the miner runs."
+    say "                 Read it with:  sudo cat $f"
+  fi
+}
+
+summary() {
+  local url_host="127.0.0.1" ssh_host
+  [ "$LAN" = 1 ] && url_host="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [ -n "$url_host" ] || url_host="127.0.0.1"
+  # For the tunnel hint the reader is on another machine, so 127.0.0.1 would be
+  # their own computer. Give them something they can connect to.
+  ssh_host="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [ -n "$ssh_host" ] || ssh_host="$(hostname -s 2>/dev/null || echo this-machine)"
+
+  printf '\n%s%s%s\n' "$B" "=========================================================" "$R"
+  printf '%s  DAGCore Miner is installed%s\n' "$B" "$R"
+  printf '%s%s%s\n\n' "$B" "=========================================================" "$R"
+
+  say "Installed in:    $PREFIX"
+  say "Configuration:   $CONFDIR/config.env"
+  say "Dashboard:       http://$url_host:8881/"
+  say "Help page:       http://$url_host:8881/help"
+  show_token
+  printf '\n'
+  say "Useful commands:"
+  if [ "$WANT_SERVICE" = y ]; then
+    say "  see if it is running   sudo systemctl status $SERVICE"
+    say "  watch the log          sudo journalctl -u $SERVICE -f"
+    say "  stop it                sudo systemctl stop $SERVICE"
+    say "  start it               sudo systemctl start $SERVICE"
+  else
+    say "  start it               sudo $PREFIX/start.sh"
+    say "  stop it                press Ctrl+C in that window"
+  fi
+  say "  remove everything      sudo ./uninstall.sh"
+  printf '\n'
+  if [ "$LAN" != 1 ]; then
+    say "The dashboard is only reachable from this machine. From another"
+    say "computer on your network, open a tunnel first:"
+    say "  ssh -L 8881:127.0.0.1:8881 $(id -un)@$ssh_host"
+    say "then open http://127.0.0.1:8881/ there."
+    printf '\n'
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  %sThis was a dry run. Nothing on this machine was changed.%s\n\n' "$YELLOW" "$R"
+  fi
+}
+
+# ------------------------------------------------------------------ main ----
+printf '\n%s  DAGCore Miner installer%s\n' "$B" "$R"
+[ "$DRY_RUN" = 1 ] && printf '  %sdry run - nothing will be changed%s\n' "$YELLOW" "$R"
+
+detect_pkg
+need_root "$@"
+check_platform
+check_card
+check_driver
+check_disk
+
+# An existing installation is not overwritten without being asked.
+if [ -x "$PREFIX/bin/dagcore-miner" ]; then
+  step "Found an existing installation in $PREFIX"
+  if [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then
+    MODE=upgrade
+    say "Upgrading it and keeping the current settings."
+  else
+    say "  1) Upgrade    - rebuild and replace the program, keep all settings"
+    say "  2) Reconfigure- ask the questions again and rewrite the settings"
+    say "  3) Cancel"
+    case "$(ask 'Which one?' 1)" in
+      1) MODE=upgrade ;;
+      2) MODE=reconfigure ;;
+      *) say "Cancelled. Nothing was changed."; exit 0 ;;
+    esac
+  fi
+else
+  MODE=install
+fi
+
+check_deps
+
+if [ "$MODE" = upgrade ] && [ -f "$CONFDIR/config.env" ]; then
+  # Keep what is there; the summary still needs to know how it is set up.
+  LAN=0
+  grep -q '^METRICS_BIND=0\.0\.0\.0' "$CONFDIR/config.env" 2>/dev/null && LAN=1
+  build_and_install
+  step "Configuration"
+  ok "kept $CONFDIR/config.env unchanged"
+else
+  ask_settings
+  build_and_install
+  write_config
+fi
+
+run mkdir -p "$STATEDIR"
+run chmod 0750 "$STATEDIR"
+setup_service
+start_mining
+summary
