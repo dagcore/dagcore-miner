@@ -113,7 +113,8 @@ static int  pool_port          = DAGTECH_DEFAULT_PORT;
 static char wallet[128]        = "";
 static char worker_name[64]    = "dagtech";
 static char password[32]       = "";
-static int  num_threads        = 0;  /* 0 = auto-detect */
+static int  num_threads        = 0;  /* CPU mining threads: 0 = none (GPU-only, the
+                                        default), <0 = auto-detect, N = exactly N */
 static int  cpu_priority       = 0;  /* 0=normal, 1=low */
 static int  cpu_limit          = 100; /* 1-100: % of CPU time to use per thread */
 static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle throttle) */
@@ -2651,7 +2652,8 @@ static void dagtech_usage(void) {
     printf("    --wallet <addr>        Your wallet address (REQUIRED)\n");
     printf("    --pool <host>          Pool hostname (default: %s)\n", DAGTECH_DEFAULT_POOL);
     printf("    --port <n>             Pool port (default: %d)\n", DAGTECH_DEFAULT_PORT);
-    printf("    --threads <n>          Number of CPU mining threads (default: auto)\n");
+    printf("    --threads <n>          CPU mining threads: 0 = none, GPU-only (default),\n");
+    printf("                             -1 = auto (half the logical cores), N = N threads\n");
     printf("    --worker <name>        Worker name (default: dagtech)\n");
     printf("    --password <pw>        Pool password (default: x)\n");
     printf("    --submit-margin <f>    Share threshold margin >=1.0 (default: 1.0)\n");
@@ -3216,7 +3218,10 @@ int main(int argc, char **argv) {
     g_cpu_cores = dagtech_detect_cores();
     dagtech_cpu_brand(g_cpu_brand, sizeof(g_cpu_brand));
 
-    /* Auto-detect threads if not specified */
+    /* A negative --threads / THREADS asks for auto-detect (half the logical
+     * cores). Zero is NOT auto-detect: it means "no CPU threads at all", which
+     * is the default because a GPU rig gains little from the CPU miner and the
+     * cores are better left to feeding the cards. */
     if (num_threads < 0)
         num_threads = dagtech_detect_threads();
 
