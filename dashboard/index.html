@@ -204,6 +204,16 @@ button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
 .adopt-picks input[type=checkbox]{accent-color:var(--mine);margin-top:2px;flex:0 0 auto;
   width:15px;height:15px;cursor:pointer}
 .adopt-picks .hint{color:var(--muted-2)}
+.set-help{font-size:12.5px;color:var(--muted);line-height:1.6;margin:-6px 0 4px}
+details.adv{margin-top:6px;border-top:1px solid var(--line-soft)}
+details.adv > summary{list-style:none;cursor:pointer;padding:14px 0 4px;
+  font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--label);display:flex;align-items:center;gap:9px}
+details.adv > summary::-webkit-details-marker{display:none}
+details.adv > summary::before{content:"\25B8";font-size:11px;transition:transform .15s}
+details.adv[open] > summary::before{transform:rotate(90deg)}
+details.adv > summary:hover{color:var(--text-2)}
+.adv-note{font-size:12px;color:var(--muted-2);line-height:1.6;margin:2px 0 2px}
 #restartOverlay{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   background:rgba(255,171,46,.10);border:1px solid rgba(255,171,46,.45);
   color:var(--mine);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
@@ -373,6 +383,9 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
   <section class="card" style="margin-bottom:14px">
     <h2>Settings</h2>
+    <p class="set-help">Change one setting at a time. Clock changes are tested for
+    10 minutes before being saved; if the card becomes unstable, the previous
+    value comes back automatically.</p>
 
     <div class="set-row">
       <span class="lab"><b>Control token</b><small id="tokState">required to enable the controls below</small></span>
@@ -391,6 +404,33 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <button class="ghost btn-def" id="plDefault" type="button" disabled>Default</button>
       </span>
     </div>
+
+    <div class="set-row" id="memoffRow" hidden>
+      <span class="lab"><b>Memory offset</b><small class="range" id="memoffRange">&mdash;</small>
+        <span class="trial" id="memoffTrial" hidden><i></i><span></span></span></span>
+      <span class="set-ctl">
+        <input type="range" id="memoffSlider" min="-2000" max="4000" step="50" value="0" disabled>
+        <input type="number" id="memoffNum" min="-2000" max="4000" step="50" disabled>
+        <button class="btn-main" id="memoffApply" type="button" disabled>Apply</button>
+        <button class="ghost btn-def" id="memoffDefault" type="button" disabled>Default</button>
+      </span>
+    </div>
+
+    <div class="set-row">
+      <span class="lab"><b>GPU intensity</b><small>0&ndash;100. Applied on restart.</small></span>
+      <span class="set-ctl">
+        <input type="range" id="inRange" min="0" max="100" value="80" disabled>
+        <input type="number" id="inNum" min="0" max="100" disabled>
+        <button class="btn-main" id="inApply" type="button" disabled>Save &amp; restart</button>
+        <button class="ghost btn-def" id="inDefault" type="button" disabled>Default</button>
+      </span>
+    </div>
+
+    <details class="adv">
+      <summary>Advanced</summary>
+      <p class="adv-note">For experienced users. These change how the card
+      clocks itself; a wrong value can cost hashrate or stability. The power
+      limit and memory offset above are enough for most tuning.</p>
 
     <div class="set-row" id="coreRow" hidden>
       <span class="lab"><b>Core clock</b><small class="range" id="coreRange">&mdash;</small>
@@ -425,27 +465,6 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       </span>
     </div>
 
-    <div class="set-row" id="memoffRow" hidden>
-      <span class="lab"><b>Memory offset</b><small class="range" id="memoffRange">&mdash;</small>
-        <span class="trial" id="memoffTrial" hidden><i></i><span></span></span></span>
-      <span class="set-ctl">
-        <input type="range" id="memoffSlider" min="-2000" max="4000" step="50" value="0" disabled>
-        <input type="number" id="memoffNum" min="-2000" max="4000" step="50" disabled>
-        <button class="btn-main" id="memoffApply" type="button" disabled>Apply</button>
-        <button class="ghost btn-def" id="memoffDefault" type="button" disabled>Default</button>
-      </span>
-    </div>
-
-    <div class="set-row">
-      <span class="lab"><b>GPU intensity</b><small>0&ndash;100. Applied on restart.</small></span>
-      <span class="set-ctl">
-        <input type="range" id="inRange" min="0" max="100" value="80" disabled>
-        <input type="number" id="inNum" min="0" max="100" disabled>
-        <button class="btn-main" id="inApply" type="button" disabled>Save &amp; restart</button>
-        <button class="ghost btn-def" id="inDefault" type="button" disabled>Default</button>
-      </span>
-    </div>
-
     <div class="set-row">
       <span class="lab"><b>Adopt current state</b>
         <small>Save what the card is running now, without a trial. For a rig
@@ -463,6 +482,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <button class="ghost" id="adoptBtn" type="button" disabled>Adopt</button>
       </span>
     </div>
+
+    </details>
 
     <div class="warn-row" id="staleWarn" hidden><i></i><span></span></div>
 
