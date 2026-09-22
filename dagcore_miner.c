@@ -170,6 +170,16 @@ static char dashboard_dir[512] = "";
 #define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
 
 static int  gpu_power_limit = 0;      /* GPU_POWER_LIMIT, watts; 0 = leave alone */
+static int  gpu_core_clock  = 0;      /* GPU_CORE_CLOCK, MHz; 0 = leave alone */
+static int  gpu_mem_clock   = 0;      /* GPU_MEM_CLOCK, MHz;  0 = leave alone */
+/* Clock envelope, queried once at startup - the supported list does not change
+ * while the driver is loaded. The lockable range comes from
+ * --query-supported-clocks, NOT from clocks.max.*: on an RTX 3080 the latter
+ * reports 10101 MHz for memory while the highest value -lmc will accept is
+ * 9501. Both are reported, so the dashboard can show the boost ceiling
+ * separately from what can actually be locked. */
+static int  g_core_lo = -1, g_core_hi = -1, g_core_boost = -1;
+static int  g_mem_lo  = -1, g_mem_hi  = -1, g_mem_boost  = -1;
 static char g_api_token[80] = "";     /* empty = control API disabled */
 static int  g_control_ok    = 0;      /* 1 = controls usable right now */
 static char g_control_reason[128] = "not initialised";
@@ -2557,8 +2567,13 @@ static void *dagtech_mine_thread(void *arg) {
     return NULL;
 }
 
-static int get_gpu_stats(double *temp, double *usage, double *memory, double *power) {
-    FILE *fp = popen("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,power.draw --format=csv,noheader,nounits 2>/dev/null", "r");
+/* One nvidia-smi per metrics request, not one per value: the clocks ride
+ * along with the telemetry that was already being queried. */
+static int get_gpu_stats(double *temp, double *usage, double *memory, double *power,
+                         double *core_clk, double *mem_clk) {
+    FILE *fp = popen("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,"
+                     "power.draw,clocks.current.graphics,clocks.current.memory "
+                     "--format=csv,noheader,nounits 2>/dev/null", "r");
     if (!fp) return -1;
 
     char buf[256];
@@ -2569,7 +2584,8 @@ static int get_gpu_stats(double *temp, double *usage, double *memory, double *po
 
     pclose(fp);
 
-    if (sscanf(buf, "%lf, %lf, %lf, %lf", temp, usage, memory, power) != 4)
+    if (sscanf(buf, "%lf, %lf, %lf, %lf, %lf, %lf",
+               temp, usage, memory, power, core_clk, mem_clk) != 6)
         return -1;
 
     return 0;
@@ -2663,6 +2679,51 @@ static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, doubl
     if (mx) *mx = b;
     if (def) *def = c;
     if (cur) *cur = d;
+    return 0;
+}
+
+/* Lowest and highest clock the driver will accept for a lock, read from the
+ * supported-clocks table. Returns 0 on success. */
+static int nvsmi_query_supported_range(int idx, const char *domain, int *lo, int *hi) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "nvidia-smi --query-supported-clocks=%s --format=csv,noheader,nounits -i %d 2>/dev/null",
+             domain, idx);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+    char line[128];
+    int mn = -1, mx = -1, n = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        int v = atoi(line);
+        if (v <= 0) continue;
+        if (mn < 0 || v < mn) mn = v;
+        if (v > mx) mx = v;
+        n++;
+    }
+    int rc = pclose(fp);
+    if (rc != 0 || n == 0) return -1;
+    if (lo) *lo = mn;
+    if (hi) *hi = mx;
+    return 0;
+}
+
+/* The boost ceilings the card advertises (clocks.max.*). Informational: these
+ * can sit above the highest lockable value. */
+static int nvsmi_query_clock_boost(int idx, int *core, int *mem) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "nvidia-smi --query-gpu=clocks.max.graphics,clocks.max.memory "
+             "--format=csv,noheader,nounits -i %d 2>/dev/null", idx);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+    char buf[128];
+    char *got = fgets(buf, sizeof(buf), fp);
+    int rc = pclose(fp);
+    if (!got || rc != 0) return -1;
+    int a, b;
+    if (sscanf(buf, "%d , %d", &a, &b) != 2) return -1;
+    if (core) *core = a;
+    if (mem) *mem = b;
     return 0;
 }
 
@@ -2858,6 +2919,15 @@ static void control_init(void) {
         snprintf(g_control_reason, sizeof(g_control_reason), "nvidia-smi not available");
         return;
     }
+    /* Clock envelope. A failure here does not disable the controls: power
+     * limit still works, and the page hides the clock rows when the range is
+     * unknown rather than offering a slider with no bounds. */
+    if (nvsmi_query_supported_range(gpu_device, "gr", &g_core_lo, &g_core_hi) != 0)
+        fprintf(stderr, "[DagCore] WARNING: could not read supported core clocks\n");
+    if (nvsmi_query_supported_range(gpu_device, "mem", &g_mem_lo, &g_mem_hi) != 0)
+        fprintf(stderr, "[DagCore] WARNING: could not read supported memory clocks\n");
+    nvsmi_query_clock_boost(gpu_device, &g_core_boost, &g_mem_boost);
+
     g_control_ok = 1;
     snprintf(g_control_reason, sizeof(g_control_reason), "ok");
 }
@@ -3158,7 +3228,10 @@ static void *dagtech_metrics_thread(void *arg) {
         double gpu_usage = -1.0;
         double gpu_memory = -1.0;
         double gpu_power = -1.0;
-        get_gpu_stats(&gpu_temp, &gpu_usage, &gpu_memory, &gpu_power);
+        double gpu_core_cur = -1.0;
+        double gpu_mem_cur = -1.0;
+        get_gpu_stats(&gpu_temp, &gpu_usage, &gpu_memory, &gpu_power,
+                      &gpu_core_cur, &gpu_mem_cur);
 
         /* Build JSON metrics response */
         pthread_mutex_lock(&stats_mtx);
@@ -3187,6 +3260,16 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"gpu_power_max\":%.0f,"
             "\"gpu_power_default\":%.0f,"
             "\"gpu_intensity\":%d,"
+            "\"gpu_core_clock\":%.0f,"
+            "\"gpu_core_clock_min\":%d,"
+            "\"gpu_core_clock_max\":%d,"
+            "\"gpu_core_clock_boost\":%d,"
+            "\"gpu_core_clock_lock\":%d,"
+            "\"gpu_mem_clock\":%.0f,"
+            "\"gpu_mem_clock_min\":%d,"
+            "\"gpu_mem_clock_max\":%d,"
+            "\"gpu_mem_clock_boost\":%d,"
+            "\"gpu_mem_clock_lock\":%d,"
             "\"control_available\":%s,"
             "\"control_reason\":\"%s\","
             "\"total_hashes\":%" DT_PRIu64 ","
@@ -3218,6 +3301,8 @@ static void *dagtech_metrics_thread(void *arg) {
             num_threads, current_hashrate, cpu_hashrate, gpu_hashrate,
             cpu_temp, gpu_temp, gpu_usage, gpu_memory, gpu_power,
             g_pl_current, g_pl_min, g_pl_max, g_pl_default, gpu_intensity,
+            gpu_core_cur, g_core_lo, g_core_hi, g_core_boost, gpu_core_clock,
+            gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,  gpu_mem_clock,
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
             (unsigned long long)total_submitted,
@@ -3355,7 +3440,8 @@ static void dagtech_usage(void) {
     printf("\n");
     printf("  Config file keys: WALLET, POOL, PORT, THREADS, WORKER, CPU_LIMIT,\n");
     printf("    METRICS_PORT, METRICS_BIND, GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE,\n");
-    printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN, GPU_POWER_LIMIT\n");
+    printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN, GPU_POWER_LIMIT,\n");
+    printf("    GPU_CORE_CLOCK, GPU_MEM_CLOCK\n");
     printf("\n");
 }
 
@@ -3542,6 +3628,8 @@ static void dagtech_load_config(const char *path) {
         else if (strcmp(key, "DASHBOARD_DIR")== 0) strncpy(dashboard_dir,val, sizeof(dashboard_dir)- 1);
         else if (strcmp(key, "GPU_ENABLED")  == 0) gpu_enabled   = atoi(val);
         else if (strcmp(key, "GPU_POWER_LIMIT") == 0) gpu_power_limit = atoi(val);
+        else if (strcmp(key, "GPU_CORE_CLOCK") == 0) gpu_core_clock = atoi(val);
+        else if (strcmp(key, "GPU_MEM_CLOCK")  == 0) gpu_mem_clock  = atoi(val);
         else if (strcmp(key, "GPU_ALIGN")    == 0) {
             if (gpu_parse_align(val) != 0) gpu_align_reject(val, "GPU_ALIGN");
         }
