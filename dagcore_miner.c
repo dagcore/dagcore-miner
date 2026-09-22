@@ -2794,6 +2794,39 @@ static void dagtech_signal(int sig) {
 /* =========================================================================
  * Usage / Help
  * ========================================================================= */
+/* Options that take a separate value. Used only so that a flag given as the
+ * last word on the command line reports "requires a value" instead of the
+ * misleading "unknown option" - the parser's own tests are guarded by
+ * "&& i + 1 < argc", so such a flag falls through to the unknown branch.
+ *
+ * KEEP IN SYNC: every new option that takes a value must be listed here too.
+ * Forgetting it costs nothing until someone passes that option last, and then
+ * the error blames the option instead of the missing value. */
+static const char *DT_VALUE_OPTS[] = {
+    "--wallet", "--pool", "--port", "--worker", "--password", "--threads",
+    "--submit-margin", "--cpu-limit", "--metrics-port", "--metrics-bind",
+    "--dashboard-dir", "--gpu-intensity", "--gpu-align", "--gpu-throttle",
+    "--gpu-platform", "--gpu-device", "--config", NULL
+};
+
+/* An argument the parser did not recognise. Mining with a silently ignored
+ * flag is worse than not starting: the rig looks healthy while running a
+ * configuration nobody asked for, and a typo in a systemd ExecStart line can
+ * sit there for weeks. */
+static void dagtech_reject_arg(const char *arg) {
+    const char **o;
+    for (o = DT_VALUE_OPTS; *o; o++) {
+        if (strcmp(arg, *o) == 0) {
+            fprintf(stderr, "[DagCore] ERROR: option %s requires a value.\n", arg);
+            fprintf(stderr, "          Run 'dagcore-miner --help' for the full list.\n");
+            exit(1);
+        }
+    }
+    fprintf(stderr, "[DagCore] ERROR: unknown option \"%s\".\n", arg);
+    fprintf(stderr, "          Run 'dagcore-miner --help' for the full list.\n");
+    exit(1);
+}
+
 static void dagtech_usage(void) {
     printf("\n");
     printf("  %s\n", DAGTECH_BANNER);
@@ -3365,6 +3398,8 @@ int main(int argc, char **argv) {
             dagtech_usage();
             return 0;
         }
+        else
+            dagtech_reject_arg(argv[i]);
     }
 
     /* ---- Handle --save-config ---- */
