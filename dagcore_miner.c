@@ -133,10 +133,25 @@ static int  g_cpu_cores        = 0;   /* total logical processors found */
 static int gpu_enabled   = -1;  /* -1=auto, 0=disabled, 1=enabled */
 static int gpu_intensity = 80;  /* 0-100 */
 /* GPU_ALIGN / --gpu-align: how the VRAM-fitted work-item count is rounded down.
- * 0 = "pow2", the historical behaviour and still the default; N > 0 rounds to a
- * multiple of N instead, keeping more work-items than pow2 would.
- * N is required to be a multiple of 32 so the result is always a whole number
- * of warps/wavefronts, and so coop mode - which enqueues global_size * 4 with a
+ * 0 = "pow2" (the default); N > 0 rounds to a multiple of N instead, which
+ * keeps more work-items than pow2 would.
+ *
+ * pow2 is the default on measurement, not on tradition. On an RTX 3080
+ * (2.4 GB budget -> 19754 work-items exact) at intensity 80:
+ *
+ *     pow2      16384 work-items   1.614 MH/s
+ *     align 256 19712 work-items   1.494 MH/s   (-7.4%)
+ *     exact     19754 work-items   1.472 MH/s   (-8.8%)
+ *
+ * So the extra ~20% of work-items cost throughput rather than adding it -
+ * at this scratchpad size the card is memory-bound and the bigger V buffer
+ * (2.4 GB vs 2.0 GB) hurts more than the added parallelism helps. Alignment
+ * alone recovers only ~1.5% of that (19712 vs 19754), so a well-shaped
+ * non-power-of-two does not rescue it either. Keep pow2 unless a different
+ * card measures otherwise - and measure, don't assume.
+ *
+ * N must be a multiple of 32 so the result is a whole number of
+ * warps/wavefronts, and so coop mode - which enqueues global_size * 4 with a
  * local size of 32, and therefore needs global_size % 8 == 0 - stays legal. */
 static int gpu_align     = 0;
 static int gpu_platform  = 0;
@@ -2757,7 +2772,9 @@ static void dagtech_usage(void) {
     printf("    --no-gpu               Disable GPU mining\n");
     printf("    --gpu-intensity <n|list>  GPU intensity per card: 80, 80,60 (default: 80)\n");
     printf("    --gpu-align <pow2|N>   Round GPU work-items down to a power of two\n");
-    printf("                             (default) or to a multiple of N (N %% 32 == 0)\n");
+    printf("                             (default) or to a multiple of N (N %% 32 == 0).\n");
+    printf("                             pow2 measured fastest on RTX 3080: 1.614 MH/s\n");
+    printf("                             vs 1.494 (align 256) and 1.472 (exact fit).\n");
     printf("    --gpu-throttle <n>     GPU duty-cycle limit percent (1-100, default: 100)\n");
     printf("    --gpu-platform <n>     OpenCL platform index (default: 0)\n");
     printf("    --gpu-device <n|n,m|all>  OpenCL device(s): 0, 0,1, all (default: 0)\n");
