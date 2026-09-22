@@ -76,6 +76,10 @@ tuning moves the number and core clock mostly does not.
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Building on the source, and the traps in it |
 | `/help` on the dashboard | What each number and control means, in the browser |
 
+## Contributors
+
+- Valeriu Stefan
+
 ## Licence and attribution
 
 MIT.
