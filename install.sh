@@ -26,7 +26,8 @@ DEF_WORKER="$(hostname -s 2>/dev/null || echo rig)"
 DEF_THREADS="0"
 MIN_DISK_MB=300
 
-WALLET=""; POOL=""; PORT=""; WORKER=""; THREADS=""
+WALLET=""; POOL=""; PORT=""; WORKER=""; THREADS=""; GPU_DEVICE=""
+GPU_COUNT=0
 LAN=""; ASSUME_YES=0; DRY_RUN=0; WANT_SERVICE=""; WANT_START=""
 MODE=""                       # install | upgrade | reconfigure
 
@@ -80,6 +81,9 @@ Options
   --port N            pool port                (default: $DEF_PORT)
   --worker NAME       worker name              (default: this host's name)
   --threads N         CPU mining threads, 0 = GPU only   (default: $DEF_THREADS)
+  --gpu-device WHICH  which graphics cards to use: all, a single number, or a
+                      list like 0,1. Default: all of them when there is more
+                      than one card, otherwise the only one.
   --lan               serve the dashboard to the local network, not just this
                       machine. Read the security note before using it.
   --no-service        do not create a systemd service
@@ -99,6 +103,7 @@ while [ $# -gt 0 ]; do
     --port)    PORT="${2:-}";   shift 2 ;;
     --worker)  WORKER="${2:-}"; shift 2 ;;
     --threads) THREADS="${2:-}"; shift 2 ;;
+    --gpu-device) GPU_DEVICE="${2:-}"; shift 2 ;;
     --prefix)  PREFIX="${2:-}"; shift 2 ;;
     --lan)     LAN=1; shift ;;
     --no-service) WANT_SERVICE=n; shift ;;
@@ -151,20 +156,41 @@ check_platform() {
   esac
 }
 
-# Look for an NVIDIA card without needing lspci: the kernel lists every PCI
-# device's vendor ID, and 0x10de is NVIDIA.
-check_card() {
-  local found=0 d
-  for d in /sys/bus/pci/devices/*/vendor; do
-    [ -r "$d" ] || continue
-    if [ "$(cat "$d")" = "0x10de" ]; then found=1; break; fi
+# How many NVIDIA graphics cards are in this machine.
+#
+# nvidia-smi is the authority when it is there. Otherwise the kernel's PCI
+# list works, with one catch: a modern card registers several functions under
+# the NVIDIA vendor ID - the GPU, an audio device for HDMI, sometimes a USB
+# controller - so counting by vendor alone counts one card as three. Class
+# 0x03xx is the display controller, one per card.
+count_gpus() {
+  local n=0 d cls
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    n="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+    if [ "${n:-0}" -gt 0 ]; then printf '%s' "$n"; return 0; fi
+  fi
+  n=0
+  for d in /sys/bus/pci/devices/*; do
+    [ -r "$d/vendor" ] && [ -r "$d/class" ] || continue
+    [ "$(cat "$d/vendor")" = "0x10de" ] || continue
+    cls="$(cat "$d/class")"
+    case "$cls" in 0x03*) n=$((n + 1)) ;; esac
   done
-  if [ "$found" = 0 ]; then
+  printf '%s' "$n"
+}
+
+check_card() {
+  GPU_COUNT="$(count_gpus)"
+  if [ "${GPU_COUNT:-0}" -lt 1 ]; then
     die "no NVIDIA graphics card found on this machine.
     This miner needs one. If the card is installed, check that it is seated
     properly and that the machine sees it."
   fi
-  ok "NVIDIA graphics card detected"
+  if [ "$GPU_COUNT" = 1 ]; then
+    ok "1 NVIDIA graphics card detected"
+  else
+    ok "$GPU_COUNT NVIDIA graphics cards detected"
+  fi
 }
 
 driver_hint() {
@@ -383,9 +409,23 @@ verify_gpu_visible() {
           --pool 127.0.0.1 --port 1 --metrics-port 0 2>&1 | head -n 40 || true)"
 
   if printf '%s\n' "$out" | grep -q 'Initialised [1-9][0-9]* GPU'; then
-    printf '%s\n' "$out" | grep -o 'Platform [0-9]* Device [0-9]*: .*' | head -n 4 |
+    printf '%s\n' "$out" | grep -o 'Platform [0-9]* Device [0-9]*: .*' | head -n 8 |
       while IFS= read -r line; do ok "$line"; done
-    ok "the miner can use the graphics card"
+    local seen
+    seen="$(printf '%s\n' "$out" | sed -n 's/.*Initialised \([0-9]*\) GPU.*/\1/p' | head -1)"
+    seen="${seen:-0}"
+    if [ "$seen" -ge "${GPU_COUNT:-1}" ]; then
+      ok "the miner is using all $seen of the ${GPU_COUNT:-1} card(s) in this machine"
+    elif [ "$GPU_DEVICE" = all ]; then
+      warn "the miner is using $seen of the $GPU_COUNT cards in this machine."
+      say  "The settings say to use all of them, so one is not being picked up."
+      say  "It may be a different driver or a card OpenCL does not expose."
+      say  "Check what the miner said with:  $PREFIX/start.sh"
+    else
+      ok "the miner is using card $GPU_DEVICE, as configured"
+      say "This machine has $GPU_COUNT cards. To use all of them, set"
+      say "GPU_DEVICE=all in $CONFDIR/config.env and restart."
+    fi
     return 0
   fi
 
@@ -432,6 +472,30 @@ ask_settings() {
   printf '%s' "$PORT" | grep -Eq '^[0-9]+$' || die "the pool port must be a number; got '$PORT'."
   printf '%s' "$THREADS" | grep -Eq '^-?[0-9]+$' || die "CPU threads must be a number; got '$THREADS'."
 
+  # A rig with two cards that mines on one earns half, and says nothing about
+  # it. So more than one card means all of them by default, here and in
+  # unattended runs.
+  if [ -z "$GPU_DEVICE" ]; then
+    if [ "${GPU_COUNT:-1}" -gt 1 ]; then
+      say ""
+      ok "Found $GPU_COUNT graphics cards - all will be used"
+      say "Hashrate adds up across cards; leaving one out simply earns less."
+      if confirm "Use all $GPU_COUNT?" y; then
+        GPU_DEVICE=all
+      else
+        GPU_DEVICE="$(ask 'Which one? (0 is the first card)' 0)"
+      fi
+    else
+      GPU_DEVICE=0
+    fi
+  fi
+  case "$GPU_DEVICE" in
+    all|[0-9]|[0-9][0-9]|*[0-9],[0-9]*) : ;;
+    *) die "--gpu-device must be all, a single number, or a list like 0,1;
+    got '$GPU_DEVICE'." ;;
+  esac
+  [ "$GPU_DEVICE" = all ] && ok "using every card" || ok "using card $GPU_DEVICE"
+
   if [ -z "$LAN" ]; then
     say ""
     say "The dashboard is a web page this miner serves, showing hashrate and"
@@ -475,7 +539,7 @@ WORKER=$WORKER
 THREADS=$THREADS
 GPU_ENABLED=1
 GPU_PLATFORM=0
-GPU_DEVICE=0
+GPU_DEVICE=$GPU_DEVICE
 GPU_INTENSITY=100
 GPU_ALIGN=pow2
 METRICS_PORT=8881
@@ -676,6 +740,8 @@ if [ "$MODE" = upgrade ] && [ -f "$CONFDIR/config.env" ]; then
   # Keep what is there; the summary still needs to know how it is set up.
   LAN=0
   grep -q '^METRICS_BIND=0\.0\.0\.0' "$CONFDIR/config.env" 2>/dev/null && LAN=1
+  GPU_DEVICE="$(sed -n 's/^GPU_DEVICE=//p' "$CONFDIR/config.env" 2>/dev/null | head -1)"
+  [ -n "$GPU_DEVICE" ] || GPU_DEVICE=0
   build_and_install
   step "Configuration"
   ok "kept $CONFDIR/config.env unchanged"
