@@ -487,9 +487,19 @@ typedef struct {
                                           2 = coop  (pre + romix_coop + post, 4 threads/hash) */
     uint64_t         hashes_session;   /* per-GPU hash counter */
     double           hashrate;         /* per-GPU H/s updated by stats loop */
+    /* Mining-loop failure reporting. Every failure path used to retry silently,
+     * so a GPU that stopped producing work looked identical to an idle one. */
+    uint64_t         loop_errors;      /* failed iterations since start */
+    uint64_t         loop_err_last_ms; /* last time we logged one */
 } GpuCtx;
 
 static GpuCtx g_gpus[MAX_GPUS];
+
+/* Report a failed mining-loop iteration. Rate-limited to one line per second
+ * per GPU so a persistent fault does not flood the log, but never silent: the
+ * loop retries at 5 Hz and would otherwise spin forever producing nothing.
+ * `what` names the step, `code` is the OpenCL error (or 0 where there is none). */
+static void gpu_loop_error(GpuCtx *ctx, const char *what, int code);
 
 /* Parse a --gpu-align / GPU_ALIGN value: "pow2", or a positive multiple of 32.
  * Sets gpu_align and returns 0; returns -1 on a value we refuse. */
@@ -512,6 +522,21 @@ static void gpu_align_reject(const char *val, const char *origin) {
             "          Use \"pow2\" (default) or a multiple of 32 (e.g. 256, 1024).\n",
             origin, val ? val : "");
     exit(1);
+}
+
+static void gpu_loop_error(GpuCtx *ctx, const char *what, int code) {
+    uint64_t now = dagtech_now_ms();
+    ctx->loop_errors++;
+    if (ctx->loop_err_last_ms != 0 && now - ctx->loop_err_last_ms < 1000) return;
+    ctx->loop_err_last_ms = now;
+    if (code)
+        fprintf(stderr, "[DagCore GPU] GPU %d: %s failed (err %d); "
+                        "%" DT_PRIu64 " failed iteration(s) so far, retrying.\n",
+                ctx->gpu_index, what, code, (unsigned long long)ctx->loop_errors);
+    else
+        fprintf(stderr, "[DagCore GPU] GPU %d: %s; "
+                        "%" DT_PRIu64 " failed iteration(s) so far, retrying.\n",
+                ctx->gpu_index, what, (unsigned long long)ctx->loop_errors);
 }
 
 /* Compute global_size from intensity (0-100 -> 2^14 .. 2^20) */
@@ -1305,18 +1330,33 @@ static AutotuneTrial autotune_run_trial(GpuCtx *ctx, int requested_batchsize,
             err = clEnqueueNDRangeKernel(ctx->queue, ctx->kernel, 1, NULL,
                                          &ctx->global_size, NULL, 0, NULL, &ev);
         }
-        if (err != CL_SUCCESS) { usleep(200000); continue; }
+        if (err != CL_SUCCESS) {
+            gpu_loop_error(ctx, "kernel enqueue", err);
+            usleep(200000); continue;
+        }
 
         cl_int werr = clWaitForEvents(1, &ev);
         clReleaseEvent(ev);
         long long batch_ms = (long long)(dagtech_now_ms() - gpu_t0);
-        if (werr != CL_SUCCESS) { usleep(200000); continue; }
-        if (batch_ms < 2) { usleep(200000); continue; }  /* implausibly-fast guard */
+        if (werr != CL_SUCCESS) {
+            gpu_loop_error(ctx, "clWaitForEvents", werr);
+            usleep(200000); continue;
+        }
+        /* Implausibly-fast guard: a batch that returns in under 2 ms did no real
+         * work (queue flushed, context lost). Same treatment - reported, not
+         * silently swallowed. */
+        if (batch_ms < 2) {
+            gpu_loop_error(ctx, "batch returned implausibly fast (<2 ms)", 0);
+            usleep(200000); continue;
+        }
 
         cl_uint output_result[2] = { 0xFFFFFFFFu, 0 };
         cl_int rerr = clEnqueueReadBuffer(ctx->queue, ctx->output_buf, CL_TRUE, 0,
                                           2 * sizeof(cl_uint), output_result, 0, NULL, NULL);
-        if (rerr != CL_SUCCESS) { usleep(200000); continue; }
+        if (rerr != CL_SUCCESS) {
+            gpu_loop_error(ctx, "clEnqueueReadBuffer", rerr);
+            usleep(200000); continue;
+        }
 
         /* Account for hashes (global counters - same as main loop) */
         pthread_mutex_lock(&gpu_stats_mtx);
