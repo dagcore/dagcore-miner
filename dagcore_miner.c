@@ -132,6 +132,13 @@ static int  g_cpu_cores        = 0;   /* total logical processors found */
 /* GPU configuration */
 static int gpu_enabled   = -1;  /* -1=auto, 0=disabled, 1=enabled */
 static int gpu_intensity = 80;  /* 0-100 */
+/* GPU_ALIGN / --gpu-align: how the VRAM-fitted work-item count is rounded down.
+ * 0 = "pow2", the historical behaviour and still the default; N > 0 rounds to a
+ * multiple of N instead, keeping more work-items than pow2 would.
+ * N is required to be a multiple of 32 so the result is always a whole number
+ * of warps/wavefronts, and so coop mode - which enqueues global_size * 4 with a
+ * local size of 32, and therefore needs global_size % 8 == 0 - stays legal. */
+static int gpu_align     = 0;
 static int gpu_platform  = 0;
 static int gpu_device    = 0;   /* single-GPU fallback */
 
@@ -484,6 +491,29 @@ typedef struct {
 
 static GpuCtx g_gpus[MAX_GPUS];
 
+/* Parse a --gpu-align / GPU_ALIGN value: "pow2", or a positive multiple of 32.
+ * Sets gpu_align and returns 0; returns -1 on a value we refuse. */
+static int gpu_parse_align(const char *val) {
+    if (!val || !val[0]) return -1;
+    if (strcmp(val, "pow2") == 0) { gpu_align = 0; return 0; }
+    char *end = NULL;
+    long n = strtol(val, &end, 10);
+    if (end == val || *end != '\0') return -1;
+    if (n < 32 || n > (1 << 20) || (n % 32) != 0) return -1;
+    gpu_align = (int)n;
+    return 0;
+}
+
+/* Bad --gpu-align / GPU_ALIGN: fail loudly at startup rather than mine with a
+ * work size the user did not ask for. */
+static void gpu_align_reject(const char *val, const char *origin) {
+    fprintf(stderr,
+            "[DagCore] ERROR: invalid %s value \"%s\".\n"
+            "          Use \"pow2\" (default) or a multiple of 32 (e.g. 256, 1024).\n",
+            origin, val ? val : "");
+    exit(1);
+}
+
 /* Compute global_size from intensity (0-100 -> 2^14 .. 2^20) */
 static size_t gpu_intensity_to_global_size(int intensity) {
     if (intensity <= 0)   return (size_t)1 << 14;
@@ -506,7 +536,8 @@ static size_t gpu_floor_pow2(size_t n) {
  * CL_DEVICE_MAX_MEM_ALLOC_SIZE (commonly ~1/4 of VRAM on NVIDIA/AMD).  Without
  * this clamp the default intensity (80 -> 2^19 work-items -> ~64 GB) fails to
  * allocate on every real GPU and the miner silently drops to CPU-only.
- * Returns a work-item count guaranteed to allocate (power of two). */
+ * Returns a work-item count guaranteed to allocate, rounded down per
+ * gpu_align: a power of two by default, else a multiple of gpu_align. */
 static size_t gpu_fit_global_size(cl_device_id dev, size_t desired, int gpu_index) {
     const size_t per_item = 1024u * 32u * sizeof(cl_uint);  /* 128 KB / work-item */
     cl_ulong global_mem = 0, max_alloc = 0;
@@ -525,12 +556,30 @@ static size_t gpu_fit_global_size(cl_device_id dev, size_t desired, int gpu_inde
     if (max_items < 1) max_items = 1;
     if (desired <= max_items) return desired;
 
-    size_t fitted = max_items;
+    size_t fitted;
+    char   how[32];
+    if (gpu_align > 0) {
+        fitted = max_items - (max_items % (size_t)gpu_align);
+        if (fitted == 0) {
+            /* Budget smaller than one alignment unit. Don't silently ignore the
+             * request - say so and use what actually fits. */
+            fprintf(stderr, "[DagCore GPU] GPU %d: VRAM budget fits only %zu work-items, "
+                            "below the requested alignment of %d - using %zu unaligned.\n",
+                    gpu_index, max_items, gpu_align, max_items);
+            fitted = max_items;
+            snprintf(how, sizeof(how), "unaligned");
+        } else {
+            snprintf(how, sizeof(how), "align %d", gpu_align);
+        }
+    } else {
+        fitted = gpu_floor_pow2(max_items);
+        snprintf(how, sizeof(how), "pow2");
+    }
     printf("[DagCore GPU] GPU %d: requested %zu work-items needs %.1f GB; device caps at "
-           "%.1f GB (max-alloc %.1f GB) -> clamping to %zu.\n",
+           "%.1f GB (max-alloc %.1f GB) -> clamping to %zu (%s).\n",
            gpu_index, desired, (double)desired * per_item / (1024.0*1024.0*1024.0),
            (double)budget / (1024.0*1024.0*1024.0),
-           (double)max_alloc / (1024.0*1024.0*1024.0), fitted);
+           (double)max_alloc / (1024.0*1024.0*1024.0), fitted, how);
     return fitted;
 }
 
@@ -689,7 +738,8 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
     ctx->V_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE, v_bytes, NULL, &err);
     /* Belt-and-suspenders: if the driver still refuses (VRAM fragmented or in
      * use by the display/other apps), halve the work size and retry a few times
-     * before giving up.  global_size stays a power of two so nonce tiling holds. */
+     * before giving up.  Halving preserves both pow2 and multiple-of-N shapes;
+     * nonce tiling only needs a consistent stride, not a power of two. */
     {
         int v_retries = 0;
         while (err != CL_SUCCESS && ctx->global_size > ((size_t)1 << 12) && v_retries < 6) {
@@ -2666,6 +2716,8 @@ static void dagtech_usage(void) {
     printf("    --gpu                  Force enable GPU mining\n");
     printf("    --no-gpu               Disable GPU mining\n");
     printf("    --gpu-intensity <n|list>  GPU intensity per card: 80, 80,60 (default: 80)\n");
+    printf("    --gpu-align <pow2|N>   Round GPU work-items down to a power of two\n");
+    printf("                             (default) or to a multiple of N (N %% 32 == 0)\n");
     printf("    --gpu-throttle <n>     GPU duty-cycle limit percent (1-100, default: 100)\n");
     printf("    --gpu-platform <n>     OpenCL platform index (default: 0)\n");
     printf("    --gpu-device <n|n,m|all>  OpenCL device(s): 0, 0,1, all (default: 0)\n");
@@ -2674,7 +2726,8 @@ static void dagtech_usage(void) {
     printf("    --help                 Show this help\n");
     printf("\n");
     printf("  Config file keys: WALLET, POOL, PORT, THREADS, WORKER, CPU_LIMIT,\n");
-    printf("    GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE, GPU_PLATFORM, GPU_DEVICE\n");
+    printf("    GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE, GPU_PLATFORM, GPU_DEVICE,\n");
+    printf("    GPU_ALIGN\n");
     printf("\n");
 }
 
@@ -2849,6 +2902,9 @@ static void dagtech_load_config(const char *path) {
         else if (strcmp(key, "METRICS_PORT") == 0) metrics_port  = atoi(val);
         else if (strcmp(key, "DASHBOARD_DIR")== 0) strncpy(dashboard_dir,val, sizeof(dashboard_dir)- 1);
         else if (strcmp(key, "GPU_ENABLED")  == 0) gpu_enabled   = atoi(val);
+        else if (strcmp(key, "GPU_ALIGN")    == 0) {
+            if (gpu_parse_align(val) != 0) gpu_align_reject(val, "GPU_ALIGN");
+        }
         else if (strcmp(key, "GPU_INTENSITY")== 0) {
             if (strchr(val, ',')) {
                 gpu_intensity_count = 0;
@@ -2938,6 +2994,8 @@ static int dagtech_save_config(const char *path) {
     fprintf(f, "GPU_THROTTLE=%d\n",  gpu_throttle);
     fprintf(f, "METRICS_PORT=%d\n",  metrics_port);
     fprintf(f, "GPU_ENABLED=%d\n",   gpu_enabled);
+    if (gpu_align > 0) fprintf(f, "GPU_ALIGN=%d\n", gpu_align);
+    else               fprintf(f, "GPU_ALIGN=pow2\n");
     if (gpu_intensity_count > 0) {
         fprintf(f, "GPU_INTENSITY=");
         for (int i = 0; i < gpu_intensity_count; i++)
@@ -3152,6 +3210,10 @@ int main(int argc, char **argv) {
                 if (gpu_intensity > 100) gpu_intensity = 100;
                 gpu_intensity_count = 0;
             }
+        }
+        else if (strcmp(argv[i], "--gpu-align") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (gpu_parse_align(v) != 0) gpu_align_reject(v, "--gpu-align");
         }
         else if (strcmp(argv[i], "--gpu-throttle") == 0 && i + 1 < argc) {
             gpu_throttle = atoi(argv[++i]);
