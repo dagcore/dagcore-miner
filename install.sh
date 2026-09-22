@@ -30,6 +30,8 @@ WALLET=""; POOL=""; PORT=""; WORKER=""; THREADS=""; GPU_DEVICE=""
 GPU_COUNT=0
 LAN=""; ASSUME_YES=0; DRY_RUN=0; WANT_SERVICE=""; WANT_START=""
 MODE=""                       # install | upgrade | reconfigure
+CONFIG_PREEXISTED=0           # a config from BEFORE this run, not one make just made
+PLACEHOLDER_WALLET="0x0000000000000000000000000000000000000000"
 
 # ------------------------------------------------------------------ output --
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -393,6 +395,60 @@ build_and_install() {
   fi
 }
 
+# The last gate before declaring success: whatever ends up on disk has to be
+# a wallet someone can be paid at. An installer that finishes cheerfully while
+# the rig mines to 0x0000...0000 is worse than one that fails, because nothing
+# looks wrong for hours.
+verify_wallet_configured() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  step "Checking the wallet the miner will use"
+
+  local ondisk
+  ondisk="$(sed -n 's/^WALLET=//p' "$CONFDIR/config.env" 2>/dev/null | head -1)"
+
+  if [ -z "$ondisk" ]; then
+    die "no wallet address in $CONFDIR/config.env.
+    Nothing would be paid out. Run this installer again and give an address."
+  fi
+
+  if [ "$ondisk" = "$PLACEHOLDER_WALLET" ]; then
+    warn "the configuration still holds the example wallet address."
+    say  "Mining with it earns nothing at all - it is a placeholder."
+    if [ -n "$WALLET" ] && valid_wallet "$WALLET"; then
+      say ""
+      say "The address you gave this run is $WALLET"
+      if confirm "Write it into the configuration now?" y; then
+        run sed -i "s|^WALLET=.*|WALLET=$WALLET|" "$CONFDIR/config.env"
+        ondisk="$(sed -n 's/^WALLET=//p' "$CONFDIR/config.env" 2>/dev/null | head -1)"
+        [ "$ondisk" = "$WALLET" ] || die "could not write the address into
+    $CONFDIR/config.env. Edit it by hand and set WALLET= to your address."
+        ok "wallet corrected"
+      else
+        die "stopped. Edit $CONFDIR/config.env, set WALLET= to your address,
+    then start the miner."
+      fi
+    else
+      die "edit $CONFDIR/config.env and set WALLET= to your own address,
+    then start the miner. Nothing was started."
+    fi
+  fi
+
+  valid_wallet "$ondisk" || die "the wallet in $CONFDIR/config.env does not look
+    like an address: $ondisk
+    It must be 0x followed by 40 hexadecimal characters."
+
+  # When a wallet was given or asked for this run, that is the one that must
+  # have landed. A mismatch means something overwrote it.
+  if [ -n "$WALLET" ] && [ "$ondisk" != "$WALLET" ] && [ "$MODE" != upgrade ]; then
+    die "the configuration ended up with a different wallet than the one given.
+    on disk: $ondisk
+    given:   $WALLET
+    Edit $CONFDIR/config.env by hand before starting the miner."
+  fi
+
+  ok "mining to $ondisk"
+}
+
 # The install can succeed and still leave a rig earning nothing: with no ICD
 # the miner starts, finds no OpenCL platform, and mines on the CPU at
 # effectively zero. So ask the miner itself, before declaring victory. It lists
@@ -522,9 +578,18 @@ ask_settings() {
 
 write_config() {
   step "Writing configuration"
-  if [ -f "$CONFDIR/config.env" ] && [ "$MODE" != reconfigure ]; then
-    ok "kept the existing $CONFDIR/config.env"
-    say "Nothing in it was changed. Re-run with the reconfigure option to replace it."
+  # The test is whether a config existed BEFORE this run, not whether one
+  # exists now: "make install" drops the example file into place a moment
+  # earlier, and looking at the filesystem afterwards made the installer
+  # believe the operator already had a config. It then kept the example -
+  # wallet and all - and the rig mined to 0x0000...0000.
+  if [ "$CONFIG_PREEXISTED" = 1 ] && [ "$MODE" != reconfigure ]; then
+    local existing
+    existing="$(sed -n 's/^WALLET=//p' "$CONFDIR/config.env" 2>/dev/null | head -1)"
+    ok "kept the configuration that was already here"
+    say "  $CONFDIR/config.env"
+    say "  mining to: ${existing:-(no wallet set)}"
+    say "Nothing in it was changed. Choose Reconfigure to replace it."
     return
   fi
   run mkdir -p "$CONFDIR"
@@ -675,6 +740,11 @@ summary() {
 
   say "Installed in:    $PREFIX"
   say "Configuration:   $CONFDIR/config.env"
+  if [ "$DRY_RUN" != 1 ]; then
+    say "Mining to:       $(sed -n 's/^WALLET=//p' "$CONFDIR/config.env" 2>/dev/null | head -1)"
+  else
+    say "Mining to:       ${WALLET:-(asked during a real run)}"
+  fi
   say "Dashboard:       http://$url_host:8881/"
   say "Help page:       http://$url_host:8881/help"
   show_token
@@ -714,6 +784,11 @@ check_card
 check_driver
 check_disk
 
+# Captured before anything is installed: "make install" creates config.env
+# from the example when there is none, so after that point the filesystem can
+# no longer tell an operator's config from a freshly dropped template.
+[ -f "$CONFDIR/config.env" ] && CONFIG_PREEXISTED=1
+
 # An existing installation is not overwritten without being asked.
 if [ -x "$PREFIX/bin/dagcore-miner" ]; then
   step "Found an existing installation in $PREFIX"
@@ -736,7 +811,7 @@ fi
 
 check_deps
 
-if [ "$MODE" = upgrade ] && [ -f "$CONFDIR/config.env" ]; then
+if [ "$MODE" = upgrade ] && [ "$CONFIG_PREEXISTED" = 1 ]; then
   # Keep what is there; the summary still needs to know how it is set up.
   LAN=0
   grep -q '^METRICS_BIND=0\.0\.0\.0' "$CONFDIR/config.env" 2>/dev/null && LAN=1
@@ -753,6 +828,7 @@ fi
 
 run mkdir -p "$STATEDIR"
 run chmod 0750 "$STATEDIR"
+verify_wallet_configured
 verify_gpu_visible
 setup_service
 start_mining
