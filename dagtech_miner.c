@@ -32,6 +32,7 @@
   #include <arpa/inet.h>
   #include <netdb.h>
   #include <netinet/in.h>
+  #include <netinet/tcp.h>   /* TCP_NODELAY (#44) */
   #include <sys/socket.h>
   #include <unistd.h>
   #ifdef __APPLE__
@@ -1928,6 +1929,19 @@ static int dagtech_connect_pool(void) {
     }
     freeaddrinfo(res);
 
+    /* #44: disable Nagle. Stratum sends short JSON lines a few times per second;
+     * Nagle holds each one until the previous segment is ACKed, which on a
+     * high-RTT link (and with the peer's delayed-ACK timer) adds tens to
+     * hundreds of milliseconds to every share submission. On a pool whose jobs
+     * rotate several times per second that delay alone turns accepted shares
+     * into stales. Best-effort: a failure here is not fatal to mining. */
+    if (sockfd >= 0) {
+        int nodelay = 1;
+        if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY,
+                       (const char *)&nodelay, sizeof(nodelay)) != 0)
+            fprintf(stderr, "[DagTech] WARNING: could not set TCP_NODELAY\n");
+    }
+
     if (sockfd < 0) {
         fprintf(stderr, "[DagTech] Failed to connect to %s:%d\n", pool_host, pool_port);
         return -1;
@@ -2172,10 +2186,16 @@ static int dagtech_make_header(const DagTechJob *j, uint32_t nonce, uint8_t head
     return 0;
 }
 
-/* Rate limiter: max ~5 share submissions per second */
+/* Rate limiter: minimum gap between share submissions.
+ * #44: was 200 ms (max 5 shares/s). Any share found inside that window was
+ * dropped SILENTLY - not submitted, not counted as stale, invisible in the
+ * stats. At GPU hashrates the burst rate comfortably exceeds 5/s, so this was
+ * discarding real work with no way to notice. 20 ms still protects the pool
+ * from a runaway loop while letting normal bursts through. */
 static uint64_t last_submit_ms = 0;
+static uint64_t rate_limited_shares = 0;  /* #44: shares dropped by the limiter */
 static pthread_mutex_t submit_rate_mtx = PTHREAD_MUTEX_INITIALIZER;
-#define SUBMIT_MIN_INTERVAL_MS 200
+#define SUBMIT_MIN_INTERVAL_MS 20
 
 static uint64_t dagtech_now_ms(void) {
 #ifdef _WIN32
@@ -2196,6 +2216,7 @@ static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu
     pthread_mutex_lock(&submit_rate_mtx);
     uint64_t elapsed_ms = now_ms - last_submit_ms;
     if (elapsed_ms < SUBMIT_MIN_INTERVAL_MS) {
+        rate_limited_shares++;
         pthread_mutex_unlock(&submit_rate_mtx);
         return;
     }
@@ -3344,12 +3365,13 @@ int main(int argc, char **argv) {
 #endif
                     {
                     printf("[DagTech] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
-                           "Shares: %lu/%lu/%lu/%lu (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                           "Shares: %lu/%lu/%lu/%lu (sub/acc/rej/stale) | Dropped: %lu | Uptime: %dh%dm\n",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
                            (unsigned long)total_submitted,
                            (unsigned long)total_accepted,
                            (unsigned long)total_rejected,
                            (unsigned long)total_stale,
+                           (unsigned long)rate_limited_shares,
                            up_h, up_m);
                     }
                 } else {
