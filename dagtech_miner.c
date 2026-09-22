@@ -71,6 +71,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <time.h>
 #include <errno.h>
 #include <math.h>
@@ -1929,23 +1930,22 @@ static int dagtech_connect_pool(void) {
     }
     freeaddrinfo(res);
 
+    if (sockfd < 0) {
+        fprintf(stderr, "[DagTech] Failed to connect to %s:%d\n", pool_host, pool_port);
+        return -1;
+    }
+
     /* #44: disable Nagle. Stratum sends short JSON lines a few times per second;
      * Nagle holds each one until the previous segment is ACKed, which on a
      * high-RTT link (and with the peer's delayed-ACK timer) adds tens to
      * hundreds of milliseconds to every share submission. On a pool whose jobs
      * rotate several times per second that delay alone turns accepted shares
      * into stales. Best-effort: a failure here is not fatal to mining. */
-    if (sockfd >= 0) {
-        int nodelay = 1;
-        if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY,
-                       (const char *)&nodelay, sizeof(nodelay)) != 0)
-            fprintf(stderr, "[DagTech] WARNING: could not set TCP_NODELAY\n");
-    }
+    int nodelay = 1;
+    if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY,
+                   (const char *)&nodelay, sizeof(nodelay)) != 0)
+        fprintf(stderr, "[DagTech] WARNING: could not set TCP_NODELAY\n");
 
-    if (sockfd < 0) {
-        fprintf(stderr, "[DagTech] Failed to connect to %s:%d\n", pool_host, pool_port);
-        return -1;
-    }
     return 0;
 }
 
@@ -2562,6 +2562,7 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"accepted\":%" DT_PRIu64 ","
             "\"rejected\":%" DT_PRIu64 ","
             "\"stale\":%" DT_PRIu64 ","
+            "\"dropped\":%" PRIu64 ","
             "\"cpu_submitted\":%" DT_PRIu64 ","
             "\"gpu_submitted\":%" DT_PRIu64 ","
             "\"cpu_accepted\":%" DT_PRIu64 ","
@@ -2589,6 +2590,7 @@ static void *dagtech_metrics_thread(void *arg) {
             (unsigned long long)total_accepted,
             (unsigned long long)total_rejected,
             (unsigned long long)total_stale,
+            rate_limited_shares,
             (unsigned long long)cpu_submitted,
             (unsigned long long)gpu_submitted,
             (unsigned long long)cpu_accepted,
@@ -3354,33 +3356,39 @@ int main(int argc, char **argv) {
                             strncat(_gd, _t, sizeof(_gd) - strlen(_gd) - 1);
                         }
                         printf("[DagTech] %.2f H/s | CPU: %.2f H/s%s | "
-                               "Shares: %lu/%lu/%lu/%lu (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                               "Shares: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
+                               " (sub/acc/rej/stale) | Dropped: %" PRIu64 " | Uptime: %dh%dm\n",
                                current_hashrate, cpu_hashrate, _gd,
-                               (unsigned long)total_submitted,
-                               (unsigned long)total_accepted,
-                               (unsigned long)total_rejected,
-                               (unsigned long)total_stale,
+                               total_submitted,
+                               total_accepted,
+                               total_rejected,
+                               total_stale,
+                               rate_limited_shares,
                                up_h, up_m);
                     } else
 #endif
                     {
                     printf("[DagTech] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
-                           "Shares: %lu/%lu/%lu/%lu (sub/acc/rej/stale) | Dropped: %lu | Uptime: %dh%dm\n",
+                           "Shares: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
+                           " (sub/acc/rej/stale) | Dropped: %" PRIu64 " | Uptime: %dh%dm\n",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
-                           (unsigned long)total_submitted,
-                           (unsigned long)total_accepted,
-                           (unsigned long)total_rejected,
-                           (unsigned long)total_stale,
-                           (unsigned long)rate_limited_shares,
+                           total_submitted,
+                           total_accepted,
+                           total_rejected,
+                           total_stale,
+                           rate_limited_shares,
                            up_h, up_m);
                     }
                 } else {
-                    printf("[DagTech] %.1f H/s | Shares: %lu/%lu/%lu/%lu (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                    printf("[DagTech] %.1f H/s | "
+                           "Shares: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
+                           " (sub/acc/rej/stale) | Dropped: %" PRIu64 " | Uptime: %dh%dm\n",
                            current_hashrate,
-                           (unsigned long)total_submitted,
-                           (unsigned long)total_accepted,
-                           (unsigned long)total_rejected,
-                           (unsigned long)total_stale,
+                           total_submitted,
+                           total_accepted,
+                           total_rejected,
+                           total_stale,
+                           rate_limited_shares,
                            up_h, up_m);
                 }
 
