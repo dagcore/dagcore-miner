@@ -3447,17 +3447,30 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
             char err[200] = "";
 
             if (json_is_true(body, "reset")) {
-                if (nvml_unlock_clock(which, err, sizeof(err)) != 0) {
-                    char msg[256];
-                    snprintf(msg, sizeof(msg), "nvidia-smi: %s", err);
-                    http_send_err(cfd, 500, "Internal Server Error", msg);
-                    return;
-                }
+                /* Record the intent before touching the card. "I do not want a
+                 * lock here" is worth keeping even if NVML then refuses the
+                 * unlock - otherwise a card that says there was nothing to
+                 * release leaves the old value in overrides.env, and the next
+                 * start puts the lock back. A reset is saved at once anyway:
+                 * it is the safe direction and needs no trial. */
                 if (which) gpu_mem_clock = 0; else gpu_core_clock = 0;
                 g_trial[which].active = 0;
                 snprintf(g_trial[which].status, sizeof(g_trial[which].status), "none");
-                /* A reset is saved at once: it is the safe direction. */
                 int saved = (overrides_set(TRIAL_KEY[which], "0") == 0);
+
+                if (nvml_unlock_clock(which, err, sizeof(err)) != 0) {
+                    fprintf(stderr, "[DagCore] %s unlock failed: %s\n",
+                            which ? "Memory clock" : "Core clock", err);
+                    char resp[400];
+                    snprintf(resp, sizeof(resp),
+                             "{\"ok\":false,\"saved\":%s,\"error\":\"NVML: %s%s\"}",
+                             saved ? "true" : "false", err,
+                             saved ? " - the saved config was cleared, so the lock "
+                                     "will be gone after a restart"
+                                   : " - and the saved config could not be written either");
+                    http_send_json(cfd, 500, "Internal Server Error", resp);
+                    return;
+                }
                 printf("[DagCore] %s reset to driver default via control API%s\n",
                        which ? "Memory clock" : "Core clock", saved ? "" : " (NOT saved)");
                 char resp[128];
