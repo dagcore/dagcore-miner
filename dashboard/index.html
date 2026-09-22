@@ -151,6 +151,35 @@ canvas{width:100%;height:100%;display:block}
 .gputable .idx{color:var(--mine);font-weight:700}
 .table-scroll{overflow-x:auto}
 
+/* ---------- settings ---------- */
+.set-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 0}
+.set-row + .set-row{border-top:1px solid var(--line-soft)}
+.set-row .lab{flex:1 1 150px;min-width:0}
+.set-row .lab b{display:block;font-size:13px;font-weight:600;color:var(--text)}
+.set-row .lab small{display:block;color:var(--muted-2);font-size:11.5px;margin-top:3px}
+.set-ctl{display:flex;align-items:center;gap:10px;flex:2 1 260px;min-width:0}
+input[type=range]{flex:1 1 auto;min-width:90px;accent-color:var(--mine);background:transparent}
+input[type=number],input[type=password],input[type=text]{
+  font:inherit;font-size:13px;color:var(--text);background:rgba(0,0,0,.35);
+  border:1px solid var(--line);border-radius:9px;padding:8px 10px;min-width:0}
+input[type=number]{width:84px;text-align:right}
+input[type=password],input[type=text]{flex:1 1 auto;width:100%}
+button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+  border:1px solid rgba(255,171,46,.6);border-radius:9px;padding:9px 16px;min-height:40px;
+  color:var(--mine);background:rgba(255,171,46,.09)}
+button:hover:not(:disabled){background:rgba(255,171,46,.18)}
+button.ghost{color:var(--blue);border-color:rgba(77,157,255,.5);background:rgba(77,157,255,.08)}
+button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
+.set-note{font-size:12px;margin-top:14px;padding:11px 13px;border-radius:9px;
+  border:1px solid var(--line-soft);background:rgba(0,0,0,.25);color:var(--muted)}
+.set-note.ok{color:var(--ok);border-color:rgba(63,224,138,.4)}
+.set-note.err{color:var(--bad);border-color:rgba(244,162,156,.45)}
+.set-note.busy{color:var(--mine);border-color:rgba(255,171,46,.45)}
+#restartOverlay{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:rgba(255,171,46,.10);border:1px solid rgba(255,171,46,.45);
+  color:var(--mine);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
+#restartOverlay .pulse{width:9px;height:9px;border-radius:50%;background:var(--mine);
+  flex:0 0 auto;animation:pulse 1.2s ease-in-out infinite}
 footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;letter-spacing:.06em;line-height:1.8}
 .stale{opacity:.5;transition:opacity .3s}
 @media (max-width:620px){
@@ -163,6 +192,12 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 </head>
 <body>
 <div class="wrap">
+
+  <div id="restartOverlay" hidden>
+    <span class="pulse"></span>
+    <span>Miner is restarting to apply the new intensity&hellip;</span>
+    <small id="restartDetail">reconnecting automatically</small>
+  </div>
 
   <div id="offline" hidden>
     <span class="pulse"></span>
@@ -289,6 +324,38 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <div class="row"><span class="k">GPUs active</span><span class="v" id="gpuCount">&mdash;</span></div>
       <div class="row"><span class="k">Last update</span><span class="v" id="lastUpdate">&mdash;</span></div>
     </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <h2>Settings</h2>
+
+    <div class="set-row">
+      <span class="lab"><b>Control token</b><small id="tokState">required to enable the controls below</small></span>
+      <span class="set-ctl">
+        <input type="password" id="tokInput" placeholder="paste token from the miner log" autocomplete="off" spellcheck="false">
+        <button class="ghost" id="tokSave" type="button">Save</button>
+      </span>
+    </div>
+
+    <div class="set-row">
+      <span class="lab"><b>GPU power limit</b><small id="plRange">&mdash;</small></span>
+      <span class="set-ctl">
+        <input type="range" id="plRange1" min="0" max="100" value="0" disabled>
+        <input type="number" id="plNum" disabled>
+        <button id="plApply" type="button" disabled>Apply</button>
+      </span>
+    </div>
+
+    <div class="set-row">
+      <span class="lab"><b>GPU intensity</b><small>0&ndash;100. Applied on restart.</small></span>
+      <span class="set-ctl">
+        <input type="range" id="inRange" min="0" max="100" value="80" disabled>
+        <input type="number" id="inNum" min="0" max="100" disabled>
+        <button id="inApply" type="button" disabled>Save &amp; restart</button>
+      </span>
+    </div>
+
+    <div class="set-note" id="setNote">Enter the control token to enable these controls.</div>
   </section>
 
   <footer>
@@ -548,6 +615,11 @@ function poll(){
 
   function fail(why){
     clearTimeout(timer);
+    if (restarting){
+      /* Expected downtime, not a fault: keep the restart banner and retry fast. */
+      setTimeout(poll, 2000);
+      return;
+    }
     setOnline(false, last
       ? "no response from /metrics (" + why + ") — showing last known values"
       : "no response from /metrics (" + why + ") — waiting for the miner");
@@ -562,8 +634,10 @@ function poll(){
     try { d = JSON.parse(xhr.responseText); }
     catch (e){ return fail("bad JSON"); }
     last = d;
+    if (restarting){ restarting = false; $("restartOverlay").hidden = true; }
     setOnline(true);
     render(d);
+    syncSettings(d);
     var now = Date.now();
     history.push({ t: now, v: d.hashrate || 0 });
     while (history.length && history[0].t < now - WINDOW_MS) history.shift();
@@ -572,6 +646,126 @@ function poll(){
   };
   xhr.onerror = function(){ if (!done){ done = true; fail("connection refused"); } };
   try { xhr.send(); } catch (e){ if (!done){ done = true; fail("send failed"); } }
+}
+
+/* ---- settings ---------------------------------------------------- */
+var token = "";
+var restarting = false;          /* suppresses the offline banner while systemd restarts us */
+var plTouched = false, inTouched = false;   /* don't fight the user mid-drag */
+
+function lsGet(k){ try { return localStorage.getItem(k) || ""; } catch (e){ return ""; } }
+function lsSet(k, v){ try { localStorage.setItem(k, v); } catch (e){} }
+
+function note(msg, cls){
+  var n = $("setNote");
+  n.textContent = msg;
+  n.className = "set-note" + (cls ? " " + cls : "");
+}
+
+function controlsEnabled(on){
+  var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply"], i;
+  for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
+}
+
+/* The server is the authority on whether controls can work: no token, GPU off,
+ * more than one card, or no nvidia-smi all disable them, each with a reason. */
+function syncSettings(d){
+  var avail = d.control_available === true;
+  if (!token){
+    controlsEnabled(false);
+    note("Enter the control token to enable these controls.");
+  } else if (!avail){
+    controlsEnabled(false);
+    note("Controls unavailable: " + (d.control_reason || "unknown"), "err");
+  } else {
+    controlsEnabled(true);
+    if ($("setNote").className === "set-note") note("Controls ready.", "ok");
+  }
+
+  if (d.gpu_power_min >= 0 && d.gpu_power_max > 0){
+    txt("plRange", "allowed " + d.gpu_power_min.toFixed(0) + "\u2013" +
+        d.gpu_power_max.toFixed(0) + " W, default " + d.gpu_power_default.toFixed(0) + " W");
+    var r = $("plRange1"), n2 = $("plNum");
+    r.min = n2.min = d.gpu_power_min; r.max = n2.max = d.gpu_power_max;
+    if (!plTouched && d.gpu_power_limit > 0){ r.value = d.gpu_power_limit; n2.value = d.gpu_power_limit; }
+  }
+  if (!inTouched && typeof d.gpu_intensity === "number"){
+    $("inRange").value = d.gpu_intensity; $("inNum").value = d.gpu_intensity;
+  }
+}
+
+function post(path, payload, done){
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", path, true);
+  xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.setRequestHeader("X-DagCore-Token", token);
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4) return;
+    var d = null;
+    try { d = JSON.parse(xhr.responseText); } catch (e){}
+    done(xhr.status, d);
+  };
+  xhr.onerror = function(){ done(0, null); };
+  xhr.send(JSON.stringify(payload));
+}
+
+function link(rangeId, numId, onTouch){
+  var r = $(rangeId), n = $(numId);
+  function sync(from, to){ return function(){ to.value = from.value; onTouch(); }; }
+  r.addEventListener("input", sync(r, n));
+  n.addEventListener("input", sync(n, r));
+}
+link("plRange1", "plNum", function(){ plTouched = true; });
+link("inRange",  "inNum",  function(){ inTouched = true; });
+
+$("tokSave").addEventListener("click", function(){
+  token = $("tokInput").value.replace(/\s+/g, "");
+  lsSet("dagcore_token", token);
+  txt("tokState", token ? "token saved in this browser" : "required to enable the controls below");
+  note(token ? "Token saved. Controls will enable on the next update." : "Token cleared.", token ? "ok" : "");
+});
+
+$("plApply").addEventListener("click", function(){
+  var w = parseInt($("plNum").value, 10);
+  if (!isFinite(w)) return note("Enter a wattage first.", "err");
+  note("Applying " + w + " W\u2026", "busy");
+  post("api/power-limit", { watts: w }, function(st, d){
+    plTouched = false;
+    if (st === 200 && d && d.ok)
+      note("Power limit set to " + d.applied + " W" + (d.saved ? " and saved." : " (NOT saved)."), d.saved ? "ok" : "err");
+    else if (st === 401) note("Rejected: invalid token.", "err");
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err");
+  });
+});
+
+$("inApply").addEventListener("click", function(){
+  var v = parseInt($("inNum").value, 10);
+  if (!isFinite(v)) return note("Enter an intensity first.", "err");
+  note("Saving intensity " + v + "\u2026", "busy");
+  post("api/intensity", { value: v }, function(st, d){
+    inTouched = false;
+    if (st === 200 && d && d.ok){
+      if (d.restarting){
+        restarting = true;
+        $("restartOverlay").hidden = false;
+        $("offline").hidden = true;
+        note("Intensity " + v + " saved. Miner is restarting.", "busy");
+        /* The miner can take ~10s to wind down, then systemd waits RestartSec.
+         * Poll faster than usual until it answers again. */
+        setTimeout(function(){ poll(); }, 3000);
+      } else {
+        note("Intensity " + v + " saved. " + (d.note || "Restart the miner to apply."), "ok");
+      }
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err");
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err");
+  });
+});
+
+token = lsGet("dagcore_token");
+if (token){
+  $("tokInput").value = token;
+  txt("tokState", "token saved in this browser");
 }
 
 var rt;
