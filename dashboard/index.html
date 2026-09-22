@@ -175,6 +175,12 @@ button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
 .set-note.ok{color:var(--ok);border-color:rgba(63,224,138,.4)}
 .set-note.err{color:var(--bad);border-color:rgba(244,162,156,.45)}
 .set-note.busy{color:var(--mine);border-color:rgba(255,171,46,.45)}
+.trial{font-size:11.5px;margin-top:6px;display:flex;align-items:center;gap:7px}
+.trial i{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--muted-2)}
+.trial.running{color:var(--mine)} .trial.running i{background:var(--mine);animation:pulse 1.6s ease-in-out infinite}
+.trial.saved{color:var(--ok)}     .trial.saved i{background:var(--ok)}
+.trial.failed{color:var(--bad)}   .trial.failed i{background:var(--bad)}
+.set-row .lab small.range{color:var(--muted-2)}
 #restartOverlay{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   background:rgba(255,171,46,.10);border:1px solid rgba(255,171,46,.45);
   color:var(--mine);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
@@ -347,6 +353,28 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="range" id="plRange1" min="0" max="100" value="0" disabled>
         <input type="number" id="plNum" disabled>
         <button id="plApply" type="button" disabled>Apply</button>
+      </span>
+    </div>
+
+    <div class="set-row" id="coreRow" hidden>
+      <span class="lab"><b>Core clock</b><small class="range" id="coreRange">&mdash;</small>
+        <span class="trial" id="coreTrial" hidden><i></i><span></span></span></span>
+      <span class="set-ctl">
+        <input type="range" id="coreSlider" min="0" max="100" value="0" disabled>
+        <input type="number" id="coreNum" disabled>
+        <button id="coreApply" type="button" disabled>Apply</button>
+        <button class="ghost" id="coreReset" type="button" disabled>Reset</button>
+      </span>
+    </div>
+
+    <div class="set-row" id="memRow" hidden>
+      <span class="lab"><b>Memory clock</b><small class="range" id="memRange">&mdash;</small>
+        <span class="trial" id="memTrial" hidden><i></i><span></span></span></span>
+      <span class="set-ctl">
+        <input type="range" id="memSlider" min="0" max="100" value="0" disabled>
+        <input type="number" id="memNum" disabled>
+        <button id="memApply" type="button" disabled>Apply</button>
+        <button class="ghost" id="memReset" type="button" disabled>Reset</button>
       </span>
     </div>
 
@@ -707,7 +735,9 @@ function noteIdle(msg, cls){
 }
 
 function controlsEnabled(on){
-  var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply"], i;
+  var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply",
+             "coreSlider","coreNum","coreApply","coreReset",
+             "memSlider","memNum","memApply","memReset"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
 }
 
@@ -733,9 +763,61 @@ function syncSettings(d){
     r.min = n2.min = d.gpu_power_min; r.max = n2.max = d.gpu_power_max;
     if (!plTouched && d.gpu_power_limit > 0){ r.value = d.gpu_power_limit; n2.value = d.gpu_power_limit; }
   }
+  syncClock(d, "core", "gpu_core_clock", "trial_core");
+  syncClock(d, "mem",  "gpu_mem_clock",  "trial_mem");
+
   if (!inTouched && typeof d.gpu_intensity === "number"){
     $("inRange").value = d.gpu_intensity; $("inNum").value = d.gpu_intensity;
   }
+}
+
+var clkTouched = { core: false, mem: false };
+
+/* One clock row. Hidden entirely when the card's supported range is unknown:
+ * a slider with no bounds is worse than no slider. */
+function syncClock(d, id, base, trialBase){
+  var lo = d[base + "_min"], hi = d[base + "_max"];
+  var row = $(id + "Row");
+  if (typeof lo !== "number" || typeof hi !== "number" || lo < 0 || hi <= 0){
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+
+  var boost = d[base + "_boost"];
+  var cur = d[base];
+  txt(id + "Range",
+      "lockable " + lo + "\u2013" + hi + " MHz" +
+      (typeof boost === "number" && boost > hi ? " (boost ceiling " + boost + ")" : "") +
+      (typeof cur === "number" && cur > 0 ? " \u00b7 now " + Math.round(cur) + " MHz" : ""));
+
+  var sl = $(id + "Slider"), nm = $(id + "Num");
+  sl.min = nm.min = lo; sl.max = nm.max = hi;
+  if (!clkTouched[id]){
+    var lock = d[base + "_lock"];
+    var show = (typeof lock === "number" && lock > 0) ? lock
+             : (typeof cur === "number" && cur > 0 ? Math.round(cur) : lo);
+    sl.value = show; nm.value = show;
+  }
+
+  /* Trial state: running with a countdown, or the verdict of the last one. */
+  var st = d[trialBase + "_status"], val = d[trialBase + "_value"],
+      rem = d[trialBase + "_remaining"];
+  var box = $(id + "Trial");
+  if (!st || st === "none"){ box.hidden = true; return; }
+  box.hidden = false;
+  box.className = "trial " + st;
+  var label;
+  if (st === "running"){
+    var m = Math.floor(rem / 60), sec = rem % 60;
+    label = "on trial at " + val + " MHz \u2014 " + m + "m " + (sec < 10 ? "0" : "") + sec +
+            "s left before it is saved";
+  } else if (st === "saved"){
+    label = val + " MHz passed its trial and was saved";
+  } else {
+    label = val + " MHz failed its trial (rejected shares moved) \u2014 not saved";
+  }
+  box.getElementsByTagName("span")[0].textContent = label;
 }
 
 function restartBanner(cls, text, detail){
@@ -785,8 +867,41 @@ function link(rangeId, numId, onTouch){
   r.addEventListener("input", sync(r, n));
   n.addEventListener("input", sync(n, r));
 }
-link("plRange1", "plNum", function(){ plTouched = true; });
-link("inRange",  "inNum",  function(){ inTouched = true; });
+link("plRange1",  "plNum",  function(){ plTouched = true; });
+link("inRange",   "inNum",   function(){ inTouched = true; });
+link("coreSlider","coreNum", function(){ clkTouched.core = true; });
+link("memSlider", "memNum",  function(){ clkTouched.mem  = true; });
+
+/* Clock apply / reset. The reply says the value is on trial, not that it is
+ * kept - the countdown in the row is the thing to watch. */
+function wireClock(id, path, label){
+  $(id + "Apply").addEventListener("click", function(){
+    var v = parseInt($(id + "Num").value, 10);
+    if (!isFinite(v)) return note("Enter a " + label + " clock first.", "err", 5000);
+    note("Locking " + label + " clock to " + v + " MHz\u2026", "busy", 15000);
+    post(path, { mhz: v }, function(st, d){
+      clkTouched[id] = false;
+      if (st === 200 && d && d.ok)
+        note(label + " clock locked to " + d.applied + " MHz \u2014 on trial for " +
+             Math.round((d.trial_seconds || 600) / 60) + " min before it is saved.", "ok", 10000);
+      else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+      else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
+    });
+  });
+  $(id + "Reset").addEventListener("click", function(){
+    note("Resetting " + label + " clock\u2026", "busy", 15000);
+    post(path, { reset: true }, function(st, d){
+      clkTouched[id] = false;
+      if (st === 200 && d && d.ok)
+        note(label + " clock handed back to the driver" +
+             (d.saved ? " and saved." : " (NOT saved)."), d.saved ? "ok" : "err", 8000);
+      else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+      else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
+    });
+  });
+}
+wireClock("core", "api/core-clock", "core");
+wireClock("mem",  "api/mem-clock",  "memory");
 
 $("tokSave").addEventListener("click", function(){
   token = $("tokInput").value.replace(/\s+/g, "");
