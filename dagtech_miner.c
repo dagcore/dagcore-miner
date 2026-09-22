@@ -71,7 +71,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <inttypes.h>
 #include <time.h>
 #include <errno.h>
 #include <math.h>
@@ -2562,7 +2561,7 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"accepted\":%" DT_PRIu64 ","
             "\"rejected\":%" DT_PRIu64 ","
             "\"stale\":%" DT_PRIu64 ","
-            "\"dropped\":%" PRIu64 ","
+            "\"dropped\":%" DT_PRIu64 ","
             "\"cpu_submitted\":%" DT_PRIu64 ","
             "\"gpu_submitted\":%" DT_PRIu64 ","
             "\"cpu_accepted\":%" DT_PRIu64 ","
@@ -2590,7 +2589,7 @@ static void *dagtech_metrics_thread(void *arg) {
             (unsigned long long)total_accepted,
             (unsigned long long)total_rejected,
             (unsigned long long)total_stale,
-            rate_limited_shares,
+            (unsigned long long)rate_limited_shares,
             (unsigned long long)cpu_submitted,
             (unsigned long long)gpu_submitted,
             (unsigned long long)cpu_accepted,
@@ -3356,39 +3355,39 @@ int main(int argc, char **argv) {
                             strncat(_gd, _t, sizeof(_gd) - strlen(_gd) - 1);
                         }
                         printf("[DagTech] %.2f H/s | CPU: %.2f H/s%s | "
-                               "Shares: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-                               " (sub/acc/rej/stale) | Dropped: %" PRIu64 " | Uptime: %dh%dm\n",
+                               "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
+                               " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
                                current_hashrate, cpu_hashrate, _gd,
-                               total_submitted,
-                               total_accepted,
-                               total_rejected,
-                               total_stale,
-                               rate_limited_shares,
+                               (unsigned long long)total_submitted,
+                               (unsigned long long)total_accepted,
+                               (unsigned long long)total_rejected,
+                               (unsigned long long)total_stale,
+                               (unsigned long long)rate_limited_shares,
                                up_h, up_m);
                     } else
 #endif
                     {
                     printf("[DagTech] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
-                           "Shares: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-                           " (sub/acc/rej/stale) | Dropped: %" PRIu64 " | Uptime: %dh%dm\n",
+                           "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
+                           " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
-                           total_submitted,
-                           total_accepted,
-                           total_rejected,
-                           total_stale,
-                           rate_limited_shares,
+                           (unsigned long long)total_submitted,
+                           (unsigned long long)total_accepted,
+                           (unsigned long long)total_rejected,
+                           (unsigned long long)total_stale,
+                           (unsigned long long)rate_limited_shares,
                            up_h, up_m);
                     }
                 } else {
                     printf("[DagTech] %.1f H/s | "
-                           "Shares: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-                           " (sub/acc/rej/stale) | Dropped: %" PRIu64 " | Uptime: %dh%dm\n",
+                           "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
+                           " (sub/acc/rej/stale) | Dropped: %" DT_PRIu64 " | Uptime: %dh%dm\n",
                            current_hashrate,
-                           total_submitted,
-                           total_accepted,
-                           total_rejected,
-                           total_stale,
-                           rate_limited_shares,
+                           (unsigned long long)total_submitted,
+                           (unsigned long long)total_accepted,
+                           (unsigned long long)total_rejected,
+                           (unsigned long long)total_stale,
+                           (unsigned long long)rate_limited_shares,
                            up_h, up_m);
                 }
 
