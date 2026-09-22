@@ -69,13 +69,12 @@ section > h2:first-child{margin-top:0;padding-top:0;border-top:0}
 h2{font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
   color:var(--label);margin:0 0 16px}
 h3{font-size:14px;font-weight:600;color:var(--mine-soft);margin:22px 0 6px}
-/* The page frame matches the dashboard, but a 1180px line of monospace is
- * about 110 characters - too long to read comfortably. Prose keeps a sane
- * measure inside the full-width cards; tables, code and the contents list use
- * the whole width. */
-p{margin:0 0 12px;color:var(--muted);max-width:74ch}
-p.lead{color:var(--text-2);max-width:74ch}
-ul,ol.body{margin:0 0 14px;padding-left:22px;color:var(--muted);max-width:74ch}
+/* Text uses the full width of its card, like the tables. No measure cap: the
+ * card is about 135ch wide at 1180px, so any cap short enough to shorten a
+ * line would also leave the text narrower than the card it sits in. */
+p{margin:0 0 12px;color:var(--muted)}
+p.lead{color:var(--text-2)}
+ul,ol.body{margin:0 0 14px;padding-left:22px;color:var(--muted)}
 li{margin:0 0 7px}
 b,strong{color:var(--text);font-weight:600}
 code{background:rgba(0,0,0,.4);border:1px solid var(--line-soft);border-radius:5px;
@@ -90,8 +89,7 @@ td{padding:9px 12px 9px 0;border-top:1px solid var(--line-soft);
   color:var(--muted);vertical-align:top}
 td:first-child{color:var(--text);white-space:nowrap}
 .table-scroll{overflow-x:auto;margin-bottom:16px}
-.note{border-radius:9px;padding:12px 14px;margin:0 0 16px;font-size:13px;
-  line-height:1.7;max-width:78ch}
+.note{border-radius:9px;padding:12px 14px;margin:0 0 16px;font-size:13px;line-height:1.7}
 .note.warn{border:1px solid rgba(242,198,109,.4);background:rgba(242,198,109,.09);color:var(--warn)}
 .note.bad{border:1px solid rgba(244,162,156,.45);background:rgba(244,162,156,.09);color:var(--bad)}
 .note.ok{border:1px solid rgba(63,224,138,.4);background:rgba(63,224,138,.09);color:var(--ok)}
