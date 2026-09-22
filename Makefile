@@ -42,6 +42,7 @@ KERNEL    := dagcore_gpu.cl
 DASHBOARD := dashboard/index.html
 # Fontul IBM Plex Mono e inline in pagina; OFL 1.1 cere ca licenta sa il insoteasca.
 DASH_OFL  := dashboard/OFL.txt
+CONFIG_EX := config.env.example
 
 BIN_GPU := dagcore-miner
 BIN_CPU := dagcore-miner-cpu
@@ -49,6 +50,9 @@ BIN_CPU := dagcore-miner-cpu
 PREFIX   ?= /usr/local
 BINDIR   := $(PREFIX)/bin
 SHAREDIR := $(PREFIX)/share/dagcore-miner
+# Configul sta in /etc indiferent de PREFIX: e fisier de operator, nu payload
+# de instalare. Suprascriabil pentru pachetari care vor altceva.
+SYSCONFDIR ?= /etc/dagcore-miner
 
 .PHONY: all cpu check warn install uninstall clean help
 all: $(BIN_GPU)
@@ -84,17 +88,30 @@ install: $(BIN_GPU)
 	install -d $(DESTDIR)$(SHAREDIR)/dashboard
 	install -m 0644 $(DASHBOARD) $(DESTDIR)$(SHAREDIR)/dashboard/
 	install -m 0644 $(DASH_OFL)  $(DESTDIR)$(SHAREDIR)/dashboard/
+	install -d -m 0750 $(DESTDIR)$(SYSCONFDIR)
+	install -m 0644 $(CONFIG_EX) $(DESTDIR)$(SYSCONFDIR)/config.env.example
+	@if [ -f "$(DESTDIR)$(SYSCONFDIR)/config.env" ]; then \
+	    echo "config.env exista deja in $(SYSCONFDIR) - lasat neatins"; \
+	else \
+	    install -m 0640 $(CONFIG_EX) "$(DESTDIR)$(SYSCONFDIR)/config.env"; \
+	    echo "config.env creat in $(SYSCONFDIR) - EDITEAZA WALLET inainte de pornire"; \
+	fi
 	@echo "dashboard instalat in $(SHAREDIR)/dashboard"
-	@echo "porneste minerul cu: --dashboard-dir $(SHAREDIR)/dashboard"
+	@echo "porneste minerul cu: --config $(SYSCONFDIR)/config.env"
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
 	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html $(DESTDIR)$(SHAREDIR)/dashboard/OFL.txt
+	$(RM) $(DESTDIR)$(SYSCONFDIR)/config.env.example
 	-rmdir $(DESTDIR)$(SHAREDIR)/dashboard $(DESTDIR)$(SHAREDIR) 2>/dev/null
+	@# config.env ramane: e fisierul operatorului, nu al nostru.
+	@[ -f "$(DESTDIR)$(SYSCONFDIR)/config.env" ] && \
+	    echo "pastrat: $(SYSCONFDIR)/config.env (sterge-l manual daca vrei)" || \
+	    rmdir "$(DESTDIR)$(SYSCONFDIR)" 2>/dev/null || true
 
 clean:
 	$(RM) $(BIN_GPU) $(BIN_CPU)
 
 help:
 	@printf '%s\n' 'tinte: all cpu check warn install uninstall clean' \
-	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=...'
+	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...'
