@@ -40,6 +40,8 @@ SRC       := dagcore_miner.c
 HDR       := dagcore_sha256.h
 KERNEL    := dagcore_gpu.cl
 DASHBOARD := dashboard/index.html
+# Fontul IBM Plex Mono e inline in pagina; OFL 1.1 cere ca licenta sa il insoteasca.
+DASH_OFL  := dashboard/OFL.txt
 
 BIN_GPU := dagcore-miner
 BIN_CPU := dagcore-miner-cpu
@@ -81,12 +83,13 @@ install: $(BIN_GPU)
 	install -m 0644 $(KERNEL)  $(DESTDIR)$(BINDIR)/
 	install -d $(DESTDIR)$(SHAREDIR)/dashboard
 	install -m 0644 $(DASHBOARD) $(DESTDIR)$(SHAREDIR)/dashboard/
+	install -m 0644 $(DASH_OFL)  $(DESTDIR)$(SHAREDIR)/dashboard/
 	@echo "dashboard instalat in $(SHAREDIR)/dashboard"
 	@echo "porneste minerul cu: --dashboard-dir $(SHAREDIR)/dashboard"
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
-	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html
+	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html $(DESTDIR)$(SHAREDIR)/dashboard/OFL.txt
 	-rmdir $(DESTDIR)$(SHAREDIR)/dashboard $(DESTDIR)$(SHAREDIR) 2>/dev/null
 
 clean:
