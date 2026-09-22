@@ -513,6 +513,32 @@ journalctl -u bdag-miner -n 50 --no-pager</code></pre>
 will not accept any more — the miner prints a warning naming the key and keeps
 mining without it.</p>
 
+<h3>Only one of my cards is being used</h3>
+<p>Check the <b>GPUs active</b> figure on the dashboard against how many cards
+the machine has. If it says 1 and you have more, the miner was told to use one.</p>
+<p>The setting is <code>GPU_DEVICE</code> in
+<code>/etc/dagcore-miner/config.env</code>:</p>
+<div class="table-scroll">
+<table>
+<tr><th>Value</th><th>Meaning</th></tr>
+<tr><td>all</td><td>Every card the driver exposes. What a rig with more than
+    one card almost always wants — hashrate simply adds up, and two RTX 4090s
+    measured 2.06 and 2.03 MH/s for 4.09 MH/s together.</td></tr>
+<tr><td>0</td><td>Only the first card. The rest sit idle.</td></tr>
+<tr><td>0,1</td><td>A chosen list, when you want some cards for something
+    else.</td></tr>
+</table>
+</div>
+<pre><code>sudo sed -i 's/^GPU_DEVICE=.*/GPU_DEVICE=all/' /etc/dagcore-miner/config.env
+sudo systemctl restart dagcore-miner</code></pre>
+<p>The installer sets this for you: one card gives <code>GPU_DEVICE=0</code>,
+more than one gives <code>all</code>.</p>
+<div class="note warn">On a rig with more than one card the tuning controls in
+the dashboard are switched off, with the reason shown. The miner numbers cards
+through OpenCL and NVIDIA numbers them differently, and nothing guarantees the
+two agree — so a power limit could land on the wrong card. Mining across all
+cards works; only the tuning is held back.</div>
+
 <h3>I lost the control token</h3>
 <p>It is stored on the rig, readable only by root:</p>
 <pre><code>sudo cat /etc/dagcore-miner/api-token</code></pre>
@@ -532,8 +558,9 @@ journalctl -u bdag-miner --since today</code></pre>
 <tr><th>File</th><th>Who writes it</th><th>What is in it</th></tr>
 <tr><td>/etc/dagcore-miner/<br>config.env</td>
     <td>You, by hand. The miner only reads it.</td>
-    <td>Wallet, pool, worker, threads, metrics port and bind address,
-    dashboard directory. The things that define the rig.</td></tr>
+    <td>Wallet, pool, worker, threads, which cards to use
+    (<code>GPU_DEVICE</code>), metrics port and bind address, dashboard
+    directory. The things that define the rig.</td></tr>
 <tr><td>/var/lib/dagcore-miner/<br>overrides.env</td>
     <td>This dashboard.</td>
     <td>Only tuning: power limit, intensity, clock steps, offsets. Loaded on
