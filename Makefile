@@ -1,11 +1,11 @@
 # Makefile - DagCore Miner
 #
 #   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
-#   make cpu            -> dagcore-miner-cpu  (fara OpenCL)
-#   make warn           -> verificare sintaxa cu -Wall -Wextra
-#   make install        -> binar + kernel in $(PREFIX)/bin
+#   make cpu            -> dagcore-miner-cpu  (without OpenCL)
+#   make warn           -> syntax check with -Wall -Wextra
+#   make install        -> binary + kernel in $(PREFIX)/bin
 #
-# Variabile: NATIVE=1 (build local, -march=native), DEBUG=1, USE_OPENSSL=1, PREFIX=...
+# Variables: NATIVE=1 (local build, -march=native), DEBUG=1, USE_OPENSSL=1, PREFIX=...
 
 CC      ?= gcc
 NATIVE  ?= 0
@@ -19,14 +19,14 @@ else
   CFLAGS  += -O3
 endif
 
-# Implicit off: binarul trebuie sa ruleze si pe alte masini decat cea de build.
-# NATIVE=1 doar pentru build local, pe rig-ul pe care mineaza.
+# Off by default: the binary has to run on machines other than the build host.
+# NATIVE=1 only for a local build, on the rig that mines with it.
 ifeq ($(NATIVE),1)
   CFLAGS += -march=native -mtune=native
 endif
 
-# OpenCL: 1.2 e versiunea tinta reala (codul foloseste clCreateCommandQueue,
-# deprecat dupa 1.2); fara define-ul asta header-ele 3.0 dau warning-uri.
+# OpenCL: 1.2 is the real target version (the code uses clCreateCommandQueue,
+# deprecated after 1.2); without this define the 3.0 headers warn.
 GPU_CPPFLAGS := -DDAGTECH_GPU -DCL_TARGET_OPENCL_VERSION=120
 GPU_LDLIBS   := -lOpenCL
 
@@ -39,10 +39,10 @@ endif
 SRC       := dagcore_miner.c
 HDR       := dagcore_sha256.h
 KERNEL    := dagcore_gpu.cl
-# Pagina, ajutorul, si resursele partajate de amandoua.
+# The page, the help page, and the assets both of them share.
 DASHBOARD := dashboard/index.html dashboard/help.html \
              dashboard/fonts.css dashboard/logo.webp
-# Fontul IBM Plex Mono e inline in pagina; OFL 1.1 cere ca licenta sa il insoteasca.
+# IBM Plex Mono is inlined in the page; OFL 1.1 requires the licence to travel with it.
 DASH_OFL  := dashboard/OFL.txt
 CONFIG_EX := config.env.example
 
@@ -52,15 +52,15 @@ BIN_CPU := dagcore-miner-cpu
 PREFIX   ?= /usr/local
 BINDIR   := $(PREFIX)/bin
 SHAREDIR := $(PREFIX)/share/dagcore-miner
-# Configul sta in /etc indiferent de PREFIX: e fisier de operator, nu payload
-# de instalare. Suprascriabil pentru pachetari care vor altceva.
+# The config lives in /etc regardless of PREFIX: it is an operator file, not an
+# install payload. Overridable for packagers who want it elsewhere.
 SYSCONFDIR ?= /etc/dagcore-miner
 
 .PHONY: all cpu check warn install uninstall clean help
 all: $(BIN_GPU)
 
-# $(KERNEL) e prerequisite doar pentru coerenta: nu se compileaza, e citit
-# la runtime si dat la clCreateProgramWithSource.
+# $(KERNEL) is a prerequisite only for consistency: it is not compiled, it is read
+# at runtime and handed to clCreateProgramWithSource.
 $(BIN_GPU): $(SRC) $(HDR) $(KERNEL)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(GPU_CPPFLAGS) $< -o $@ $(LDFLAGS) $(GPU_LDLIBS) $(LDLIBS)
 
@@ -68,21 +68,21 @@ cpu: $(BIN_CPU)
 $(BIN_CPU): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-# Compileaza ambele variante de la zero. Prinde ruperile care apar doar pe o
-# cale - de exemplu cod din #ifdef DAGTECH_GPU apelat din afara guard-ului,
-# care leaga bine cu GPU si esueaza la link fara el.
+# Builds both variants from scratch. Catches breakage that shows up on one path
+# only - for example code inside #ifdef DAGTECH_GPU called from outside the guard,
+# which links fine with GPU and fails to link without it.
 check:
 	@$(MAKE) --no-print-directory -B $(BIN_GPU)
 	@$(MAKE) --no-print-directory -B $(BIN_CPU)
-	@echo "check: ambele variante (GPU + CPU) compileaza"
+	@echo "check: both variants (GPU + CPU) compile"
 
-# Build zgomotos, pentru audit - nu e in calea implicita.
+# Noisy build, for auditing - not on the default path.
 warn: $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(GPU_CPPFLAGS) -Wall -Wextra -Wshadow -fsyntax-only $<
 
-# Kernelul e cautat langa binar (calea vine din argv[0]), deci se instaleaza
-# in acelasi director, nu in share/. Dashboard-ul, in schimb, e dat explicit
-# prin --dashboard-dir, deci sta in share/.
+# The kernel is looked up next to the binary (the path comes from argv[0]), so it
+# is installed in the same directory, not in share/. The dashboard, by contrast, is
+# passed explicitly through --dashboard-dir, so it lives in share/.
 install: $(BIN_GPU)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(BIN_GPU) $(DESTDIR)$(BINDIR)/
@@ -93,13 +93,13 @@ install: $(BIN_GPU)
 	install -d -m 0750 $(DESTDIR)$(SYSCONFDIR)
 	install -m 0644 $(CONFIG_EX) $(DESTDIR)$(SYSCONFDIR)/config.env.example
 	@if [ -f "$(DESTDIR)$(SYSCONFDIR)/config.env" ]; then \
-	    echo "config.env exista deja in $(SYSCONFDIR) - lasat neatins"; \
+	    echo "config.env already exists in $(SYSCONFDIR) - left untouched"; \
 	else \
 	    install -m 0640 $(CONFIG_EX) "$(DESTDIR)$(SYSCONFDIR)/config.env"; \
-	    echo "config.env creat in $(SYSCONFDIR) - EDITEAZA WALLET inainte de pornire"; \
+	    echo "config.env created in $(SYSCONFDIR) - EDIT WALLET before starting"; \
 	fi
-	@echo "dashboard instalat in $(SHAREDIR)/dashboard"
-	@echo "porneste minerul cu: --config $(SYSCONFDIR)/config.env"
+	@echo "dashboard installed in $(SHAREDIR)/dashboard"
+	@echo "start the miner with: --config $(SYSCONFDIR)/config.env"
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
@@ -110,14 +110,14 @@ uninstall:
 	      $(DESTDIR)$(SHAREDIR)/dashboard/OFL.txt
 	$(RM) $(DESTDIR)$(SYSCONFDIR)/config.env.example
 	-rmdir $(DESTDIR)$(SHAREDIR)/dashboard $(DESTDIR)$(SHAREDIR) 2>/dev/null
-	@# config.env ramane: e fisierul operatorului, nu al nostru.
+	@# config.env stays: it is the operator's file, not ours.
 	@[ -f "$(DESTDIR)$(SYSCONFDIR)/config.env" ] && \
-	    echo "pastrat: $(SYSCONFDIR)/config.env (sterge-l manual daca vrei)" || \
+	    echo "kept: $(SYSCONFDIR)/config.env (remove it by hand if you want it gone)" || \
 	    rmdir "$(DESTDIR)$(SYSCONFDIR)" 2>/dev/null || true
 
 clean:
 	$(RM) $(BIN_GPU) $(BIN_CPU)
 
 help:
-	@printf '%s\n' 'tinte: all cpu check warn install uninstall clean' \
+	@printf '%s\n' 'targets: all cpu check warn install uninstall clean' \
 	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...'
