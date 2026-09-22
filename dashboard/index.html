@@ -180,6 +180,11 @@ button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
   color:var(--mine);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
 #restartOverlay .pulse{width:9px;height:9px;border-radius:50%;background:var(--mine);
   flex:0 0 auto;animation:pulse 1.2s ease-in-out infinite}
+#restartOverlay small{font-weight:400;color:var(--muted)}
+#restartOverlay.done{background:rgba(63,224,138,.10);border-color:rgba(63,224,138,.45);color:var(--ok)}
+#restartOverlay.done .pulse{background:var(--ok);animation:none}
+#restartOverlay.bad{background:rgba(244,162,156,.10);border-color:rgba(244,162,156,.45);color:var(--bad)}
+#restartOverlay.bad .pulse{background:var(--bad);animation:none}
 footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;letter-spacing:.06em;line-height:1.8}
 .stale{opacity:.5;transition:opacity .3s}
 @media (max-width:620px){
@@ -615,10 +620,17 @@ function poll(){
 
   function fail(why){
     clearTimeout(timer);
-    if (restarting){
-      /* Expected downtime, not a fault: keep the restart banner and retry fast. */
-      setTimeout(poll, 2000);
-      return;
+    if (restart){
+      restart.sawDown = true;           /* it really went away - good sign */
+      if (Date.now() > restart.deadline){
+        restart = null;
+        restartFailed();
+        /* fall through to the normal offline banner */
+      } else {
+        /* Expected downtime, not a fault: keep the banner and retry fast. */
+        setTimeout(poll, 2000);
+        return;
+      }
     }
     setOnline(false, last
       ? "no response from /metrics (" + why + ") — showing last known values"
@@ -633,8 +645,20 @@ function poll(){
     var d;
     try { d = JSON.parse(xhr.responseText); }
     catch (e){ return fail("bad JSON"); }
+    if (restart){
+      /* Smaller uptime than before the request, or we saw it go down and it
+       * is answering again: either way this is the new process. */
+      var back = (typeof d.uptime === "number" && d.uptime < restart.uptimeBefore) || restart.sawDown;
+      if (back){
+        var r = restart; restart = null;
+        restartDone(r.value, d);
+      } else if (Date.now() > restart.deadline){
+        restart = null;
+        restartFailed();
+      }
+      /* else: still the old process winding down - keep waiting. */
+    }
     last = d;
-    if (restarting){ restarting = false; $("restartOverlay").hidden = true; }
     setOnline(true);
     render(d);
     syncSettings(d);
@@ -650,16 +674,34 @@ function poll(){
 
 /* ---- settings ---------------------------------------------------- */
 var token = "";
-var restarting = false;          /* suppresses the offline banner while systemd restarts us */
+/* Restart tracking. A restart counts as finished when a successful /metrics
+ * reports a smaller uptime than the one seen before the request - or, as a
+ * second signal, when the miner was observed down and then answered again.
+ * A single flag cleared by the next good poll was not enough: the old process
+ * can still answer for a moment after accepting the request. */
+var restart = null;   /* {uptimeBefore, value, deadline, sawDown} */
+var RESTART_TIMEOUT_MS = 60000;
+var RESTART_BANNER_MS  = 10000;
 var plTouched = false, inTouched = false;   /* don't fight the user mid-drag */
 
 function lsGet(k){ try { return localStorage.getItem(k) || ""; } catch (e){ return ""; } }
 function lsSet(k, v){ try { localStorage.setItem(k, v); } catch (e){} }
 
-function note(msg, cls){
+/* A transient message holds the note for holdMs; the idle text only writes
+ * itself once that has elapsed. The previous version guarded on the element's
+ * class, so any styled message ("busy", "ok", "err") was never replaced by the
+ * idle text again - that is why "Miner is restarting" stayed on screen forever
+ * after the miner had already come back. */
+var noteHold = 0;
+function note(msg, cls, holdMs){
   var n = $("setNote");
   n.textContent = msg;
   n.className = "set-note" + (cls ? " " + cls : "");
+  noteHold = Date.now() + (holdMs || 0);
+}
+function noteIdle(msg, cls){
+  if (Date.now() < noteHold) return;
+  note(msg, cls);
 }
 
 function controlsEnabled(on){
@@ -673,13 +715,13 @@ function syncSettings(d){
   var avail = d.control_available === true;
   if (!token){
     controlsEnabled(false);
-    note("Enter the control token to enable these controls.");
+    noteIdle("Enter the control token to enable these controls.");
   } else if (!avail){
     controlsEnabled(false);
-    note("Controls unavailable: " + (d.control_reason || "unknown"), "err");
+    noteIdle("Controls unavailable: " + (d.control_reason || "unknown"), "err");
   } else {
     controlsEnabled(true);
-    if ($("setNote").className === "set-note") note("Controls ready.", "ok");
+    noteIdle("Controls ready.", "ok");
   }
 
   if (d.gpu_power_min >= 0 && d.gpu_power_max > 0){
@@ -692,6 +734,32 @@ function syncSettings(d){
   if (!inTouched && typeof d.gpu_intensity === "number"){
     $("inRange").value = d.gpu_intensity; $("inNum").value = d.gpu_intensity;
   }
+}
+
+function restartBanner(cls, text, detail){
+  var o = $("restartOverlay");
+  o.hidden = false;
+  o.className = cls || "";
+  var spans = o.getElementsByTagName("span");
+  if (spans.length > 1) spans[1].textContent = text;
+  txt("restartDetail", detail || "");
+}
+
+function restartDone(value, d){
+  restartBanner("done", "Miner restarted \u2014 running again",
+                "intensity now " + (typeof d.gpu_intensity === "number" ? d.gpu_intensity : value));
+  note("Intensity " + value + " applied after restart.", "ok", 8000);
+  setTimeout(function(){
+    if (restart) return;                 /* another restart started meanwhile */
+    var o = $("restartOverlay");
+    o.hidden = true; o.className = "";
+  }, RESTART_BANNER_MS);
+}
+
+function restartFailed(){
+  restartBanner("bad", "Miner did not come back",
+                "check: journalctl -u bdag-miner -n 50");
+  note("Miner did not come back within 60 s \u2014 check journalctl -u bdag-miner", "err", 60000);
 }
 
 function post(path, payload, done){
@@ -722,43 +790,80 @@ $("tokSave").addEventListener("click", function(){
   token = $("tokInput").value.replace(/\s+/g, "");
   lsSet("dagcore_token", token);
   txt("tokState", token ? "token saved in this browser" : "required to enable the controls below");
-  note(token ? "Token saved. Controls will enable on the next update." : "Token cleared.", token ? "ok" : "");
+  note(token ? "Token saved. Controls will enable on the next update." : "Token cleared.",
+       token ? "ok" : "", 5000);
 });
+
+/* Read the limit back from /metrics rather than trusting the 200: nvidia-smi
+ * can accept a value the card then clamps, and what matters to the operator is
+ * what the card reports, not what the request said. */
+function verifyPowerLimit(want, saved, tries){
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "metrics?t=" + Date.now(), true);
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4) return;
+    var d = null;
+    try { d = JSON.parse(xhr.responseText); } catch (e){}
+    var got = (xhr.status === 200 && d && typeof d.gpu_power_limit === "number")
+              ? Math.round(d.gpu_power_limit) : null;
+    if (got === Math.round(want)){
+      note("Power limit confirmed at " + got + " W" +
+           (saved ? " and saved." : " (NOT saved to overrides)."), saved ? "ok" : "err", 8000);
+      return;
+    }
+    if (tries < 4){ setTimeout(function(){ verifyPowerLimit(want, saved, tries + 1); }, 1000); return; }
+    if (got === null) note("Applied " + want + " W but could not read it back from /metrics.", "err", 12000);
+    else note("Applied " + want + " W but the card reports " + got + " W.", "err", 12000);
+  };
+  xhr.onerror = function(){
+    if (tries < 4) setTimeout(function(){ verifyPowerLimit(want, saved, tries + 1); }, 1000);
+    else note("Applied " + want + " W but could not read it back.", "err", 12000);
+  };
+  xhr.send();
+}
 
 $("plApply").addEventListener("click", function(){
   var w = parseInt($("plNum").value, 10);
-  if (!isFinite(w)) return note("Enter a wattage first.", "err");
-  note("Applying " + w + " W\u2026", "busy");
+  if (!isFinite(w)) return note("Enter a wattage first.", "err", 5000);
+  note("Applying " + w + " W\u2026", "busy", 15000);
   post("api/power-limit", { watts: w }, function(st, d){
     plTouched = false;
-    if (st === 200 && d && d.ok)
-      note("Power limit set to " + d.applied + " W" + (d.saved ? " and saved." : " (NOT saved)."), d.saved ? "ok" : "err");
-    else if (st === 401) note("Rejected: invalid token.", "err");
-    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err");
+    if (st === 200 && d && d.ok){
+      note("Applied " + d.applied + " W, verifying\u2026", "busy", 15000);
+      verifyPowerLimit(d.applied, d.saved === true, 0);
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
   });
 });
 
 $("inApply").addEventListener("click", function(){
   var v = parseInt($("inNum").value, 10);
-  if (!isFinite(v)) return note("Enter an intensity first.", "err");
-  note("Saving intensity " + v + "\u2026", "busy");
+  if (!isFinite(v)) return note("Enter an intensity first.", "err", 5000);
+  note("Saving intensity " + v + "\u2026", "busy", 15000);
   post("api/intensity", { value: v }, function(st, d){
     inTouched = false;
     if (st === 200 && d && d.ok){
       if (d.restarting){
-        restarting = true;
-        $("restartOverlay").hidden = false;
+        restart = {
+          uptimeBefore: (last && typeof last.uptime === "number") ? last.uptime : 0,
+          value: v,
+          deadline: Date.now() + RESTART_TIMEOUT_MS,
+          sawDown: false
+        };
         $("offline").hidden = true;
-        note("Intensity " + v + " saved. Miner is restarting.", "busy");
-        /* The miner can take ~10s to wind down, then systemd waits RestartSec.
-         * Poll faster than usual until it answers again. */
-        setTimeout(function(){ poll(); }, 3000);
+        restartBanner("", "Miner is restarting to apply the new intensity\u2026",
+                      "reconnecting automatically");
+        note("Intensity " + v + " saved. Miner is restarting\u2026", "busy", RESTART_TIMEOUT_MS);
+        /* systemd waits RestartSec (10s by default) before starting it again,
+         * so poll faster than the usual 5s until it answers. */
+        setTimeout(poll, 3000);
       } else {
-        note("Intensity " + v + " saved. " + (d.note || "Restart the miner to apply."), "ok");
+        note("Intensity " + v + " saved. " + (d.note || "Restart the miner to apply."), "ok", 10000);
       }
     }
-    else if (st === 401) note("Rejected: invalid token.", "err");
-    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err");
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
   });
 });
 
