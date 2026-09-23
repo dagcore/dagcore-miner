@@ -4180,8 +4180,15 @@ static void *dagtech_metrics_thread(void *arg) {
         dt_sock_t cfd = accept(srv, (struct sockaddr *)&client, &clen);
         if (cfd == DT_BAD_SOCK) continue;
 
-        /* A stalled client must not wedge the whole (single-threaded) server. */
-#ifndef _WIN32
+        /* A stalled client must not wedge the whole (single-threaded) server.
+         * Same 2 seconds on both; Winsock takes the timeout as a DWORD of
+         * milliseconds where POSIX takes a struct timeval. */
+#ifdef _WIN32
+        {
+            DWORD ms = 2000;
+            setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof(ms));
+        }
+#else
         {
             struct timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
             setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));

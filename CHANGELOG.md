@@ -17,6 +17,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     there when the file exists, so only the first dashboard change was kept.
   - Windows: `config.env`, `overrides.env` and the token live in
     `%ProgramData%\DAGCore\` instead of `/etc` and `/var/lib`.
+  - Windows: the dashboard server gives up on a silent client after 2 seconds,
+    as on Linux, instead of hanging for every other client.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
