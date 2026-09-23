@@ -6,6 +6,15 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`make install` installs into `/opt/dagcore-miner` by default**, where
+  `install.sh` puts the miner and where its service looks, instead of
+  `/usr/local`. A hand `make install` over an installed rig used to leave the
+  service on the old binary and the old dashboard. *Possible impact:* if you
+  install into `/usr/local` on purpose, pass `PREFIX=/usr/local` to
+  `make install` and `make uninstall` from now on, or they work on
+  `/opt/dagcore-miner`. `config.env.example` names the new dashboard path.
+
 ### Fixed
 - **Mining configuration: its Save button is now hard to miss.** The only
   button of the block sat at its bottom with the same label as the GPU

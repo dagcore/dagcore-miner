@@ -5,9 +5,8 @@
 #   make warn           -> syntax check with -Wall -Wextra
 #   make install        -> binary + kernel in $(PREFIX)/bin, the dashboard in
 #                          $(PREFIX)/share/dagcore-miner, config.env.example
-#                          in $(SYSCONFDIR). The installer uses
-#                          PREFIX=/opt/dagcore-miner; so must a hand install
-#                          over it, or the service keeps running the old files.
+#                          in $(SYSCONFDIR). PREFIX defaults to
+#                          /opt/dagcore-miner, where install.sh puts it too.
 #
 # Variables: NATIVE=1 (local build, -march=native), DEBUG=1, USE_OPENSSL=1, PREFIX=...
 
@@ -53,7 +52,10 @@ CONFIG_EX := config.env.example
 BIN_GPU := dagcore-miner
 BIN_CPU := dagcore-miner-cpu
 
-PREFIX   ?= /usr/local
+# The installer's location, so that a hand "make install" over an installed rig
+# replaces what its service runs. Until 1.2.1 it was /usr/local, which nothing
+# read on such a rig; PREFIX=/usr/local keeps that layout.
+PREFIX   ?= /opt/dagcore-miner
 BINDIR   := $(PREFIX)/bin
 SHAREDIR := $(PREFIX)/share/dagcore-miner
 # The config lives in /etc regardless of PREFIX: it is an operator file, not an
