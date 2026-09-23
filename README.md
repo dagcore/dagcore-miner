@@ -50,7 +50,9 @@ also carries Linux x86-64 binaries: `dagcore-miner` (GPU and CPU),
 and, for the GPU build, the NVIDIA driver's OpenCL (`libOpenCL.so.1`). Keep
 `dagcore_gpu.cl` in the same directory as `dagcore-miner`: the miner loads it
 from there. The installer above is still what sets up the service and the
-dashboard.
+dashboard. The dashboard's pages are not among these files: replacing only the
+binary of an installed rig leaves the old dashboard in place, so upgrade with
+`git pull` and `sudo ./install.sh` instead.
 
 Check the files before running them:
 

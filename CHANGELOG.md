@@ -6,6 +6,19 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Mining configuration: its Save button is now hard to miss.** The only
+  button of the block sat at its bottom with the same label as the GPU
+  intensity one below it, so a changed CPU thread count was easily left
+  unsaved. The block is now a box of its own; while a field is changed but not
+  saved, the box is outlined, the button is filled in, and a line says what is
+  pending ("Not saved yet: CPU threads 2 → 3"). The intensity button asks first
+  when the box has unsaved changes, since it saves the intensity only.
+- `POST /api/config` compared the new values with the running miner only, so
+  after a save without a restart, going back to the running value answered
+  "nothing to save" and left config.env as it was. It now also compares with
+  config.env itself.
+
 ## [1.2.0] - 2026-09-23
 
 ### Added
