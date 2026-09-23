@@ -436,6 +436,20 @@ figure stays above a percent or two in normal running is it worth going lower:
 restart the miner. Fewer drops means more accepted work, as long as the pool
 tolerates the burst; if it starts refusing shares or disconnecting, go back
 up. It cannot be changed from this page.</p>
+
+<h3 id="candidates">Advanced: GPU candidates</h3>
+<p><b>What it shows.</b> The card works in batches — on an RTX 3080, 16384
+hashes, about 10 ms each. <i>Found</i> counts every share the card turned up in
+them. <i>Beyond the first in a batch</i> counts the second, third and later
+ones of the same batch.</p>
+<p><b>Why that second number matters.</b> Until this version the card
+reported only one share per batch, and the others were dropped before anyone
+counted them. That hardly matters once the pool's difficulty has settled — a
+batch then almost never holds two — but in the first minutes of every
+connection nearly every batch does, and those shares were lost. The second
+number is what the change recovers.</p>
+<p>If <i>did not fit</i> ever appears, a batch found more shares than the 64
+slots it reports; that should not happen at any difficulty the pool uses.</p>
 <a class="up" href="#top">back to top</a>
 </section>
 

@@ -10,11 +10,22 @@
  *
  * Kernel entry point: dagtech_search
  *   header80  - 80-byte block header as 20 uint words (nonce at word 19)
- *   output    - [0] best nonce (atomic_min), [1] found count (atomic_inc)
+ *   output    - [0] how many candidates this batch found (atomic_inc);
+ *               [1 .. DT_MAX_CANDIDATES] their nonces, one slot each. It used
+ *               to keep only the lowest nonce, so a batch with several shares
+ *               - every batch, while the pool's difficulty is low - reported
+ *               one of them and the rest were lost without being counted.
  *   V         - global V array; each work-item gets its own 1024*32 uint slice
  *   target    - 32-bit difficulty target: (uint)(0xFFFFFFFFull / difficulty)
  *   nonce_base- nonce = nonce_base + get_global_id(0)
  */
+
+/* Slots for candidate nonces. The host passes the same value at build time
+ * (-DDT_MAX_CANDIDATES=...) and sizes the output buffer from it; this default
+ * only lets the file compile on its own. */
+#ifndef DT_MAX_CANDIDATES
+#define DT_MAX_CANDIDATES 64
+#endif
 
 /* Enable global-memory atomic operations (required by some drivers) */
 #pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics     : enable
@@ -533,8 +544,10 @@ __kernel void dagtech_search(__global const uint *header80,
        hash[7] is the most-significant 32 bits of the big-endian hash.
        We check hash[7] <= target (32-bit approximation). */
     if (hash[7] <= target) {
-        atomic_min(&output[0], nonce);
-        atomic_inc(&output[1]);
+        /* The count keeps going past the last slot, so the host can tell
+         * how many did not fit. */
+        uint slot = atomic_inc(&output[0]);
+        if (slot < DT_MAX_CANDIDATES) output[1 + slot] = nonce;
     }
 }
 
@@ -698,8 +711,10 @@ __kernel void dagtech_post(__global uint *X_buf,
 
     /* Step 7: target check */
     if (hash[7] <= target) {
-        atomic_min(&output[0], nonce);
-        atomic_inc(&output[1]);
+        /* The count keeps going past the last slot, so the host can tell
+         * how many did not fit. */
+        uint slot = atomic_inc(&output[0]);
+        if (slot < DT_MAX_CANDIDATES) output[1 + slot] = nonce;
     }
 }
 

@@ -7,6 +7,14 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- **The GPU reports every share of a batch, not just one.** The kernel kept a
+  single nonce per batch (about 10 ms of work on an RTX 3080), so while the
+  pool's difficulty is low — the first minutes of every connection — all but
+  one share of each batch were lost uncounted. It now returns up to 64, each
+  checked again on the CPU. `/metrics` gains `gpu_candidates_found`,
+  `gpu_candidates_reported`, `gpu_candidates_extra` (beyond the first in their
+  batch: what the old kernel lost) and `gpu_candidates_valid`, and Advanced
+  shows a GPU candidates row. *Not yet run on a GPU.*
 - `/metrics` fields for a configuration form, appended at the end:
   `gpu_devices` (index and name of every card on the OpenCL platform),
   `gpu_device_sel`, `threads_config` (`-1` = auto), `threads_auto`,

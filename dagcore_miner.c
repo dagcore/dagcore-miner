@@ -345,6 +345,19 @@ static uint64_t total_accepted  = 0;
 static uint64_t total_rejected  = 0;
 static uint64_t total_stale     = 0;
 static uint64_t cpu_submitted   = 0;
+/* Candidate nonces a GPU batch can report; the kernel is built with the same
+ * value (-DDT_MAX_CANDIDATES) and the output buffer holds 1 + this many. */
+#define DT_MAX_CANDIDATES 64
+/* Kernel candidates, to show what reporting all of them gains over the old
+ * one-per-batch kernel (all under gpu_stats_mtx):
+ *   found     - counted by the kernel: every nonce under the 32-bit target
+ *   reported  - read back and checked on the CPU (at most DT_MAX_CANDIDATES
+ *               per batch; found - reported did not fit)
+ *   extra     - reported beyond the first of their batch: the ones the old
+ *               kernel lost
+ *   valid     - passed the full 64-bit check and went to the submitter */
+static uint64_t gpu_cand_found = 0, gpu_cand_reported = 0;
+static uint64_t gpu_cand_extra = 0, gpu_cand_valid = 0;
 static uint64_t gpu_submitted   = 0;
 static uint64_t cpu_accepted    = 0;
 static uint64_t gpu_accepted    = 0;
@@ -913,7 +926,10 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
         clReleaseContext(ctx->ctx);        ctx->ctx   = NULL;
         return -1;
     }
-    err = clBuildProgram(ctx->program, 1, &ctx->device, "-cl-std=CL1.2", NULL, NULL);
+    char build_opts[96];
+    snprintf(build_opts, sizeof(build_opts), "-cl-std=CL1.2 -DDT_MAX_CANDIDATES=%d",
+             DT_MAX_CANDIDATES);
+    err = clBuildProgram(ctx->program, 1, &ctx->device, build_opts, NULL, NULL);
     if (err != CL_SUCCESS) {
         size_t log_size = 0;
         clGetProgramBuildInfo(ctx->program, ctx->device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
@@ -978,8 +994,9 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
         return -1;
     }
 
-    /* Output buffer: [0]=best_nonce, [1]=found_count */
-    ctx->output_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE, 2 * sizeof(cl_uint), NULL, &err);
+    /* Output buffer: [0] candidate count, [1..DT_MAX_CANDIDATES] nonces */
+    ctx->output_buf = clCreateBuffer(ctx->ctx, CL_MEM_READ_WRITE,
+                                     (1 + DT_MAX_CANDIDATES) * sizeof(cl_uint), NULL, &err);
     if (err != CL_SUCCESS) {
         fprintf(stderr, "[DagCore GPU] Output buffer failed (GPU %d): %d\n", gpu_index, err);
         clReleaseMemObject(ctx->V_buf);    ctx->V_buf   = NULL;
@@ -1372,6 +1389,60 @@ static int gpu_realloc_buffers(GpuCtx *ctx, size_t new_batchsize, int new_mode) 
  * cannot regress the proven main path). If you change the main dispatch,
  * mirror the change here. Marker: "AUTOTUNE TRIAL DISPATCH".
  * ---------------------------------------------------------------------------- */
+/* One batch's candidates: out[0] is how many the kernel found, out[1..] their
+ * nonces, as many as fit. Each is checked again on the CPU with the full
+ * 64-bit target - the kernel compares only the top 32 bits - and submitted if
+ * the job it was found for is still the current one. The old kernel kept a
+ * single nonce per batch; the counters show what reporting all of them adds. */
+static void gpu_process_candidates(int gpu_idx, const uint8_t *header80, uint32_t *V_cpu,
+                                   double difficulty, uint64_t job_seq, const cl_uint *out) {
+    uint32_t found = out[0];
+    if (found == 0) return;
+    uint32_t n = found < DT_MAX_CANDIDATES ? found : DT_MAX_CANDIDATES;
+
+    double threshold_d = (double)0x0000FFFF00000000ULL / dagtech_effective_diff(difficulty);
+    uint64_t threshold64 = (threshold_d >= 18446744073709551615.0) ?
+                            0xFFFFFFFFFFFFFFFFULL : (uint64_t)threshold_d;
+    uint32_t valid = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t cand_nonce = out[1 + i];
+        uint8_t verify_hdr[80];
+        memcpy(verify_hdr, header80, 80);
+        verify_hdr[76] = cand_nonce & 0xff;
+        verify_hdr[77] = (cand_nonce >> 8) & 0xff;
+        verify_hdr[78] = (cand_nonce >> 16) & 0xff;
+        verify_hdr[79] = (cand_nonce >> 24) & 0xff;
+
+        uint8_t hash[32];
+        dagtech_hash(verify_hdr, hash, V_cpu);
+        uint64_t hash_top64 =
+            ((uint64_t)hash[31] << 56) | ((uint64_t)hash[30] << 48) |
+            ((uint64_t)hash[29] << 40) | ((uint64_t)hash[28] << 32) |
+            ((uint64_t)hash[27] << 24) | ((uint64_t)hash[26] << 16) |
+            ((uint64_t)hash[25] <<  8) |  (uint64_t)hash[24];
+        if (hash_top64 > threshold64) continue;
+        valid++;
+
+        printf("[DagCore GPU] ** SHARE FOUND ** GPU %d nonce=0x%08x%s\n", gpu_idx, cand_nonce,
+               n > 1 ? " (several in this batch)" : "");
+        DagTechJob jcur;
+        pthread_mutex_lock(&job_mtx);
+        jcur = current_job;
+        pthread_mutex_unlock(&job_mtx);
+        if (jcur.seq == job_seq && jcur.valid) {
+            extern void dagtech_submit_share_ext(const DagTechJob *j, uint32_t nonce);
+            dagtech_submit_share_ext(&jcur, cand_nonce);
+        }
+    }
+
+    pthread_mutex_lock(&gpu_stats_mtx);
+    gpu_cand_found    += found;
+    gpu_cand_reported += n;
+    gpu_cand_extra    += n - 1;
+    gpu_cand_valid    += valid;
+    pthread_mutex_unlock(&gpu_stats_mtx);
+}
+
 static AutotuneTrial autotune_run_trial(GpuCtx *ctx, int requested_batchsize,
                                          int mode, int seconds, int gpu_idx) {
     AutotuneTrial t;
@@ -1475,9 +1546,9 @@ static AutotuneTrial autotune_run_trial(GpuCtx *ctx, int requested_batchsize,
         }
 
         /* ====== BEGIN AUTOTUNE TRIAL DISPATCH (mirrors gpu_thread main loop) ====== */
-        cl_uint output_init[2] = { 0xFFFFFFFFu, 0 };
+        cl_uint output_init = 0;          /* the count; slots are written as used */
         clEnqueueWriteBuffer(ctx->queue, ctx->output_buf, CL_TRUE, 0,
-                             2 * sizeof(cl_uint), output_init, 0, NULL, NULL);
+                             sizeof(cl_uint), &output_init, 0, NULL, NULL);
 
         uint64_t gpu_t0 = dagtech_now_ms();
         cl_event ev = NULL;
@@ -1541,9 +1612,9 @@ static AutotuneTrial autotune_run_trial(GpuCtx *ctx, int requested_batchsize,
             usleep(200000); continue;
         }
 
-        cl_uint output_result[2] = { 0xFFFFFFFFu, 0 };
+        cl_uint output_result[1 + DT_MAX_CANDIDATES];
         cl_int rerr = clEnqueueReadBuffer(ctx->queue, ctx->output_buf, CL_TRUE, 0,
-                                          2 * sizeof(cl_uint), output_result, 0, NULL, NULL);
+                                          sizeof(output_result), output_result, 0, NULL, NULL);
         if (rerr != CL_SUCCESS) {
             gpu_loop_error(ctx, "clEnqueueReadBuffer", rerr);
             usleep(200000); continue;
@@ -1578,35 +1649,9 @@ static AutotuneTrial autotune_run_trial(GpuCtx *ctx, int requested_batchsize,
             }
         }
 
-        /* If candidate found, CPU re-verify before submitting (same as main loop) */
-        if (output_result[1] > 0 && output_result[0] != 0xFFFFFFFFu) {
-            uint32_t cand_nonce = output_result[0];
-            uint8_t verify_hdr[80];
-            memcpy(verify_hdr, header80, 80);
-            verify_hdr[76] = cand_nonce & 0xff;
-            verify_hdr[77] = (cand_nonce >> 8) & 0xff;
-            verify_hdr[78] = (cand_nonce >> 16) & 0xff;
-            verify_hdr[79] = (cand_nonce >> 24) & 0xff;
-            uint8_t hash[32];
-            dagtech_hash(verify_hdr, hash, V_cpu);
-            uint64_t hash_top64 =
-                ((uint64_t)hash[31] << 56) | ((uint64_t)hash[30] << 48) |
-                ((uint64_t)hash[29] << 40) | ((uint64_t)hash[28] << 32) |
-                ((uint64_t)hash[27] << 24) | ((uint64_t)hash[26] << 16) |
-                ((uint64_t)hash[25] <<  8) |  (uint64_t)hash[24];
-            double threshold_d = (double)0x0000FFFF00000000ULL / dagtech_effective_diff(j.difficulty);
-            uint64_t threshold64 = (threshold_d >= 18446744073709551615.0) ?
-                                    0xFFFFFFFFFFFFFFFFULL : (uint64_t)threshold_d;
-            if (hash_top64 <= threshold64) {
-                DagTechJob jcur;
-                pthread_mutex_lock(&job_mtx);
-                jcur = current_job;
-                pthread_mutex_unlock(&job_mtx);
-                if (jcur.seq == job_seq_local && jcur.valid) {
-                    dagtech_submit_share_ext(&jcur, cand_nonce);
-                }
-            }
-        }
+        /* Candidates: CPU re-verify each, submit if the job is still current */
+        gpu_process_candidates(gpu_idx, header80, V_cpu, j.difficulty, job_seq_local,
+                               output_result);
 
         nonce_base += nonce_stride;
         if (nonce_base < 0x80000000u)
@@ -1986,10 +2031,10 @@ static void *dagtech_gpu_thread(void *arg) {
             pthread_mutex_unlock(&job_mtx);
             if (job_changed) break;
 
-            /* Reset output buffer */
-            cl_uint output_init[2] = { 0xFFFFFFFFu, 0 };
+            /* Reset the candidate count; slots are written as they are used */
+            cl_uint output_init = 0;
             clEnqueueWriteBuffer(ctx->queue, ctx->output_buf, CL_TRUE, 0,
-                                 2 * sizeof(cl_uint), output_init, 0, NULL, NULL);
+                                 sizeof(cl_uint), &output_init, 0, NULL, NULL);
 
             /* Launch (legacy single-kernel or split pre/romix/post) */
             uint64_t gpu_t0 = dagtech_now_ms();
@@ -2094,9 +2139,9 @@ static void *dagtech_gpu_thread(void *arg) {
             }
 
             /* Read output */
-            cl_uint output_result[2] = { 0xFFFFFFFFu, 0 };
+            cl_uint output_result[1 + DT_MAX_CANDIDATES];
             cl_int rerr = clEnqueueReadBuffer(ctx->queue, ctx->output_buf, CL_TRUE, 0,
-                                2 * sizeof(cl_uint), output_result, 0, NULL, NULL);
+                                sizeof(output_result), output_result, 0, NULL, NULL);
             if (rerr != CL_SUCCESS) {
                 kernel_errors++;
                 if (kernel_errors <= 3 || (kernel_errors % 50) == 0)
@@ -2135,45 +2180,9 @@ static void *dagtech_gpu_thread(void *arg) {
                 }
             }
 
-            /* If candidate found, CPU re-verify before submitting */
-            if (output_result[1] > 0 && output_result[0] != 0xFFFFFFFFu) {
-                uint32_t cand_nonce = output_result[0];
-                /* Build header with candidate nonce */
-                uint8_t verify_hdr[80];
-                memcpy(verify_hdr, header80, 80);
-                verify_hdr[76] = cand_nonce & 0xff;
-                verify_hdr[77] = (cand_nonce >> 8) & 0xff;
-                verify_hdr[78] = (cand_nonce >> 16) & 0xff;
-                verify_hdr[79] = (cand_nonce >> 24) & 0xff;
-
-                uint8_t hash[32];
-                dagtech_hash(verify_hdr, hash, V_cpu);
-
-                /* Full 64-bit target check (same as CPU worker) */
-                uint64_t hash_top64 =
-                    ((uint64_t)hash[31] << 56) | ((uint64_t)hash[30] << 48) |
-                    ((uint64_t)hash[29] << 40) | ((uint64_t)hash[28] << 32) |
-                    ((uint64_t)hash[27] << 24) | ((uint64_t)hash[26] << 16) |
-                    ((uint64_t)hash[25] <<  8) |  (uint64_t)hash[24];
-                double threshold_d = (double)0x0000FFFF00000000ULL / dagtech_effective_diff(j.difficulty);
-                uint64_t threshold64 = (threshold_d >= 18446744073709551615.0) ?
-                                        0xFFFFFFFFFFFFFFFFULL : (uint64_t)threshold_d;
-
-                if (hash_top64 <= threshold64) {
-                    printf("[DagCore GPU] ** SHARE FOUND ** GPU %d nonce=0x%08x\n",
-                           gpu_idx, cand_nonce);
-
-                    /* Re-read job under lock before submitting */
-                    DagTechJob jcur;
-                    pthread_mutex_lock(&job_mtx);
-                    jcur = current_job;
-                    pthread_mutex_unlock(&job_mtx);
-                    if (jcur.seq == job_seq && jcur.valid) {
-                        extern void dagtech_submit_share_ext(const DagTechJob *j, uint32_t nonce);
-                        dagtech_submit_share_ext(&jcur, cand_nonce);
-                    }
-                }
-            }
+            /* Candidates: CPU re-verify each, submit if the job is still current */
+            gpu_process_candidates(gpu_idx, header80, V_cpu, j.difficulty, job_seq,
+                                   output_result);
 
             /* Advance nonce base, wrapping within this GPU's partition */
             nonce_base += nonce_stride;
@@ -4691,6 +4700,10 @@ static void *dagtech_metrics_thread(void *arg) {
 
         /* Before stats_mtx: stats_window() takes it itself. */
         window_stats_t win = stats_window();
+        pthread_mutex_lock(&gpu_stats_mtx);
+        uint64_t cand_found = gpu_cand_found, cand_reported = gpu_cand_reported;
+        uint64_t cand_extra = gpu_cand_extra, cand_valid = gpu_cand_valid;
+        pthread_mutex_unlock(&gpu_stats_mtx);
 
         /* For the configuration form: the detected cards by name, the
          * current selection, and the settings the command line pins. */
@@ -4831,7 +4844,11 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"config_path\":\"%s\","
             "\"config_cli\":%s,"
             "\"paused\":%s,"
-            "\"mining_state\":\"%s\""
+            "\"mining_state\":\"%s\","
+            "\"gpu_candidates_found\":%" DT_PRIu64 ","
+            "\"gpu_candidates_reported\":%" DT_PRIu64 ","
+            "\"gpu_candidates_extra\":%" DT_PRIu64 ","
+            "\"gpu_candidates_valid\":%" DT_PRIu64
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4886,7 +4903,9 @@ static void *dagtech_metrics_thread(void *arg) {
             g_paused ? "true" : "false",
             /* Requested but the session not yet wound down reads "pausing". */
             g_paused ? (g_mine_state == 2 ? "paused" : "pausing")
-                     : (g_mine_state == 1 ? "mining" : "connecting"));
+                     : (g_mine_state == 1 ? "mining" : "connecting"),
+            (unsigned long long)cand_found, (unsigned long long)cand_reported,
+            (unsigned long long)cand_extra, (unsigned long long)cand_valid);
         pthread_mutex_unlock(&stats_mtx);
 
         /* Same headers as before; the body no longer has to fit a fixed

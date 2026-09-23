@@ -632,6 +632,15 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <span class="set-ctl wide"><span class="ro-val" id="droppedVal">&mdash;</span></span>
     </div>
 
+    <div class="set-row" id="candRow" hidden>
+      <span class="lab"><b>GPU candidates</b>
+        <small>Shares the card found in its batches, and how many of them came
+        second or later in the same batch. Before this version the kernel
+        reported one share per batch and the rest were lost.
+        <a href="help#candidates">More</a></small></span>
+      <span class="set-ctl wide"><span class="ro-val" id="candVal">&mdash;</span></span>
+    </div>
+
     </details>
 
     <div class="warn-row" id="staleWarn" hidden><i></i><span></span></div>
@@ -878,6 +887,15 @@ function render(d){
     }
     if (gap) parts.push(gap);
     txt("droppedVal", parts.join(" \u00b7 "));
+  }
+
+  /* Advanced: what reporting every candidate of a batch recovers. */
+  if (typeof d.gpu_candidates_found === "number" && (d.gpu_count || 0) > 0){
+    $("candRow").hidden = false;
+    var cf = d.gpu_candidates_found, cx = d.gpu_candidates_extra || 0;
+    var lost = cf - (d.gpu_candidates_reported || 0);
+    txt("candVal", num(cf) + " found \u00b7 " + num(cx) + " beyond the first in a batch" +
+        (cf ? " (" + pct(cx, cf) + ")" : "") + (lost > 0 ? " \u00b7 " + num(lost) + " did not fit" : ""));
   }
 
   var tot = d.hashrate || 0;
