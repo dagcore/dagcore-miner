@@ -101,6 +101,15 @@
   #define DT_PRIu64 "llu"
 #endif
 
+/* Discards a shell command's stderr: popen() runs /bin/sh on POSIX and
+ * cmd.exe on Windows, which has no /dev/null - "2>/dev/null" there fails the
+ * whole command, so nvidia-smi was never run. */
+#ifdef _WIN32
+  #define DT_NULL_STDERR "2>NUL"
+#else
+  #define DT_NULL_STDERR "2>/dev/null"
+#endif
+
 /* Sockets. Winsock's SOCKET is an unsigned 64-bit handle: stored in an int it
  * truncates, and "< 0" can never catch INVALID_SOCKET. Closing needs
  * closesocket(); a "#define close closesocket" also renamed the CRT's own
@@ -2694,7 +2703,7 @@ static int get_gpu_stats(double *temp, double *usage, double *memory, double *po
                          double *core_clk, double *mem_clk) {
     FILE *fp = popen("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,"
                      "power.draw,clocks.current.graphics,clocks.current.memory "
-                     "--format=csv,noheader,nounits 2>/dev/null", "r");
+                     "--format=csv,noheader,nounits " DT_NULL_STDERR, "r");
     if (!fp) return -1;
 
     char buf[256];
@@ -2786,7 +2795,7 @@ static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, doubl
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
              "nvidia-smi --query-gpu=power.min_limit,power.max_limit,"
-             "power.default_limit,power.limit --format=csv,noheader,nounits -i %d 2>/dev/null",
+             "power.default_limit,power.limit --format=csv,noheader,nounits -i %d " DT_NULL_STDERR,
              idx);
     FILE *fp = popen(cmd, "r");
     if (!fp) return -1;

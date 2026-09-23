@@ -19,6 +19,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     `%ProgramData%\DAGCore\` instead of `/etc` and `/var/lib`.
   - Windows: the dashboard server gives up on a silent client after 2 seconds,
     as on Linux, instead of hanging for every other client.
+  - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no
+    `/dev/null`, so temperature, power and the power limit were never read.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
