@@ -18,6 +18,11 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   a config the miner will not start with. Other lines and comments are kept,
   the previous file is kept as `config.env.bak`, and settings given on the
   command line are refused, since they would override the file anyway.
+- `POST /api/pause` (control token), `{"paused": true|false}`: stops the
+  mining threads and disconnects from the pool, while the dashboard stays up
+  to resume. Refused while a clock test runs. Not saved: a restarted miner
+  mines. `/metrics` gains `paused` and `mining_state` (`connecting`,
+  `mining`, `pausing`, `paused`).
 
 ### Changed
 - **The dashboard can now change the wallet and the pool.** Until now
@@ -27,6 +32,9 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   them. Keep the token private and the port on localhost unless you need it.
 
 ### Fixed
+- After a restart requested from the dashboard (a config or intensity save),
+  a miner that could not reach the pool took up to 10 more seconds to exit:
+  the waits between connection attempts now end as soon as a stop is asked.
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
   a client closed the connection while the dashboard server was still sending
   its response. SIGPIPE is now ignored.

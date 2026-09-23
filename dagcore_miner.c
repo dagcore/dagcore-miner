@@ -126,6 +126,22 @@ static int  cpu_limit          = 100; /* 1-100: % of CPU time to use per thread 
 static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle throttle) */
 static volatile int running    = 1;
 static volatile int keep_alive = 1;  /* 0 = clean program exit; stays 1 across reconnects */
+
+/* Pause from the dashboard (POST /api/pause): the session ends as it does on
+ * a dropped pool connection - mining threads joined, pool socket closed - and
+ * the reconnect loop waits instead of reconnecting. The web server is a
+ * thread of its own and keeps running, so the page that pressed Pause can
+ * press Resume. Not saved: a restarted miner mines. */
+static volatile int g_paused     = 0;   /* requested */
+static volatile int g_mine_state = 0;   /* 0 connecting, 1 mining, 2 paused */
+
+/* The main loop's waits between connection attempts. sleep() is cut short by
+ * a signal, but not by a flag another thread sets - Pause, or the exit for a
+ * restart after a config save - so those waited out the full 10 s. */
+static void main_wait(int seconds) {
+    for (int i = 0; i < seconds * 10 && keep_alive && !g_paused; i++)
+        usleep(100000);
+}
 static int  metrics_port       = 8881;  /* built-in metrics/dashboard endpoint */
 /* METRICS_BIND / --metrics-bind: interface the metrics + dashboard server binds.
  * Loopback by default. Until this existed the server bound INADDR_ANY, so the
@@ -3892,6 +3908,36 @@ static void api_config(int cfd, const char *body) {
     }
 }
 
+/* POST /api/pause {"paused":true|false}. Refused while a clock test runs:
+ * its verdict needs shares, and its clock ticks only while connected. */
+static void api_pause(int cfd, const char *body) {
+    const char *p = json_value_of(body, "paused");
+    int want;
+    if (p && strncmp(p, "true", 4) == 0)       want = 1;
+    else if (p && strncmp(p, "false", 5) == 0) want = 0;
+    else {
+        http_send_err(cfd, 400, "Bad Request", "body must contain \\\"paused\\\": true or false");
+        return;
+    }
+    if (want && !g_paused) {
+        for (int i = 0; i < TRIAL_N; i++) {
+            if (g_trial[i].active) {
+                http_send_err(cfd, 409, "Conflict",
+                              "a clock test is running - let it finish or cancel it first");
+                return;
+            }
+        }
+        printf("[DagCore] Pause requested from the dashboard\n");
+        g_paused = 1;
+        running = 0;              /* ends the session like a dropped connection */
+    } else if (!want && g_paused) {
+        printf("[DagCore] Resume requested from the dashboard\n");
+        g_paused = 0;
+    }
+    http_send_json(cfd, 200, "OK", want ? "{\"ok\":true,\"paused\":true}"
+                                        : "{\"ok\":true,\"paused\":false}");
+}
+
 static void dagtech_handle_control(int cfd, const char *req, const char *body) {
     char tok[128] = "";
     if (!g_api_token[0] ||
@@ -3904,6 +3950,10 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
      * it works on a CPU-only rig and with nvidia-smi missing. */
     if (strncmp(req, "POST /api/config ", 17) == 0) {
         api_config(cfd, body);
+        return;
+    }
+    if (strncmp(req, "POST /api/pause ", 16) == 0) {
+        api_pause(cfd, body);
         return;
     }
     if (!g_control_ok) {
@@ -4791,7 +4841,9 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"threads_config\":%d,"
             "\"threads_auto\":%d,"
             "\"config_path\":\"%s\","
-            "\"config_cli\":%s"
+            "\"config_cli\":%s,"
+            "\"paused\":%s,"
+            "\"mining_state\":\"%s\""
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4842,7 +4894,11 @@ static void *dagtech_metrics_thread(void *arg) {
             (unsigned long long)win.dropped,
             (unsigned long long)win.submitted,
             win.full ? "true" : "false",
-            gpu_devs, gpu_sel, g_threads_cfg, g_threads_auto, cfg_path_esc, cli_set);
+            gpu_devs, gpu_sel, g_threads_cfg, g_threads_auto, cfg_path_esc, cli_set,
+            g_paused ? "true" : "false",
+            /* Requested but the session not yet wound down reads "pausing". */
+            g_paused ? (g_mine_state == 2 ? "paused" : "pausing")
+                     : (g_mine_state == 1 ? "mining" : "connecting"));
         pthread_mutex_unlock(&stats_mtx);
 
         /* Same headers as before; the body no longer has to fit a fixed
@@ -5747,6 +5803,18 @@ int main(int argc, char **argv) {
 
     /* Reconnection loop */
     while (keep_alive) {
+        if (g_paused) {
+            g_mine_state = 2;
+            current_hashrate = cpu_hashrate = gpu_hashrate = 0.0;
+#ifdef DAGTECH_GPU
+            for (int _gi = 0; _gi < g_num_gpus; _gi++) g_gpus[_gi].hashrate = 0.0;
+#endif
+            printf("[DagCore] Mining paused - disconnected from the pool; the dashboard stays up\n");
+            while (keep_alive && g_paused) usleep(100000);
+            if (!keep_alive) break;
+            printf("[DagCore] Mining resumed\n");
+        }
+        g_mine_state = 0;
         running = 1;
         current_job.valid = 0;
         cpu_hashes_session = 0;
@@ -5761,7 +5829,7 @@ int main(int argc, char **argv) {
         printf("[DagCore] Connecting to pool %s:%d...\n", pool_host, pool_port);
         if (dagtech_connect_pool() < 0) {
             fprintf(stderr, "[DagCore] Cannot connect - retrying in 10s\n");
-            sleep(10);
+            main_wait(10);
             continue;
         }
         printf("[DagCore] Connected!\n");
@@ -5777,14 +5845,16 @@ int main(int argc, char **argv) {
             usleep(100000);
 
         if (!current_job.valid) {
-            fprintf(stderr, "[DagCore] No job received - will retry in 10s\n");
+            if (!g_paused && keep_alive)
+                fprintf(stderr, "[DagCore] No job received - will retry in 10s\n");
             running = 0;
             dagtech_unblock_pool_socket();
             pthread_join(recv_tid, NULL);
             close(sockfd);
-            if (keep_alive) sleep(10);
+            if (keep_alive) main_wait(10);
             continue;
         }
+        g_mine_state = 1;
 
         /* Start CPU mining threads. num_threads == 0 is the default (GPU-only),
          * and malloc(0) may legitimately return NULL - so skip the allocation
@@ -5950,9 +6020,9 @@ int main(int argc, char **argv) {
         free(tids);
         close(sockfd);
 
-        if (keep_alive) {
+        if (keep_alive && !g_paused) {
             printf("[DagCore] Reconnecting in 10s...\n");
-            sleep(10);
+            main_wait(10);
         }
     }
 
