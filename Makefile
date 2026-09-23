@@ -65,7 +65,7 @@ WIN_OPENCL_DEF := win/OpenCL.def
 WIN_OPENCL_LIB := $(WIN_BUILD)/libOpenCL.a
 WIN_CFLAGS     := -std=gnu11 -pthread -O3 -funroll-loops -Wall
 WIN_LDFLAGS    := -static
-WIN_LDLIBS     := -lws2_32 -lpthread -lm
+WIN_LDLIBS     := -lws2_32 -lbcrypt -lpthread -lm
 BIN_GPU_WIN    := dagcore-miner.exe
 BIN_CPU_WIN    := dagcore-miner-cpu.exe
 

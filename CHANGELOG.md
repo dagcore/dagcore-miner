@@ -11,6 +11,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   `dagcore-miner-cpu.exe` with MinGW-w64, and `make check` builds them too.
   The Windows build compiles and links but has not been run yet, and it has no
   service, installer or GPU tuning (NVML); it is not ready for use.
+  - Windows: the control API token comes from `BCryptGenRandom` (there is no
+    `/dev/urandom`); without it the control API was always disabled.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when

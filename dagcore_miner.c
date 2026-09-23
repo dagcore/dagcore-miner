@@ -22,6 +22,7 @@
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
+  #include <bcrypt.h>        /* BCryptGenRandom: the API token */
   #ifdef _MSC_VER
     #pragma comment(lib, "ws2_32.lib")
     typedef int ssize_t;
@@ -3324,7 +3325,11 @@ static void token_init(void) {
 
     unsigned char raw[32];
     int have = 0;
-#ifndef _WIN32
+#ifdef _WIN32
+    /* The system CSPRNG; NULL + SYSTEM_PREFERRED_RNG needs no provider handle. */
+    have = BCRYPT_SUCCESS(BCryptGenRandom(NULL, raw, sizeof(raw),
+                                          BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+#else
     FILE *ur = fopen("/dev/urandom", "rb");
     if (ur) {
         have = (fread(raw, 1, sizeof(raw), ur) == sizeof(raw));
@@ -3332,7 +3337,7 @@ static void token_init(void) {
     }
 #endif
     if (!have) {
-        fprintf(stderr, "[DagCore] WARNING: no /dev/urandom; control API disabled\n");
+        fprintf(stderr, "[DagCore] WARNING: no secure random source; control API disabled\n");
         g_api_token[0] = '\0';
         return;
     }
