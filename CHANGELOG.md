@@ -6,6 +6,11 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A miner started by hand (not as the systemd service) died with SIGPIPE when
+  a client closed the connection while the dashboard server was still sending
+  its response. SIGPIPE is now ignored.
+
 ## [1.1.0] - 2026-09-23
 
 ### Added

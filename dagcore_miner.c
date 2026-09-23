@@ -4941,6 +4941,14 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, dagtech_signal);
     signal(SIGTERM, dagtech_signal);
+#ifndef _WIN32
+    /* A client that drops the connection mid-response (a closed browser tab,
+     * a reset) makes send() raise SIGPIPE, which kills the process by
+     * default. Ignored, send() returns EPIPE instead and the request is
+     * simply abandoned. systemd already ignores it for the service; this
+     * covers the miner run by hand. */
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
     /* ---- Pass 1: look for --config <path> before loading defaults ---- */
     const char *config_path = dagtech_default_config_path(argv[0]);
