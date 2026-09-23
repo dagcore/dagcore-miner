@@ -7,6 +7,9 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- The first total hashrate after every reconnection to the pool counted all
+  the hashes since the miner started, divided by ten seconds: a spike on the
+  Total card and in the chart, the larger the longer the miner had run.
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
   a client closed the connection while the dashboard server was still sending
   its response. SIGPIPE is now ignored.
