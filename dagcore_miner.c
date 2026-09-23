@@ -3042,7 +3042,8 @@ static int nvml_current_clock(int is_mem, int *mhz) {
 }
 
 #else
-static int nvml_load(void) { return 0; }
+/* No NVML on Windows yet: offsets and locks report "not wired up", and the
+ * clock helpers the rest of the file uses see no shift and no table. */
 static int nvml_read_offsets(int *c, int *m) { (void)c; (void)m; return -1; }
 static int nvml_write_offset(int a, int b, char *e, size_t n) {
     (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
@@ -3057,6 +3058,9 @@ static int nvml_unlock_clock(int a, char *e, size_t n) {
     (void)a; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
 }
 static int nvml_current_clock(int a, int *m) { (void)a; (void)m; return -1; }
+static int clk_shift(int is_mem) { (void)is_mem; return 0; }
+static int clk_effective(int is_mem, int base) { (void)is_mem; return base > 0 ? base : 0; }
+static int clk_snap_base(int is_mem, int want) { (void)is_mem; return want > 0 ? want : 0; }
 #endif
 
 /* Apply a power limit. Needs root (the service runs as root); nvidia-smi
