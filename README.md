@@ -72,9 +72,10 @@ cd C:\DAGCore
 dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1 --dashboard-dir dashboard
 ```
 
-`--threads` is required: the default, `0`, means GPU only, and the CPU build
-would then mine nothing. `-1` uses half the logical cores; a number sets them
-exactly. Windows may ask whether to allow network access the first time.
+`--threads -1` uses half the logical cores; a number sets them exactly. Left
+out, the CPU build warns that its default, `0` (GPU only), would mine nothing
+and uses `-1` instead. Windows may ask whether to allow network access the
+first time.
 
 Open **http://localhost:8881/** for the dashboard. Stop the miner with Ctrl+C
 or by closing the window; either way it shuts down cleanly.

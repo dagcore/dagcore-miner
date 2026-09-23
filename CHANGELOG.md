@@ -26,6 +26,12 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     seconds end as soon as a stop is requested.
   - README: how to run the Windows build by hand, CPU-only, for testing.
 
+### Changed
+- The CPU-only build (`make cpu`, `dagcore-miner-cpu.exe`) no longer accepts
+  `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
+  mined nothing and reported 0 H/s. It now warns at startup and uses
+  auto-detect (half the logical cores) instead.
+
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
   a client closed the connection while the dashboard server was still sending

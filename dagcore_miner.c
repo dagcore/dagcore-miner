@@ -5276,6 +5276,18 @@ int main(int argc, char **argv) {
      * cores are better left to feeding the cards. */
     if (num_threads < 0)
         num_threads = dagtech_detect_threads();
+#ifndef DAGTECH_GPU
+    /* Zero is right for a GPU rig, but a build without GPU support has only
+     * the CPU miner: with no threads it would connect, report 0 H/s and never
+     * say why. Say it, and mine with the auto-detected count instead. */
+    if (num_threads == 0) {
+        num_threads = dagtech_detect_threads();
+        fprintf(stderr, "[DagCore] WARNING: this build has no GPU support and --threads is 0, "
+                        "so nothing would be mined - use --threads -1 for auto\n");
+        fprintf(stderr, "[DagCore]          using auto-detect instead: %d CPU thread(s)\n",
+                num_threads);
+    }
+#endif
 
     /* Seed the adaptive margin from the configured base. */
     active_margin = submit_margin;
