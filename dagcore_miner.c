@@ -22,13 +22,56 @@
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
+  #include <bcrypt.h>        /* BCryptGenRandom: the API token */
   #ifdef _MSC_VER
     #pragma comment(lib, "ws2_32.lib")
     typedef int ssize_t;
   #endif
-  #define close closesocket
-  #define usleep(x) Sleep((x)/1000)
-  #define sleep(x) Sleep((x)*1000)
+  /* usleep() was Sleep(x/1000): under 1000 us that is Sleep(0), which only
+   * yields, so the submit queue's 500 us gap and 200 us waits spun a core;
+   * and Sleep(1) itself lasts up to a 15.6 ms timer tick. Below 2 ms this
+   * waits on a high-resolution waitable timer (Windows 10 1803+), about as
+   * precise as usleep on Linux; where that timer cannot be created, it
+   * yields until a QueryPerformanceCounter deadline, which is exact but
+   * busy - bounded by the 2 ms. One timer per thread, created on first use
+   * and left to the process's exit: only a few threads ever need one. */
+  #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+    #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+  #endif
+  #ifdef _MSC_VER
+    #define DT_TLS __declspec(thread)
+  #else
+    #define DT_TLS __thread
+  #endif
+  static void dt_usleep(unsigned int us) {
+      if (us >= 2000) { Sleep(us / 1000); return; }
+      if (us == 0) return;
+      static DT_TLS HANDLE timer = NULL;
+      static DT_TLS int timer_failed = 0;
+      if (!timer && !timer_failed) {
+          timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                         TIMER_ALL_ACCESS);
+          if (!timer) timer_failed = 1;
+      }
+      if (timer) {
+          LARGE_INTEGER due;
+          due.QuadPart = -(LONGLONG)us * 10;       /* relative, in 100 ns units */
+          if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) &&
+              WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0)
+              return;
+      }
+      LARGE_INTEGER f, t0, t;
+      QueryPerformanceFrequency(&f);
+      QueryPerformanceCounter(&t0);
+      LONGLONG ticks = (LONGLONG)us * f.QuadPart / 1000000;
+      do { SwitchToThread(); QueryPerformanceCounter(&t); } while (t.QuadPart - t0.QuadPart < ticks);
+  }
+  #define usleep(x) dt_usleep((unsigned int)(x))
+  /* Seconds-long sleeps check for shutdown every 100 ms (defined below, after
+   * keep_alive). POSIX sleep() is cut short by SIGINT; Windows Sleep() is
+   * not, and a closing console window gives the process only ~5 s. */
+  static void dt_win_sleep(unsigned int seconds);
+  #define sleep(x) dt_win_sleep(x)
 #else
   #include <arpa/inet.h>
   #include <netdb.h>
@@ -90,10 +133,38 @@
   #include <cpuid.h>
 #endif
 
-#ifdef _WIN32
+/* Every uint64_t printed through this is cast to unsigned long long, so "llu"
+ * fits everywhere. MinGW used to get "I64u", but with -std=gnu11 it compiles
+ * against its ANSI stdio, which reads that as a 32-bit %u and shifts every
+ * argument after it - /metrics would come out corrupt. Only MSVC's own
+ * printf needs I64. */
+#if defined(_MSC_VER)
   #define DT_PRIu64 "I64u"
 #else
   #define DT_PRIu64 "llu"
+#endif
+
+/* Discards a shell command's stderr: popen() runs /bin/sh on POSIX and
+ * cmd.exe on Windows, which has no /dev/null - "2>/dev/null" there fails the
+ * whole command, so nvidia-smi was never run. */
+#ifdef _WIN32
+  #define DT_NULL_STDERR "2>NUL"
+#else
+  #define DT_NULL_STDERR "2>/dev/null"
+#endif
+
+/* Sockets. Winsock's SOCKET is an unsigned 64-bit handle: stored in an int it
+ * truncates, and "< 0" can never catch INVALID_SOCKET. Closing needs
+ * closesocket(); a "#define close closesocket" also renamed the CRT's own
+ * close() declaration and broke the build. */
+#ifdef _WIN32
+  typedef SOCKET dt_sock_t;
+  #define DT_BAD_SOCK      INVALID_SOCKET
+  #define dt_closesock(s)  closesocket(s)
+#else
+  typedef int dt_sock_t;
+  #define DT_BAD_SOCK      (-1)
+  #define dt_closesock(s)  close(s)
 #endif
 
 /* =========================================================================
@@ -142,6 +213,16 @@ static void main_wait(int seconds) {
     for (int i = 0; i < seconds * 10 && keep_alive && !g_paused; i++)
         usleep(100000);
 }
+#ifdef _WIN32
+static void dt_win_sleep(unsigned int seconds) {
+    DWORD left = (DWORD)seconds * 1000;
+    while (left > 0 && keep_alive) {
+        DWORD step = left < 100 ? left : 100;
+        Sleep(step);
+        left -= step;
+    }
+}
+#endif
 static int  metrics_port       = 8881;  /* built-in metrics/dashboard endpoint */
 /* METRICS_BIND / --metrics-bind: interface the metrics + dashboard server binds.
  * Loopback by default. Until this existed the server bound INADDR_ANY, so the
@@ -184,9 +265,23 @@ static char dashboard_dir[512] = "";
  * operator editing config.env never fights the API over the same file.
  *
  * Both paths, and the token file, can be redirected with environment
- * variables - needed to test without root, useful for containers. */
+ * variables - needed to test without root, useful for containers.
+ *
+ * On Windows all three live in %ProgramData%\DAGCore\ (config.env,
+ * overrides.env, api-token): machine-wide, like /etc and /var/lib, and
+ * writable without administrator rights for the account that creates it. */
 #define DT_TOKEN_PATH_DEFAULT     "/etc/dagcore-miner/api-token"
 #define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
+#ifdef _WIN32
+static const char *dt_win_datadir(void) {
+    static char dir[512];
+    if (!dir[0]) {
+        const char *pd = getenv("ProgramData");
+        snprintf(dir, sizeof(dir), "%s\\DAGCore", (pd && pd[0]) ? pd : "C:\\ProgramData");
+    }
+    return dir;
+}
+#endif
 
 static int  gpu_power_limit = 0;      /* GPU_POWER_LIMIT, watts; 0 = leave alone */
 /* A lock is stored as a step of the card's BASE clock table, not as the MHz
@@ -226,11 +321,25 @@ static double g_pl_min = -1, g_pl_max = -1, g_pl_default = -1, g_pl_current = -1
 
 static const char *dt_token_path(void) {
     const char *e = getenv("DAGCORE_TOKEN_FILE");
-    return (e && e[0]) ? e : DT_TOKEN_PATH_DEFAULT;
+    if (e && e[0]) return e;
+#ifdef _WIN32
+    static char p[600];
+    snprintf(p, sizeof(p), "%s\\api-token", dt_win_datadir());
+    return p;
+#else
+    return DT_TOKEN_PATH_DEFAULT;
+#endif
 }
 static const char *dt_overrides_path(void) {
     const char *e = getenv("DAGCORE_OVERRIDES_FILE");
-    return (e && e[0]) ? e : DT_OVERRIDES_PATH_DEFAULT;
+    if (e && e[0]) return e;
+#ifdef _WIN32
+    static char p[600];
+    snprintf(p, sizeof(p), "%s\\overrides.env", dt_win_datadir());
+    return p;
+#else
+    return DT_OVERRIDES_PATH_DEFAULT;
+#endif
 }
 
 /* Detected host CPU, shown at startup and in the metrics JSON. */
@@ -333,7 +442,7 @@ static char gpu_autotune_cache[512]     = "";   /* AUTOTUNE_CACHE: file path; em
                                                    at startup, see dagtech_default_autotune_cache() */
 
 /* Stratum connection */
-static int sockfd = -1;
+static dt_sock_t sockfd = DT_BAD_SOCK;
 static pthread_mutex_t sock_mtx  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t job_mtx   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t stats_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -2235,14 +2344,14 @@ static int dagtech_connect_pool(void) {
 
     for (rp = res; rp != NULL; rp = rp->ai_next) {
         sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (sockfd < 0) continue;
+        if (sockfd == DT_BAD_SOCK) continue;
         if (connect(sockfd, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
-        close(sockfd);
-        sockfd = -1;
+        dt_closesock(sockfd);
+        sockfd = DT_BAD_SOCK;
     }
     freeaddrinfo(res);
 
-    if (sockfd < 0) {
+    if (sockfd == DT_BAD_SOCK) {
         fprintf(stderr, "[DagCore] Failed to connect to %s:%d\n", pool_host, pool_port);
         return -1;
     }
@@ -2875,7 +2984,7 @@ static int get_gpu_stats(double *temp, double *usage, double *memory, double *po
                          double *core_clk, double *mem_clk) {
     FILE *fp = popen("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,"
                      "power.draw,clocks.current.graphics,clocks.current.memory "
-                     "--format=csv,noheader,nounits 2>/dev/null", "r");
+                     "--format=csv,noheader,nounits " DT_NULL_STDERR, "r");
     if (!fp) return -1;
 
     char buf[256];
@@ -2967,7 +3076,7 @@ static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, doubl
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
              "nvidia-smi --query-gpu=power.min_limit,power.max_limit,"
-             "power.default_limit,power.limit --format=csv,noheader,nounits -i %d 2>/dev/null",
+             "power.default_limit,power.limit --format=csv,noheader,nounits -i %d " DT_NULL_STDERR,
              idx);
     FILE *fp = popen(cmd, "r");
     if (!fp) return -1;
@@ -3252,7 +3361,8 @@ static int nvml_current_clock(int is_mem, int *mhz) {
 }
 
 #else
-static int nvml_load(void) { return 0; }
+/* No NVML on Windows yet: offsets and locks report "not wired up", and the
+ * clock helpers the rest of the file uses see no shift and no table. */
 static int nvml_read_offsets(int *c, int *m) { (void)c; (void)m; return -1; }
 static int nvml_write_offset(int a, int b, char *e, size_t n) {
     (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
@@ -3267,6 +3377,9 @@ static int nvml_unlock_clock(int a, char *e, size_t n) {
     (void)a; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
 }
 static int nvml_current_clock(int a, int *m) { (void)a; (void)m; return -1; }
+static int clk_shift(int is_mem) { (void)is_mem; return 0; }
+static int clk_effective(int is_mem, int base) { (void)is_mem; return base > 0 ? base : 0; }
+static int clk_snap_base(int is_mem, int want) { (void)is_mem; return want > 0 ? want : 0; }
 #endif
 
 /* Apply a power limit. Needs root (the service runs as root); nvidia-smi
@@ -3468,6 +3581,18 @@ static void overrides_load(void) {
     if (n) printf("[DagCore] Overrides loaded from %s (%d key%s)\n", path, n, n == 1 ? "" : "s");
 }
 
+/* Put tmp in place of path in one step. POSIX rename() replaces an existing
+ * target; Windows rename() refuses one, so after the first save every later
+ * change would have been lost. MoveFileEx with REPLACE_EXISTING is the Windows
+ * equivalent, and WRITE_THROUGH returns only once the move is on disk. */
+static int dt_replace_file(const char *tmp, const char *path) {
+#ifdef _WIN32
+    return MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+#else
+    return rename(tmp, path);
+#endif
+}
+
 /* Rewrite the override file with one key changed. Every other line is copied
  * through verbatim, and the result is renamed into place, so a crash halfway
  * cannot leave a truncated file behind. */
@@ -3509,7 +3634,7 @@ static int overrides_set(const char *key, const char *value) {
 #ifndef _WIN32
     chmod(tmp, 0640);
 #endif
-    if (rename(tmp, path) != 0) { remove(tmp); return -1; }
+    if (dt_replace_file(tmp, path) != 0) { remove(tmp); return -1; }
     return 0;
 }
 
@@ -3530,7 +3655,11 @@ static void token_init(void) {
 
     unsigned char raw[32];
     int have = 0;
-#ifndef _WIN32
+#ifdef _WIN32
+    /* The system CSPRNG; NULL + SYSTEM_PREFERRED_RNG needs no provider handle. */
+    have = BCRYPT_SUCCESS(BCryptGenRandom(NULL, raw, sizeof(raw),
+                                          BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+#else
     FILE *ur = fopen("/dev/urandom", "rb");
     if (ur) {
         have = (fread(raw, 1, sizeof(raw), ur) == sizeof(raw));
@@ -3538,7 +3667,7 @@ static void token_init(void) {
     }
 #endif
     if (!have) {
-        fprintf(stderr, "[DagCore] WARNING: no /dev/urandom; control API disabled\n");
+        fprintf(stderr, "[DagCore] WARNING: no secure random source; control API disabled\n");
         g_api_token[0] = '\0';
         return;
     }
@@ -3639,7 +3768,7 @@ static void gpu_device_sel_str(char *out, size_t n) {
 }
 
 /* ---- tiny HTTP helpers (this server speaks just enough HTTP) ---- */
-static void http_send_json(int fd, int status, const char *reason, const char *body) {
+static void http_send_json(dt_sock_t fd, int status, const char *reason, const char *body) {
     char hdr[256];
     snprintf(hdr, sizeof(hdr),
              "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
@@ -3649,7 +3778,7 @@ static void http_send_json(int fd, int status, const char *reason, const char *b
     send(fd, body, (int)strlen(body), 0);
 }
 
-static void http_send_err(int fd, int status, const char *reason, const char *msg) {
+static void http_send_err(dt_sock_t fd, int status, const char *reason, const char *msg) {
     char body[320];
     snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", msg);
     http_send_json(fd, status, reason, body);
@@ -3729,7 +3858,7 @@ static void http_path(const char *req, char *out, size_t out_size) {
  *
  * The name is chosen from a fixed set below, never taken from the request, so
  * there is no path for a caller to traverse out of the directory. */
-static void serve_dashboard_file(int cfd, const char *name, const char *ctype,
+static void serve_dashboard_file(dt_sock_t cfd, const char *name, const char *ctype,
                                  const char *extra_hdr) {
     char path[600];
     snprintf(path, sizeof(path), "%s/%s", dashboard_dir, name);
@@ -3966,7 +4095,7 @@ static int config_file_value(const char *path, const char *key, char *out, size_
     return found;
 }
 
-static void api_config(int cfd, const char *body) {
+static void api_config(dt_sock_t cfd, const char *body) {
     const char *keys[6];
     char vals[6][300];
     const char *valp[6];
@@ -4109,7 +4238,7 @@ static void api_config(int cfd, const char *body) {
 
 /* POST /api/pause {"paused":true|false}. Refused while a clock test runs:
  * its verdict needs shares, and its clock ticks only while connected. */
-static void api_pause(int cfd, const char *body) {
+static void api_pause(dt_sock_t cfd, const char *body) {
     const char *p = json_value_of(body, "paused");
     int want;
     if (p && strncmp(p, "true", 4) == 0)       want = 1;
@@ -4137,7 +4266,7 @@ static void api_pause(int cfd, const char *body) {
                                         : "{\"ok\":true,\"paused\":false}");
 }
 
-static void dagtech_handle_control(int cfd, const char *req, const char *body) {
+static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *body) {
     char tok[128] = "";
     if (!g_api_token[0] ||
         http_header(req, "x-dagcore-token", tok, sizeof(tok)) != 0 ||
@@ -4681,7 +4810,7 @@ static window_stats_t stats_window(void) {
 
 /* GET /history: the buffer oldest first, plus the miner's clock ("now"), so
  * the page can place the samples even when its own clock disagrees. */
-static void serve_history(int cfd) {
+static void serve_history(dt_sock_t cfd) {
     /* ~115 bytes per sample in practice; 192 leaves room for huge values. */
     size_t cap = 128 + (size_t)HIST_LEN * 192;
     char *out = malloc(cap);
@@ -4717,12 +4846,8 @@ static void serve_history(int cfd) {
 static void *dagtech_metrics_thread(void *arg) {
     (void)arg;
 
-    #ifdef _WIN32
-    SOCKET srv = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    #else
-    int srv = socket(AF_INET, SOCK_STREAM, 0);
-    #endif
-    if (srv < 0) {
+    dt_sock_t srv = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (srv == DT_BAD_SOCK) {
         fprintf(stderr, "[DagCore] Metrics server failed to create socket\n");
         return NULL;
     }
@@ -4738,7 +4863,7 @@ static void *dagtech_metrics_thread(void *arg) {
 
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         fprintf(stderr, "[DagCore] Metrics bind failed on %s:%d\n", metrics_bind, metrics_port);
-        close(srv);
+        dt_closesock(srv);
         return NULL;
     }
     listen(srv, 5);
@@ -4751,15 +4876,21 @@ static void *dagtech_metrics_thread(void *arg) {
         struct sockaddr_in client;
         #ifdef _WIN32
         int clen = sizeof(client);
-        SOCKET cfd = accept(srv, (struct sockaddr *)&client, &clen);
         #else
         socklen_t clen = sizeof(client);
-        int cfd = accept(srv, (struct sockaddr *)&client, &clen);
         #endif
-        if (cfd < 0) continue;
+        dt_sock_t cfd = accept(srv, (struct sockaddr *)&client, &clen);
+        if (cfd == DT_BAD_SOCK) continue;
 
-        /* A stalled client must not wedge the whole (single-threaded) server. */
-#ifndef _WIN32
+        /* A stalled client must not wedge the whole (single-threaded) server.
+         * Same 2 seconds on both; Winsock takes the timeout as a DWORD of
+         * milliseconds where POSIX takes a struct timeval. */
+#ifdef _WIN32
+        {
+            DWORD ms = 2000;
+            setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof(ms));
+        }
+#else
         {
             struct timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
             setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -4788,14 +4919,14 @@ static void *dagtech_metrics_thread(void *arg) {
             if ((long)(have - (size_t)(body - reqbuf)) >= want) break;
             if (have >= sizeof(reqbuf) - 1) break;
         }
-        if (have == 0) { close(cfd); continue; }
+        if (have == 0) { dt_closesock(cfd); continue; }
         reqbuf[have] = '\0';
         if (!body) body = "";
 
         /* ---- Control API (#46): token-protected POST ---- */
         if (strncmp(reqbuf, "POST ", 5) == 0) {
             dagtech_handle_control(cfd, reqbuf, body);
-            close(cfd);
+            dt_closesock(cfd);
             continue;
         }
 
@@ -4804,7 +4935,7 @@ static void *dagtech_metrics_thread(void *arg) {
             http_path(reqbuf, path, sizeof(path));
             if (strcmp(path, "/history") == 0) {
                 serve_history(cfd);
-                close(cfd);
+                dt_closesock(cfd);
                 continue;
             }
         }
@@ -4830,7 +4961,7 @@ static void *dagtech_metrics_thread(void *arg) {
                 extra = "Cache-Control: max-age=86400\r\n";
             }
             serve_dashboard_file(cfd, name, ctype, extra);
-            close(cfd);
+            dt_closesock(cfd);
             continue;
         }
 
@@ -5133,10 +5264,10 @@ static void *dagtech_metrics_thread(void *arg) {
         /* Same headers as before; the body no longer has to fit a fixed
          * 4 KB response buffer, which the card list could have overflowed. */
         http_send_json(cfd, 200, "OK", json);
-        close(cfd);
+        dt_closesock(cfd);
     }
 
-    close(srv);
+    dt_closesock(srv);
     return NULL;
 }
 
@@ -5150,7 +5281,7 @@ static void *dagtech_metrics_thread(void *arg) {
  * shutdown until systemd's TimeoutStopSec fires SIGKILL.
  * shutdown() makes the pending recv() return 0 at once; close() follows. */
 static void dagtech_unblock_pool_socket(void) {
-    if (sockfd < 0) return;
+    if (sockfd == DT_BAD_SOCK) return;
 #ifdef _WIN32
     shutdown(sockfd, SD_BOTH);
 #else
@@ -5164,6 +5295,26 @@ static void dagtech_signal(int sig) {
     keep_alive = 0;
     running = 0;
 }
+
+#ifdef _WIN32
+/* Closing the console window, logging off or shutting down arrive as console
+ * control events, not signals. The handler runs on a thread of its own, and
+ * once it returns from a close/logoff/shutdown event Windows ends the process
+ * - so it asks main() to stop, the same way SIGINT does, and waits for it to
+ * finish (sockets closed, "Shutdown complete" printed), up to 4.5 s of the
+ * roughly 5 s Windows allows. Ctrl+C and Ctrl+Break return at once: the
+ * process is not killed after those, and main() exits on its own. */
+static volatile LONG g_main_done = 0;
+static BOOL WINAPI dt_console_ctrl(DWORD type) {
+    dagtech_signal(0);
+    if (type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
+        type == CTRL_SHUTDOWN_EVENT) {
+        for (int waited = 0; waited < 4500 && !g_main_done; waited += 50)
+            Sleep(50);
+    }
+    return TRUE;
+}
+#endif
 
 /* =========================================================================
  * Usage / Help
@@ -5257,8 +5408,11 @@ static int dagtech_file_exists(const char *p) {
  *   1. <exedir>/config.env          - next to the binary (e.g. install\bin\)
  *   2. <exedir>/../config.env       - install root, where the installer writes it
  *   3. ./config.env                 - current working directory
- *   4. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
- * If none exist, returns (4) so any "not found" message points somewhere sane.
+ *   4. Windows only: %ProgramData%\DAGCore\config.env - the Windows home of
+ *      the configuration, next to overrides.env and the token
+ *   5. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
+ * If none exist, returns (4) on Windows and (5) elsewhere, so a "not found"
+ * message - and --save-config - point somewhere sane.
  * exe_path is typically argv[0]; pass NULL to skip the exe-relative candidates. */
 static const char *dagtech_default_config_path(const char *exe_path) {
     static char path[1024];
@@ -5307,7 +5461,18 @@ static const char *dagtech_default_config_path(const char *exe_path) {
         return path;
     }
 
-    /* 4. legacy $USERPROFILE/dagtech-gpu-miner/config.env */
+#ifdef _WIN32
+    /* 4. %ProgramData%\DAGCore\config.env */
+    char win_cfg[600];
+    snprintf(win_cfg, sizeof(win_cfg), "%s\\config.env", dt_win_datadir());
+    if (dagtech_file_exists(win_cfg)) {
+        strncpy(path, win_cfg, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        return path;
+    }
+#endif
+
+    /* 5. legacy $USERPROFILE/dagtech-gpu-miner/config.env */
     const char *home = NULL;
 #ifdef _WIN32
     home = getenv("USERPROFILE");
@@ -5320,6 +5485,13 @@ static const char *dagtech_default_config_path(const char *exe_path) {
     else
         snprintf(path, sizeof(path), "dagtech-gpu-miner/config.env");
 
+#ifdef _WIN32
+    /* Nothing found: the legacy file is used only if it exists. */
+    if (!dagtech_file_exists(path)) {
+        strncpy(path, win_cfg, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+    }
+#endif
     return path;
 }
 
@@ -5667,6 +5839,11 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, dagtech_signal);
     signal(SIGTERM, dagtech_signal);
+#ifdef _WIN32
+    /* Registered after signal(), so it is called first and handles Ctrl+C
+     * too; the window-close case is the one signal() cannot catch. */
+    SetConsoleCtrlHandler(dt_console_ctrl, TRUE);
+#endif
 #ifndef _WIN32
     /* A client that drops the connection mid-response (a closed browser tab,
      * a reset) makes send() raise SIGPIPE, which kills the process by
@@ -5879,6 +6056,18 @@ int main(int argc, char **argv) {
     g_threads_auto = dagtech_detect_threads();
     if (num_threads < 0)
         num_threads = g_threads_auto;
+#ifndef DAGTECH_GPU
+    /* Zero is right for a GPU rig, but a build without GPU support has only
+     * the CPU miner: with no threads it would connect, report 0 H/s and never
+     * say why. Say it, and mine with the auto-detected count instead. */
+    if (num_threads == 0) {
+        num_threads = g_threads_auto;
+        fprintf(stderr, "[DagCore] WARNING: this build has no GPU support and --threads is 0, "
+                        "so nothing would be mined - use --threads -1 for auto\n");
+        fprintf(stderr, "[DagCore]          using auto-detect instead: %d CPU thread(s)\n",
+                num_threads);
+    }
+#endif
 
     /* Seed the adaptive margin from the configured base. */
     active_margin = submit_margin;
@@ -6106,7 +6295,7 @@ int main(int argc, char **argv) {
             running = 0;
             dagtech_unblock_pool_socket();
             pthread_join(recv_tid, NULL);
-            close(sockfd);
+            dt_closesock(sockfd);
             if (keep_alive) main_wait(10);
             continue;
         }
@@ -6280,7 +6469,7 @@ int main(int argc, char **argv) {
         pthread_join(recv_tid, NULL);
         free(threads);
         free(tids);
-        close(sockfd);
+        dt_closesock(sockfd);
 
         if (keep_alive && !g_paused) {
             printf("[DagCore] Reconnecting in 10s...\n");
@@ -6299,5 +6488,8 @@ int main(int argc, char **argv) {
 
     printf("[DagCore] Shutdown complete. Total hashes: %" DT_PRIu64 "\n",
            (unsigned long long)total_hashes);
+#ifdef _WIN32
+    g_main_done = 1;          /* releases a console handler waiting on a close */
+#endif
     return 0;
 }

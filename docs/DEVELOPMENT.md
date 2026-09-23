@@ -48,7 +48,8 @@ NVML paths are tested without a card.
 ```sh
 make            # GPU build -> dagcore-miner
 make cpu        # CPU-only  -> dagcore-miner-cpu
-make check      # builds both, from scratch
+make check      # builds every variant, from scratch (Windows too, if MinGW is there)
+make windows    # cross-compiled .exe pair, needs MinGW-w64
 make warn       # -Wall -Wextra -Wshadow, syntax only
 make install    # into /opt/dagcore-miner, as the installer does
 ```
@@ -56,7 +57,18 @@ make install    # into /opt/dagcore-miner, as the installer does
 **Always `make check` before committing.** The two builds take different paths
 through `#ifdef DAGTECH_GPU`, and code reachable from one but defined in the
 other links fine in the GPU build and fails only in the CPU one. That has
-happened.
+happened. The same goes for `#ifndef _WIN32`, which is why `make check` also
+builds the Windows pair; without MinGW-w64 it says `SKIPPED` rather than
+failing.
+
+**Windows cross-build.** `make windows` builds `dagcore-miner.exe` and
+`dagcore-miner-cpu.exe` with MinGW-w64 (`apt install mingw-w64`). It reuses
+the OpenCL headers of the Linux build (`OPENCL_HEADERS`, default
+`/usr/include/CL`) and generates an import library for `OpenCL.dll` from
+`win/OpenCL.def`; a new `cl*` call has to be added there. Everything else is
+linked statically, so the GPU `.exe` needs only system DLLs and `OpenCL.dll`,
+which the NVIDIA driver installs. Nothing here can run it: there is no Wine
+and no Windows machine on the build rig.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
@@ -65,6 +77,8 @@ happened.
 | `USE_OPENSSL` | unset | `1` uses libcrypto's SHA-256 instead of the bundled one. |
 | `PREFIX` | `/opt/dagcore-miner` | Install location, the installer's. `/usr/local` until 1.2.1. |
 | `SYSCONFDIR` | `/etc/dagcore-miner` | Configuration, regardless of `PREFIX`. |
+| `MINGW_CC` | `x86_64-w64-mingw32-gcc` | Compiler for `make windows`. |
+| `OPENCL_HEADERS` | `/usr/include/CL` | OpenCL headers for `make windows`. |
 
 **Installing by hand on a rig set up by `install.sh`.** The installer uses
 `PREFIX=/opt/dagcore-miner`, and its service runs
@@ -221,9 +235,15 @@ present. Mining across all cards works and scales linearly; only the controls
 are held back. This is the main thing standing between the dashboard and a
 multi-card rig.
 
-**Windows.** The `#ifdef _WIN32` paths are inherited and have not been compiled,
-let alone run, during this work. The NVML layer is stubbed out there. Treat the
-Windows build as unverified.
+**Windows.** The `#ifdef _WIN32` paths are inherited. They compile and link
+(`make windows`) and can be run by hand (README, "Windows (experimental)"),
+with the token from `BCryptGenRandom`, files in `%ProgramData%\DAGCore\`,
+`overrides.env` replaced with `MoveFileEx`, the metrics receive timeout,
+`2>NUL` for `nvidia-smi`, and a clean stop on console close. Still missing:
+NVML (stubbed, so no offsets or clock locks), a Windows service and
+installer, an ACL on the token file (other local accounts can read it), and
+the autotune cache, which still defaults to `C:\dagtech-gpu-miner\`. None of
+it has run on Windows yet; treat the build as unverified.
 
 **Memory junction temperature.** Not exposed by the Linux driver to any tool, so
 the dashboard cannot show the one temperature that matters most when tuning

@@ -3,8 +3,9 @@
 An OpenCL miner for [BlockDAG](https://dagcore.net) (chain 1404), with a built-in
 web dashboard for monitoring and GPU tuning.
 
-Derived from DagTech Miner (MIT). Linux only for now — see
-[what is left to do](docs/DEVELOPMENT.md#not-done-yet).
+Derived from DagTech Miner (MIT). Linux; a Windows build is in progress and
+can be run by hand for testing — see [Windows (experimental)](#windows-experimental)
+and [what is left to do](docs/DEVELOPMENT.md#not-done-yet).
 
 ## Requirements
 
@@ -77,6 +78,57 @@ Every line must end in `OK`. `FAILED` means the file is damaged or not the one
 released: delete it and download it again. The sums come from the same place as
 the files, so they catch a broken or incomplete download, not a compromised
 account; they are not a signature.
+
+## Windows (experimental)
+
+The Windows build is for testing only. It is cross-compiled on Linux, has not
+been through a real test yet, and has no service, no installer and no GPU
+tuning. The steps below run it by hand, CPU-only, on a machine without an
+NVIDIA card.
+
+**Build it** on a Linux machine with MinGW-w64 (`sudo apt install mingw-w64`):
+
+```sh
+make windows    # -> dagcore-miner-cpu.exe and dagcore-miner.exe
+```
+
+**Copy to the Windows machine**, all into one folder, for example
+`C:\DAGCore`:
+
+- `dagcore-miner-cpu.exe`
+- the `dashboard` folder, whole
+
+Nothing else is needed: the `.exe` has no DLLs of its own to bring along.
+(`dagcore-miner.exe` is the GPU build; it also needs `dagcore_gpu.cl` next to it
+and an OpenCL driver, and is not covered here.)
+
+**Run it** from a Command Prompt or PowerShell opened in that folder:
+
+```bat
+cd C:\DAGCore
+dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1 --dashboard-dir dashboard
+```
+
+`--threads -1` uses half the logical cores; a number sets them exactly. Left
+out, the CPU build warns that its default, `0` (GPU only), would mine nothing
+and uses `-1` instead. Windows may ask whether to allow network access the
+first time.
+
+Open **http://localhost:8881/** for the dashboard. Stop the miner with Ctrl+C
+or by closing the window; either way it shuts down cleanly.
+
+**Files it creates** in `%ProgramData%\DAGCore\` (usually
+`C:\ProgramData\DAGCore\`): `api-token`, and `overrides.env` once a setting
+is changed from the dashboard. Settings can also go in a `config.env` there, in
+the same format as [config.env.example](config.env.example) — with it, the
+command line shrinks to `dagcore-miner-cpu.exe`. A `config.env` in the folder
+you run it from is found too, and takes precedence.
+
+**Limits of this build.** On a CPU-only machine the power, clock and intensity
+controls say they are unavailable, which is correct. The token file is not
+protected from other accounts on the same computer yet — do not test on a
+shared machine. What else is missing is listed in
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#not-done-yet).
 
 ## The dashboard
 

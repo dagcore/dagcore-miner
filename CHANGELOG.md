@@ -6,6 +6,35 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `make windows` cross-compiles `dagcore-miner.exe` and
+  `dagcore-miner-cpu.exe` with MinGW-w64, and `make check` builds them too.
+  The Windows build compiles and links but has not been run yet, and it has no
+  service, installer or GPU tuning (NVML); it is not ready for use.
+  - Windows: the control API token comes from `BCryptGenRandom` (there is no
+    `/dev/urandom`); without it the control API was always disabled.
+  - Windows: `overrides.env` is replaced with `MoveFileEx`; `rename()` fails
+    there when the file exists, so only the first dashboard change was kept.
+  - Windows: `config.env`, `overrides.env` and the token live in
+    `%ProgramData%\DAGCore\` instead of `/etc` and `/var/lib`.
+  - Windows: the dashboard server gives up on a silent client after 2 seconds,
+    as on Linux, instead of hanging for every other client.
+  - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no
+    `/dev/null`, so temperature, power and the power limit were never read.
+  - Windows: closing the console window, logging off or shutting down stops
+    the miner cleanly (`SetConsoleCtrlHandler`), and its waits of several
+    seconds end as soon as a stop is requested.
+  - Windows: waits under 2 ms use a high-resolution waitable timer. `usleep()`
+    there was `Sleep(x/1000)`, so the submit queue's 500 µs gap became
+    `Sleep(0)` and spun a core, and `Sleep(1)` can last a 15.6 ms timer tick.
+  - README: how to run the Windows build by hand, CPU-only, for testing.
+
+### Changed
+- The CPU-only build (`make cpu`, `dagcore-miner-cpu.exe`) no longer accepts
+  `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
+  mined nothing and reported 0 H/s. It now warns at startup and uses
+  auto-detect (half the logical cores) instead.
+
 ## [1.2.1] - 2026-09-23
 
 ### Changed
