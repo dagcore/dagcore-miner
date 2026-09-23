@@ -54,6 +54,14 @@ dashboard. The dashboard's pages are not among these files: replacing only the
 binary of an installed rig leaves the old dashboard in place, so upgrade with
 `git pull` and `sudo ./install.sh` instead.
 
+To install a build of your own over an installed rig, give `make install` the
+installer's prefix - without it, the files go to `/usr/local`, where the
+service does not look:
+
+```sh
+make && sudo make install PREFIX=/opt/dagcore-miner && sudo systemctl restart dagcore-miner
+```
+
 Check the files before running them:
 
 ```sh

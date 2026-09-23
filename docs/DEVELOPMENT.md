@@ -50,7 +50,7 @@ make            # GPU build -> dagcore-miner
 make cpu        # CPU-only  -> dagcore-miner-cpu
 make check      # builds both, from scratch
 make warn       # -Wall -Wextra -Wshadow, syntax only
-make install    # PREFIX=/usr/local by default
+make install    # PREFIX=/usr/local by default - see below for an installed rig
 ```
 
 **Always `make check` before committing.** The two builds take different paths
@@ -65,6 +65,26 @@ happened.
 | `USE_OPENSSL` | unset | `1` uses libcrypto's SHA-256 instead of the bundled one. |
 | `PREFIX` | `/usr/local` | Install location. |
 | `SYSCONFDIR` | `/etc/dagcore-miner` | Configuration, regardless of `PREFIX`. |
+
+**Installing by hand on a rig set up by `install.sh`.** The installer uses
+`PREFIX=/opt/dagcore-miner`, and its service runs
+`/opt/dagcore-miner/bin/dagcore-miner` with the dashboard from
+`/opt/dagcore-miner/share/dagcore-miner/dashboard`. A bare `make install` goes
+to `/usr/local`, which nothing on that rig reads: the service keeps the old
+binary, or - if only the binary is then copied across - runs a new binary next
+to the old dashboard. Give the same prefix:
+
+```sh
+make
+sudo make install PREFIX=/opt/dagcore-miner
+sudo systemctl restart dagcore-miner
+```
+
+That replaces the binary, the kernel and the dashboard under the prefix, and
+`config.env.example` in `SYSCONFDIR`; an existing `config.env` is never
+touched. The dashboard's pages are read on every request, so a change to them
+alone shows after a browser reload, without the restart. The installer's
+Upgrade does the same from a fresh build.
 
 `-Wall` is on. The build is warning-free; keep it that way.
 

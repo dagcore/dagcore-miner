@@ -3,7 +3,11 @@
 #   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
 #   make cpu            -> dagcore-miner-cpu  (without OpenCL)
 #   make warn           -> syntax check with -Wall -Wextra
-#   make install        -> binary + kernel in $(PREFIX)/bin
+#   make install        -> binary + kernel in $(PREFIX)/bin, the dashboard in
+#                          $(PREFIX)/share/dagcore-miner, config.env.example
+#                          in $(SYSCONFDIR). The installer uses
+#                          PREFIX=/opt/dagcore-miner; so must a hand install
+#                          over it, or the service keeps running the old files.
 #
 # Variables: NATIVE=1 (local build, -march=native), DEBUG=1, USE_OPENSSL=1, PREFIX=...
 
