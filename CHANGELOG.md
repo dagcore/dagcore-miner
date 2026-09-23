@@ -37,6 +37,14 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   endpoints and fields, and what the token now allows.
 
 ### Changed
+- **`SUBMIT_MIN_INTERVAL_MS` defaults to 5 ms instead of 20.** A GPU batch
+  takes about 10 ms on an RTX 3080 and yields at most one share, so while the
+  pool's difficulty is low — the first minutes of every connection — 20 ms
+  dropped every other share. Replayed on 6103 shares from production: 34.6%
+  dropped and 84.9% of raw work credited at 20 ms, 0.5% dropped at 5 ms and
+  92.5% credited with no limit at all. A `config.env` that still sets
+  `SUBMIT_MIN_INTERVAL_MS=20` (older `config.env.example`) keeps 20 until it is
+  changed.
 - **No more worker name.** The pool has no worker names and ignores the field,
   so it is gone from the dashboard's Mining configuration, `/api/config`, the
   installer's questions and `config.env.example`. An existing `WORKER=` line or

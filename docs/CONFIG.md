@@ -62,7 +62,7 @@ ignored. Values are taken literally — no quotes, no shell expansion.
 |-----|--------|---------|--------------|
 | `SUBMIT_MARGIN` | ≥ 1.0 | `1.0` | Multiplier on the share threshold. Higher submits fewer, safer shares. |
 | `AUTO_THRESHOLD` | `0`/`1` | `1` | Raise the margin automatically after low-difficulty rejects. |
-| `SUBMIT_MIN_INTERVAL_MS` | 0–1000 | `20` | Minimum gap between two share submissions. A share found inside it is dropped, never sent (`dropped` since start and `dropped_window` for the last 10 minutes in `/metrics`, and under Advanced on the dashboard; the total comes mostly from the first minutes after a start). `0` = no limit. Config file only, no command-line flag. |
+| `SUBMIT_MIN_INTERVAL_MS` | 0–1000 | `5` | Minimum gap between two share submissions. Default 5 since it was measured that 20 — the previous default — dropped every other share while the pool's difficulty was low: a GPU batch takes ~10 ms on an RTX 3080 and yields at most one share. Keep it below the batch time. A share found inside it is dropped, never sent (`dropped` since start and `dropped_window` for the last 10 minutes in `/metrics`, and under Advanced on the dashboard; the total comes mostly from the first minutes after a start). `0` = no limit. Config file only, no command-line flag. |
 
 ### GPU
 

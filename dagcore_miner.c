@@ -2497,16 +2497,23 @@ static int dagtech_make_header(const DagTechJob *j, uint32_t nonce, uint8_t head
  * #44: was 200 ms (max 5 shares/s). Any share found inside that window was
  * dropped SILENTLY - not submitted, not counted as stale, invisible in the
  * stats. At GPU hashrates the burst rate comfortably exceeds 5/s, so this was
- * discarding real work with no way to notice. 20 ms still protects the pool
- * from a runaway loop while letting normal bursts through. */
+ * discarding real work with no way to notice. A few ms still protects the
+ * pool from a runaway loop while letting normal bursts through. */
 static uint64_t last_submit_ms = 0;
 static uint64_t rate_limited_shares = 0;  /* #44: shares dropped by the limiter */
 static pthread_mutex_t submit_rate_mtx = PTHREAD_MUTEX_INITIALIZER;
-/* SUBMIT_MIN_INTERVAL_MS in config.env; 0 turns the limiter off. On the
- * production rig 20 ms costs next to nothing in steady state (effective 99.4%
- * of raw); its drops come almost all from the first minutes after a start,
- * while vardiff still has the difficulty low and shares come in floods. */
-#define SUBMIT_MIN_INTERVAL_MS_DEFAULT 20
+/* SUBMIT_MIN_INTERVAL_MS in config.env; 0 turns the limiter off.
+ *
+ * Default 5 ms, down from 20. The GPU reports at most one share per batch,
+ * and on an RTX 3080 a batch (16384 work-items) takes about 10.2 ms. While
+ * the pool's difficulty is low - the first minutes of every connection -
+ * nearly every batch has a share, so they arrive 10.2 ms apart and a 20 ms
+ * gap dropped every other one. Replayed on 6103 shares logged in production:
+ * 20 ms dropped 34.6% and credited 84.9% of raw work; 10 ms 1.3% / 92.3%;
+ * 5 ms 0.5%; none at all 92.5%. 10 ms would sit right at the batch time,
+ * which a faster card or a lower intensity shortens; 5 ms leaves room. In
+ * steady state, with difficulty settled, any of them costs under 1%. */
+#define SUBMIT_MIN_INTERVAL_MS_DEFAULT 5
 #define SUBMIT_MIN_INTERVAL_MS_MAX     1000
 static int submit_min_interval_ms = SUBMIT_MIN_INTERVAL_MS_DEFAULT;
 
