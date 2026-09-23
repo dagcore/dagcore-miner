@@ -6,6 +6,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-23
+
 ### Added
 - **The GPU reports every share of a batch, not just one.** The kernel kept a
   single nonce per batch (about 10 ms of work on an RTX 3080), so while the
