@@ -323,7 +323,7 @@ static uint64_t gpu_stale       = 0;
 /* Pending submission ring buffer: maps submission id -> source (CPU=0, GPU=1)
    so that pool accept/reject responses can be attributed to the right source. */
 #define PENDING_SUB_MAX 64
-static struct { uint64_t id; int is_gpu; } pending_subs[PENDING_SUB_MAX];
+static struct { uint64_t id; int is_gpu; double diff; } pending_subs[PENDING_SUB_MAX];
 static int pending_head  = 0;
 static int pending_count = 0;
 static pthread_mutex_t pending_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -338,11 +338,28 @@ static time_t   start_time;
  * a miner restart starts an empty chart, which is the intent. */
 #define HIST_INTERVAL_S 5
 #define HIST_LEN        360
-typedef struct { int64_t t; double total, gpu, cpu; } hist_sample_t;
+typedef struct {
+    int64_t  t;
+    double   total, gpu, cpu;      /* served at /history */
+    uint64_t hashes;               /* total_hashes then - not served; the */
+    double   accepted_work;        /* two feed the 10-minute window below */
+} hist_sample_t;
 static hist_sample_t   hist_buf[HIST_LEN];
 static int             hist_head  = 0;   /* next slot to write */
 static int             hist_count = 0;
 static pthread_mutex_t hist_mtx   = PTHREAD_MUTEX_INITIALIZER;
+
+/* Effective hashrate: the work the pool accepted, as hashes. A share passes
+ * when the top 64 bits of its hash are <= 0xFFFF00000000 / difficulty (see
+ * dagtech_check_target), so one share at difficulty 1 takes 2^64/0xFFFF00000000
+ * = ~65537 hashes on average - not the 2^32 of Bitcoin's difficulty 1. Checked
+ * against 682 accepted shares in the production log: raw 1.65 MH/s, effective
+ * 1.56 MH/s (94%); with 2^32 it would have read 1e11 H/s. Each share counts at
+ * the pool difficulty of the job it was found for, without the submit margin -
+ * that is what the pool credits. */
+#define HASHES_PER_DIFF1 (18446744073709551616.0 / (double)0x0000FFFF00000000ULL)
+#define EFFECTIVE_WINDOW_S 600
+static double accepted_work = 0.0;         /* cumulative, under stats_mtx */
 
 /* Per-session hash counters for hashrate tracking */
 static uint64_t cpu_hashes_session = 0;
@@ -2303,13 +2320,19 @@ static void dagtech_parse_stratum(const char *line) {
         const char *idp = strstr(line, "\"id\":");
         uint64_t resp_id = idp ? strtoull(idp + 5, NULL, 10) : (uint64_t)-1;
         int src = -1;
+        double share_diff = current_difficulty;   /* if the id is not found */
         pthread_mutex_lock(&pending_mtx);
         for (int pi = 0; pi < pending_count; pi++) {
             int idx = (pending_head + pi) % PENDING_SUB_MAX;
-            if (pending_subs[idx].id == resp_id) { src = pending_subs[idx].is_gpu; break; }
+            if (pending_subs[idx].id == resp_id) {
+                src        = pending_subs[idx].is_gpu;
+                share_diff = pending_subs[idx].diff;
+                break;
+            }
         }
         pthread_mutex_unlock(&pending_mtx);
         pthread_mutex_lock(&stats_mtx);
+        accepted_work += share_diff * HASHES_PER_DIFF1;
         total_accepted++;
         if (src == 1) gpu_accepted++;
         else if (src == 0) cpu_accepted++;
@@ -2480,6 +2503,7 @@ static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu
     int slot = (pending_head + pending_count) % PENDING_SUB_MAX;
     pending_subs[slot].id     = sub_id;
     pending_subs[slot].is_gpu = is_gpu;
+    pending_subs[slot].diff   = j->difficulty;
     if (pending_count < PENDING_SUB_MAX) pending_count++;
     else pending_head = (pending_head + 1) % PENDING_SUB_MAX;
     pthread_mutex_unlock(&pending_mtx);
@@ -3916,17 +3940,57 @@ static void *dagtech_history_thread(void *arg) {
     (void)arg;
     while (keep_alive) {
         sleep(HIST_INTERVAL_S);
+        pthread_mutex_lock(&stats_mtx);
+        uint64_t hashes = total_hashes;
+        double   work   = accepted_work;
+        pthread_mutex_unlock(&stats_mtx);
         pthread_mutex_lock(&hist_mtx);
         hist_sample_t *s = &hist_buf[hist_head];
         s->t     = (int64_t)time(NULL);
         s->total = current_hashrate;
         s->gpu   = gpu_hashrate;
         s->cpu   = cpu_hashrate;
+        s->hashes        = hashes;
+        s->accepted_work = work;
         hist_head = (hist_head + 1) % HIST_LEN;
         if (hist_count < HIST_LEN) hist_count++;
         pthread_mutex_unlock(&hist_mtx);
     }
     return NULL;
+}
+
+/* Effective and raw hashrate over the last EFFECTIVE_WINDOW_S: the counters
+ * now minus the oldest history sample still inside the window. Until the
+ * miner has run that long the window starts at start_time, where both
+ * counters were 0. Both rates cover the same span, so their ratio compares
+ * like with like - the 10s raw figure on the dashboard would make it jump. */
+static void effective_window(double *eff, double *raw, long *span_s) {
+    time_t now = time(NULL);
+    pthread_mutex_lock(&stats_mtx);
+    uint64_t hashes = total_hashes;
+    double   work   = accepted_work;
+    pthread_mutex_unlock(&stats_mtx);
+
+    int64_t  t0 = (int64_t)start_time;
+    uint64_t h0 = 0;
+    double   w0 = 0.0;
+    if ((int64_t)now - t0 > EFFECTIVE_WINDOW_S) {
+        pthread_mutex_lock(&hist_mtx);
+        int first = (hist_head - hist_count + HIST_LEN) % HIST_LEN;
+        for (int i = 0; i < hist_count; i++) {
+            const hist_sample_t *s = &hist_buf[(first + i) % HIST_LEN];
+            if (s->t >= (int64_t)now - EFFECTIVE_WINDOW_S) {
+                t0 = s->t; h0 = s->hashes; w0 = s->accepted_work;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&hist_mtx);
+    }
+
+    long span = (long)((int64_t)now - t0);
+    *span_s = span;
+    *eff = span > 0 ? (work - w0) / span : 0.0;
+    *raw = span > 0 ? (double)(hashes - h0) / span : 0.0;
 }
 
 /* GET /history: the buffer oldest first, plus the miner's clock ("now"), so
@@ -4146,6 +4210,11 @@ static void *dagtech_metrics_thread(void *arg) {
                 (lock_mem_eff < g_mem_lo || lock_mem_eff > g_mem_hi)) lock_stale = 1;
         }
 
+        /* Before stats_mtx: effective_window() takes it itself. */
+        double eff_hr, eff_raw;
+        long   eff_span;
+        effective_window(&eff_hr, &eff_raw, &eff_span);
+
         /* Build JSON metrics response */
         pthread_mutex_lock(&stats_mtx);
         time_t uptime = time(NULL) - start_time;
@@ -4237,7 +4306,11 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"job_id\":\"%s\","
             "\"gpu_enabled\":%d,"
             "\"gpu_count\":%d,"
-            "\"gpu_hashrates\":%s"
+            "\"gpu_hashrates\":%s,"
+            "\"effective_hashrate\":%.2f,"
+            "\"effective_raw_hashrate\":%.2f,"
+            "\"effective_pct\":%.1f,"
+            "\"effective_window_s\":%ld"
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4282,7 +4355,8 @@ static void *dagtech_metrics_thread(void *arg) {
             current_job.job_id,
             (gpu_enabled == 1) ? 1 : 0,
             g_num_gpus,
-            gpu_hr_arr);
+            gpu_hr_arr,
+            eff_hr, eff_raw, eff_raw > 0 ? 100.0 * eff_hr / eff_raw : 0.0, eff_span);
         pthread_mutex_unlock(&stats_mtx);
 
         char response[4096];

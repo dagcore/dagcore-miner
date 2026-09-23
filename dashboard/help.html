@@ -139,6 +139,34 @@ percent. Units switch by themselves: H/s, kH/s, MH/s, GH/s.</p>
 so it moves smoothly. A drop that lasts one ten-second tick is noise; a drop
 that stays is not.</p>
 
+<h3 id="effective">Effective hashrate</h3>
+<p>Next to the total there is a second figure. <b>Total</b> is the raw work of
+the card: every hash it computes. <b>Effective</b> is the work the pool
+accepted: the accepted shares of the last ten minutes, each counted as the
+hashes it takes on average to find a share at its difficulty. The percentage
+compares the two over the same ten minutes. On the RTX 3080 it sits around
+90–95%. Over time it stays below 100%, and the gap has three causes:</p>
+<ul>
+<li><b>Stale shares</b> — valid work that arrived after the pool had moved to
+a new job. It cost hashes and earns nothing. About 3% of shares on this
+rig.</li>
+<li><b>Rate limit</b> — the miner sends at most one share every 20 ms, to
+protect the pool from a runaway loop. A share found inside that gap is
+dropped, never sent. Shares come in bursts, so this is not rare: about 6% of
+the shares found on this rig. The dashboard does not show the count; it is
+the <code>dropped</code> field in <code>/metrics</code>.</li>
+<li><b>Wrong shares from an overclock</b> — a card pushed too far computes
+answers the pool refuses. The card still reports full hashrate, because it
+is still hashing; only effective drops. This is the case the figure is best
+at catching: raw flat, effective falling, rejected climbing.</li>
+</ul>
+<p>Effective is also noisier than raw. It is built from about a hundred
+shares per ten minutes, and finding a share is luck, so a few percent up or
+down from one window to the next means nothing. A figure above 100% for a
+while is the same luck, in your favour. What counts is a drop that
+lasts, together with stale or rejected shares going up. During the first
+ten minutes after a start the window is shorter, and the card says so.</p>
+
 <h3>Efficiency</h3>
 <p>GPU hashrate divided by GPU power draw, in <b>kH/W</b> — how much work you
 get per watt. The 3080 at 300 W and 1.61 MH/s gives about 5.4 kH/W. This is
@@ -146,9 +174,10 @@ the number to watch when tuning the power limit: raw hashrate almost always
 goes up with more watts, efficiency usually does not.</p>
 
 <h3>The 30-minute chart</h3>
-<p>Total hashrate over the last half hour. The samples live <b>only in the
-page</b> — reload the tab, or open the dashboard on a second device, and the
-chart starts empty. Nothing is stored on the rig. It is there to show shape:
+<p>Total hashrate over the last half hour. The miner keeps the samples, in
+memory, so reloading the tab or opening the dashboard on a second device
+shows the whole half hour. Nothing is written to disk: when the miner
+restarts, the chart starts empty. It is there to show shape:
 a flat line is healthy, a sawtooth means something is throttling, a cliff
 means the miner reconnected or the card stopped.</p>
 

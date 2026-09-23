@@ -100,6 +100,8 @@ a.helplink:hover{background:rgba(77,157,255,.16)}
 .stat .big{font-size:clamp(25px,4.6vw,32px);font-weight:700;letter-spacing:-.03em;line-height:1.15;margin-top:10px;color:#fff}
 .stat .big .u{font-size:.48em;font-weight:600;color:var(--muted-2);margin-left:6px;letter-spacing:0}
 .stat .sub{color:var(--muted-2);font-size:12px;margin-top:6px}
+.stat .sub + .sub{margin-top:2px}
+.stat .why{color:var(--label);font-size:11px}
 /* Primary card takes the site's "Mine" accent treatment. */
 .stat.primary{
   border-color:rgba(255,171,46,.5);
@@ -290,7 +292,14 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
     <div class="card stat primary">
       <span class="label">Total hashrate</span>
       <div class="big"><span id="hrTotal">&mdash;</span><span class="u" id="hrTotalU"></span></div>
+      <div class="sub">raw work of the card(s)</div>
       <div class="sub" id="hrTotalSub">&nbsp;</div>
+    </div>
+    <div class="card stat">
+      <span class="label">Effective hashrate</span>
+      <div class="big"><span id="hrEff">&mdash;</span><span class="u" id="hrEffU"></span></div>
+      <div class="sub">work the pool accepted</div>
+      <div class="sub"><span id="hrEffSub">&nbsp;</span> <a class="why" href="help#effective">why?</a></div>
     </div>
     <div class="card stat">
       <span class="label">GPU hashrate</span>
@@ -675,6 +684,15 @@ function render(d){
   p = hashParts(d.hashrate);     txt("hrTotal", p[0]); txt("hrTotalU", p[1]);
   p = hashParts(d.gpu_hashrate); txt("hrGpu",   p[0]); txt("hrGpuU",   p[1]);
   p = hashParts(d.cpu_hashrate); txt("hrCpu",   p[0]); txt("hrCpuU",   p[1]);
+
+  /* Effective: accepted shares turned back into hashes, over the miner's
+   * 10-minute window. The percentage is against raw over that same window,
+   * not against the 10-second figure next to it. */
+  p = hashParts(d.effective_hashrate); txt("hrEff", p[0]); txt("hrEffU", p[1]);
+  var win = d.effective_window_s || 0;
+  txt("hrEffSub", !win ? "\u00a0"
+    : (d.effective_raw_hashrate > 0 ? d.effective_pct.toFixed(1) + "% of raw" : "no work yet")
+      + " \u00b7 " + (win >= 600 ? "last 10 min" : "first " + Math.max(1, Math.round(win / 60)) + " min"));
 
   var tot = d.hashrate || 0;
   txt("hrTotalSub", num(d.total_hashes) + " hashes this session");
