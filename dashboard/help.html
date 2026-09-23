@@ -261,9 +261,49 @@ fine.</div>
 <section id="settings">
 <h2>4. The settings, one by one</h2>
 
-<p>Three are in plain view because they are the ones worth touching. The rest
-are behind <b>Advanced</b> because on this algorithm they mostly do not help,
-and a wrong value there costs more than it gains.</p>
+<p>At the top, under the token, is the rig's own configuration: where it
+mines and with what. Below it, the tuning. Three tuning controls are in plain
+view because they are the ones worth touching. The rest are behind
+<b>Advanced</b> because on this algorithm they mostly do not help, and a wrong
+value there costs more than it gains.</p>
+
+<h3 id="config">Mining configuration</h3>
+<p><b>What it holds.</b> The wallet the pool pays, the pool and its port, the
+worker name, how many CPU threads mine, and which graphics cards are used. The
+same settings as in <code>config.env</code>, and saving writes them there.</p>
+<p><b>CPU threads.</b> <i>auto</i> uses half the logical cores, and the list
+says what that comes to on this machine. <i>0 — GPU only</i> is offered only
+while a card is mining; with no card mining, 0 would mine nothing.</p>
+<p><b>Graphics cards.</b> Listed by name as the driver reports them: all of
+them, one, or several. With a single card there is nothing to choose and the
+row just names it.</p>
+<p><b>Checked before anything is written.</b> A wallet is 0x followed by 40
+hex digits, and the all-zero example address is refused. The pool must be a
+bare host name or address — no <code>stratum+tcp://</code>, no port — and the
+miner checks that it resolves, because a typo there would leave it retrying
+forever. The page checks as you type; the miner checks again and has the last
+word, so a save can never leave a configuration it will not start with.</p>
+<p><b>Wallet and pool ask twice.</b> They decide where the work and the payout
+go, so a change to either asks for confirmation, naming the new address or
+pool, before anything is sent.</p>
+<p><b>Saving restarts the miner</b>, as a change of intensity does, and the page
+reconnects by itself. The file is rewritten in place: every other line and
+comment is kept, and the previous version is saved next to it as
+<code>config.env.bak</code>.</p>
+<p><b>Locked fields.</b> A setting given on the miner's command line wins over
+<code>config.env</code> on every start, so changing it here would change
+nothing. Such fields are shown but locked, marked <i>set on the command
+line</i>.</p>
+
+<h3 id="pause">Pause mining</h3>
+<p>The button in the header. Pausing stops the mining threads and closes the
+connection to the pool; the header says <i>paused</i> and a banner with a
+Resume button stays up. The page itself keeps working, because the miner that
+serves it is still running — which is also why there is no Stop button: it
+would take the page away with it.</p>
+<p>A pause is not saved. If the miner restarts, it mines again. A pause is
+refused while a clock test runs, since the test needs shares to reach a
+verdict.</p>
 
 <h3>Power limit</h3>
 <p><b>What it does.</b> Caps how many watts the card may draw. Below the cap
@@ -615,7 +655,8 @@ journalctl -u bdag-miner --since today</code></pre>
 <table>
 <tr><th>File</th><th>Who writes it</th><th>What is in it</th></tr>
 <tr><td>/etc/dagcore-miner/<br>config.env</td>
-    <td>You, by hand. The miner only reads it.</td>
+    <td>You, by hand, or the Mining configuration block in Settings, which
+    keeps the previous version as config.env.bak.</td>
     <td>Wallet, pool, worker, threads, which cards to use
     (<code>GPU_DEVICE</code>), metrics port and bind address, dashboard
     directory. The things that define the rig.</td></tr>
@@ -625,9 +666,10 @@ journalctl -u bdag-miner --since today</code></pre>
     top of config.env at startup.</td></tr>
 </table>
 </div>
-<p>Two files on purpose: a change made in a browser can never corrupt the
-wallet or the pool address, and an operator editing configuration never fights
-the dashboard over the same file. To inspect them:</p>
+<p>Two files on purpose: tuning never touches the file that defines the rig,
+and throwing all tuning away is one deleted file. The dashboard does write
+<code>config.env</code>, but only through Mining configuration: six settings,
+checked first, the rest of the file kept as it was. To inspect them:</p>
 <pre><code>sudo cat /etc/dagcore-miner/config.env
 sudo cat /var/lib/dagcore-miner/overrides.env</code></pre>
 <p>To throw away all dashboard tuning and go back to the operator's
@@ -646,6 +688,12 @@ worker name and the hashrate. There is no password on reading.</div>
 <p>Changing settings does need the token, but that only protects writes. The
 token itself travels in plain HTTP — anyone who can watch the traffic on the
 network can copy it and then change your clocks.</p>
+
+<div class="note bad"><b>The token can also change the wallet.</b> Mining
+configuration writes the wallet and the pool, so whoever holds the token — and
+can reach the port — can send your work, and your payouts, somewhere else.
+Treat the token like a password, and keep the dashboard on localhost unless you
+need it elsewhere.</div>
 
 <p><b>What that means in practice:</b></p>
 <ul>

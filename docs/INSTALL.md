@@ -164,13 +164,14 @@ sudo journalctl -u dagcore-miner -n 100      # last 100 lines
 | Path | What |
 |------|------|
 | `/opt/dagcore-miner/` | The program, the GPU kernel, the dashboard |
-| `/etc/dagcore-miner/config.env` | Your configuration. Yours to edit; the miner only reads it |
+| `/etc/dagcore-miner/config.env` | Your configuration. Edit it by hand, or from Settings → Mining configuration, which keeps the previous version as `config.env.bak` |
 | `/etc/dagcore-miner/api-token` | The dashboard's control token, root-only |
 | `/var/lib/dagcore-miner/overrides.env` | Tuning written by the dashboard, loaded on top of config.env |
 
-Two files on purpose: a change made in a browser can never corrupt the wallet or
-the pool address, and editing configuration never fights the dashboard over the
-same file.
+Two files on purpose: tuning never touches the file that defines the rig, and
+throwing all tuning away is one deleted file. The dashboard writes
+`config.env` only through Mining configuration — six settings, validated first,
+every other line kept.
 
 ## Upgrading, reconfiguring, removing
 
@@ -265,7 +266,9 @@ the pool, the worker name and the hashrate. There is no password on reading.
 
 Changing settings needs the token, but that only protects writes, and the token
 travels in plain HTTP — anyone who can watch the network can copy it and then
-change your clocks.
+change your clocks. **The token can also change the wallet and the pool**
+(Settings → Mining configuration): whoever holds it and can reach the port can
+redirect your payouts. Treat it like a password.
 
 What that means:
 

@@ -28,6 +28,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   now shows what the miner is doing — mining, connecting, pausing, paused —
   rather than only that it answers, and a banner with a Resume button stays up
   while mining is paused.
+- Help page, CONFIG.md and INSTALL.md: Mining configuration, Pause, the new
+  endpoints and fields, and what the token now allows.
 - `POST /api/pause` (control token), `{"paused": true|false}`: stops the
   mining threads and disconnects from the pool, while the dashboard stays up
   to resume. Refused while a clock test runs. Not saved: a restarted miner
