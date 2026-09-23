@@ -114,6 +114,14 @@ offset change is applied live but only saved after ten minutes without new
 rejected shares; on failure the previous value is restored automatically. See
 [CONFIG.md](CONFIG.md#control-api).
 
+`/api/config` writes the rig's own settings (wallet, pool, port, worker,
+threads, cards) into `config.env`. That reverses the earlier rule that the
+browser never writes that file, deliberately, so a rig can be configured
+without a shell; validation, a `.bak` copy, keeping every other line and
+refusing command-line-pinned settings are what replace the rule. `/api/pause`
+ends the mining session the way a dropped pool connection does and makes the
+reconnect loop wait; the web server is its own thread and is never paused.
+
 ### Smaller things
 
 - Unknown CLI options are refused instead of silently ignored.

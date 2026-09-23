@@ -18,7 +18,9 @@ Three sources, later ones winning:
 config.env   <   overrides.env   <   command line
 ```
 
-- **`/etc/dagcore-miner/config.env`** — yours. The miner only ever reads it.
+- **`/etc/dagcore-miner/config.env`** — yours. The dashboard's Mining
+  configuration also writes six keys in it (`WALLET`, `POOL`, `PORT`, `WORKER`,
+  `THREADS`, `GPU_DEVICE`), keeping the previous file as `config.env.bak`.
 - **`/var/lib/dagcore-miner/overrides.env`** — written by the dashboard's control
   API. Only tuning keys, never identity.
 - **Command line** — an explicit flag beats both.
@@ -119,8 +121,9 @@ GPU_CORE_CLOCK_BASE   GPU_MEM_CLOCK_BASE
 GPU_CORE_OFFSET   GPU_MEM_OFFSET
 ```
 
-Anything else in the file is ignored by the API and left alone. The whitelist is
-the point: a change made from a browser cannot touch the wallet or the pool.
+Anything else in the file is ignored by the API and left alone. The wallet,
+the pool and the other rig settings never go through this file: they are
+written into `config.env` by `/api/config`, below.
 
 Writes are atomic — a temporary file is renamed into place — and lines the API
 does not manage are copied through unchanged.
@@ -179,6 +182,8 @@ Bodies and replies are JSON. Every reply carries `ok`.
 | `/api/mem-offset` | `{"mhz":1200}` or `{"reset":true}` | Same for memory. |
 | `/api/intensity` | `{"value":90}` | Saves and exits so the supervisor restarts the miner — intensity is fixed when buffers are allocated. Replies `restarting:false` when not supervised. |
 | `/api/cancel-trial` | `{"domain":"mem-clock"}` | Ends a running trial and puts the previous value back. Domains: `core-clock`, `mem-clock`, `core-offset`, `mem-offset`. |
+| `/api/config` | Any of `{"wallet","pool","port","worker","threads","gpu_device"}` | Validates every field, writes them into `config.env` (previous file kept as `config.env.bak`, other lines untouched) and exits for a restart like `/api/intensity`. Unchanged values answer `saved:false`. `threads` is `-1` (auto) to the core count, `0` only while a GPU mines; `gpu_device` is `all`, `N` or `N,M`. Works even when the tuning controls are unavailable. |
+| `/api/pause` | `{"paused":true}` or `{"paused":false}` | Stops the mining threads and disconnects from the pool, or resumes. The web server keeps running. Not saved across restarts. Refused during a trial. Works even when the tuning controls are unavailable. |
 | `/api/adopt` | `{}`, `{"core":true}`, `{"mem":true}` | Saves what the card runs now, with no trial. Offsets always; clock locks only when named, because NVML cannot report a lock. |
 
 ### Response codes
@@ -186,9 +191,9 @@ Bodies and replies are JSON. Every reply carries `ok`.
 | Code | Means |
 |------|-------|
 | 200 | Done. |
-| 400 | The body is missing a field, or the value is out of range. |
+| 400 | The body is missing a field, or a value is out of range or invalid (a wallet, a pool that does not resolve, a card that does not exist). |
 | 401 | Missing or wrong token. |
-| 409 | Controls unavailable — GPU off, multi-GPU, no `nvidia-smi`, no NVML, or no trial to cancel. |
+| 409 | Controls unavailable — GPU off, multi-GPU, no `nvidia-smi`, no NVML, or no trial to cancel. For `/api/config`: the setting is given on the command line. For `/api/pause`: a trial is running. |
 | 500 | The driver refused, or the settings file could not be written. The driver's message is passed through. |
 
 ### The trial
@@ -204,7 +209,7 @@ second describes a state the card has been in all along.
 
 ## /metrics fields
 
-`GET /metrics` returns one JSON object, 94 fields. No authentication. New
+`GET /metrics` returns one JSON object, 102 fields. No authentication. New
 fields are only ever appended at the end, so the order of the existing ones
 does not change.
 
@@ -284,6 +289,22 @@ card's range.
 
 ### Session
 `difficulty`, `uptime` (seconds, this process), `job_id`
+
+### Configuration
+What the dashboard's Mining configuration form shows:
+
+| Field | Means |
+|-------|-------|
+| `gpu_devices` | `[{"index":0,"name":"NVIDIA GeForce RTX 3080"}, ...]`, every card on the OpenCL platform, empty in the CPU-only build |
+| `gpu_device_sel` | `GPU_DEVICE` as it would be written: `all`, `0,1` or `0` |
+| `threads_config` | `THREADS` as configured, `-1` for auto; `threads` is what it resolved to |
+| `threads_auto` | What auto resolves to on this machine |
+| `config_path` | The `config.env` this process loaded, and the one a save writes |
+| `config_cli` | Settings given on the command line, which `/api/config` refuses: any of `wallet`, `pool`, `port`, `worker`, `threads`, `gpu_device` |
+
+### Mining state
+`paused` — whether a pause is requested. `mining_state` — `connecting`,
+`mining`, `pausing` (requested, the session still winding down) or `paused`.
 
 ## /history
 

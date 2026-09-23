@@ -83,6 +83,19 @@ a.helplink:hover{background:rgba(77,157,255,.16)}
 .status.on .dot{background:var(--ok);box-shadow:0 0 12px rgba(63,224,138,.7)}
 .status.off{color:var(--bad);border-color:rgba(244,162,156,.5);background:rgba(244,162,156,.09)}
 .status.off .dot{background:var(--bad)}
+/* Mining state, once the miner answers: paused in the warning colour, the
+ * in-between states in blue, mining in green (.on). */
+.status.paused{color:var(--warn);border-color:rgba(242,198,109,.55);background:rgba(242,198,109,.10)}
+.status.paused .dot{background:var(--warn)}
+.status.conn{color:var(--blue);border-color:rgba(77,157,255,.5);background:rgba(77,157,255,.08)}
+.status.conn .dot{background:var(--blue);animation:pulse 1.4s ease-in-out infinite}
+button.pausebtn{width:auto;min-height:34px;padding:6px 14px;font-size:12.5px}
+#pausedBar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  background:rgba(242,198,109,.10);border:1px solid rgba(242,198,109,.45);
+  color:var(--warn);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
+#pausedBar .dot{width:9px;height:9px;border-radius:50%;background:var(--warn);flex:0 0 auto}
+#pausedBar small{font-weight:400;color:var(--muted);flex:1 1 260px}
+#pausedBar button{width:auto;min-width:140px;flex:0 0 auto}
 
 /* ---------- layout ---------- */
 .grid{display:grid;gap:16px}
@@ -215,6 +228,29 @@ button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
 .adopt-picks input[type=checkbox]{accent-color:var(--mine);margin-top:2px;flex:0 0 auto;
   width:15px;height:15px;cursor:pointer}
 .adopt-picks .hint{color:var(--muted-2)}
+/* Mining configuration: a block of its own inside Settings. Its rows reuse
+ * .set-row, with the controls spanning the control columns. */
+.cfg{margin:6px 0 4px;padding-top:4px;border-top:1px solid var(--line-soft)}
+.cfg-head{padding:14px 0 2px}
+.cfg-head b{display:block;font-size:12px;font-weight:600;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--label)}
+.cfg-head small{display:block;color:var(--muted-2);font-size:11.5px;margin-top:6px;line-height:1.6}
+.cfg-head code{font-size:11px;color:var(--text-2)}
+.cfg .cfg-port{flex:0 0 96px;width:96px}
+select{font:inherit;font-size:13px;color:var(--text);background:rgba(0,0,0,.35);
+  border:1px solid var(--line);border-radius:9px;padding:8px 10px;min-width:0;width:100%}
+select:disabled{opacity:.4;cursor:not-allowed}
+.cfg input.bad,.cfg select.bad{border-color:rgba(244,162,156,.8)}
+.cfg-gpus{flex-direction:column;align-items:stretch!important}
+.cfg-modes{display:flex;gap:18px;flex-wrap:wrap}
+.cfg-modes label,.cfg-list label{display:flex;align-items:center;gap:7px;font-size:12.5px;
+  color:var(--muted);cursor:pointer}
+.cfg-modes input,.cfg-list input{accent-color:var(--mine);width:15px;height:15px;margin:0}
+.cfg-list{display:flex;flex-direction:column;gap:7px}
+.cfg-list b{color:var(--text-2);font-weight:600}
+.cfg-actions{display:flex;align-items:center;gap:10px;padding:12px 0 6px;flex-wrap:wrap}
+.cfg-actions button{width:var(--btn-w);flex:0 0 auto}
+.cfg-err{flex:1 1 200px;font-size:12px;color:var(--bad);min-width:0}
 .set-help{font-size:12.5px;color:var(--muted);line-height:1.6;margin:-6px 0 4px}
 details.adv{margin-top:6px;border-top:1px solid var(--line-soft)}
 details.adv > summary{list-style:none;cursor:pointer;padding:14px 0 4px;
@@ -279,7 +315,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
   <div id="restartOverlay" hidden>
     <span class="pulse"></span>
-    <span>Miner is restarting to apply the new intensity&hellip;</span>
+    <span>Miner is restarting&hellip;</span>
     <small id="restartDetail">reconnecting automatically</small>
   </div>
 
@@ -299,9 +335,19 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <div class="item"><span class="k">Pool</span><span class="v" id="pool">&mdash;</span></div>
       <div class="item"><span class="k">Wallet</span><span class="v" id="wallet">&mdash;</span></div>
       <a class="helplink" href="help">Help</a>
+      <button class="ghost pausebtn" id="pauseBtn" type="button" disabled
+        title="needs the control token">Pause mining</button>
       <div class="status" id="status"><span class="dot"></span><span id="statusText">connecting</span></div>
     </div>
   </header>
+
+  <div id="pausedBar" hidden>
+    <span class="dot"></span>
+    <span>Mining is paused</span>
+    <small>The miner is disconnected from the pool and its threads are stopped.
+    This page keeps working. A restart of the miner resumes mining too.</small>
+    <button id="resumeBtn" type="button" disabled>Resume mining</button>
+  </div>
 
   <section class="grid stats">
     <div class="card stat c-mine">
@@ -438,6 +484,55 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
         <input type="password" id="tokInput" placeholder="paste token from the miner log" autocomplete="off" spellcheck="false">
         <button class="ghost" id="tokSave" type="button">Save</button>
       </span>
+    </div>
+
+    <div class="cfg" id="cfgBox">
+      <div class="cfg-head">
+        <b>Mining configuration</b>
+        <small>Saved in <span id="cfgPath">config.env</span> and applied by
+        restarting the miner. Every field is checked before anything is
+        written; the previous file is kept as <code>config.env.bak</code>.</small>
+      </div>
+
+      <div class="set-row">
+        <span class="lab"><b>Wallet</b><small id="cfgWalletNote">where the pool pays out</small></span>
+        <span class="set-ctl wide"><input type="text" id="cfgWallet" placeholder="0x&hellip; (42 characters)"
+          spellcheck="false" autocomplete="off" maxlength="42"></span>
+      </div>
+      <div class="set-row">
+        <span class="lab"><b>Pool</b><small id="cfgPoolNote">host name and port, no stratum+tcp://</small></span>
+        <span class="set-ctl wide"><input type="text" id="cfgPool" placeholder="stratum.dagcore.net"
+          spellcheck="false" autocomplete="off" maxlength="253">
+          <input type="number" id="cfgPort" class="cfg-port" min="1" max="65535" placeholder="3334"></span>
+      </div>
+      <div class="set-row">
+        <span class="lab"><b>Worker</b><small id="cfgWorkerNote">sent as the Stratum password; the
+          current pool ignores it</small></span>
+        <span class="set-ctl wide"><input type="text" id="cfgWorker" placeholder="dagcore"
+          spellcheck="false" autocomplete="off" maxlength="63"></span>
+      </div>
+      <div class="set-row">
+        <span class="lab"><b>CPU threads</b><small id="cfgThreadsNote">&mdash;</small></span>
+        <span class="set-ctl wide"><select id="cfgThreads"></select></span>
+      </div>
+      <div class="set-row" id="cfgGpuRow" hidden>
+        <span class="lab"><b>Graphics cards</b><small id="cfgGpuNote">&mdash;</small></span>
+        <span class="set-ctl wide cfg-gpus">
+          <span class="cfg-modes" id="cfgGpuModes">
+            <label><input type="radio" name="cfgGpuMode" value="all"> <span>All cards</span></label>
+            <label><input type="radio" name="cfgGpuMode" value="one"> <span>One card</span></label>
+            <label><input type="radio" name="cfgGpuMode" value="list"> <span>Several</span></label>
+          </span>
+          <select id="cfgGpuOne" hidden></select>
+          <span class="cfg-list" id="cfgGpuList" hidden></span>
+        </span>
+      </div>
+
+      <div class="cfg-actions">
+        <span class="cfg-err" id="cfgErr"></span>
+        <button class="ghost" id="cfgRevert" type="button" disabled>Revert</button>
+        <button class="btn-main" id="cfgSave" type="button" disabled>Save &amp; restart</button>
+      </div>
     </div>
 
     <div class="set-row">
@@ -877,6 +972,11 @@ function setOnline(ok, detail){
   txt("statusText", ok ? "online" : "offline");
   $("offline").hidden = ok;
   if (!ok && detail) txt("offlineDetail", detail);
+  if (!ok){
+    /* Whether it is paused is unknown until it answers again. */
+    $("pausedBar").hidden = true;
+    refreshPause(null);
+  }
   document.querySelector(".wrap").classList.toggle("stale", !ok && !!last);
 }
 
@@ -919,7 +1019,7 @@ function poll(){
       var back = (typeof d.uptime === "number" && d.uptime < restart.uptimeBefore) || restart.sawDown;
       if (back){
         var r = restart; restart = null;
-        restartDone(r.value, d);
+        restartDone(r, d);
       } else if (Date.now() > restart.deadline){
         restart = null;
         restartFailed();
@@ -930,6 +1030,8 @@ function poll(){
     setOnline(true);
     render(d);
     syncSettings(d);
+    cfgSync(d);
+    renderState(d);
     var now = Date.now();
     /* Effective only once its 10-minute window is full, as in /history. The
      * miner says so with a flag; the span itself is 595-600s when full. */
@@ -977,7 +1079,7 @@ var token = "";
  * second signal, when the miner was observed down and then answered again.
  * A single flag cleared by the next good poll was not enough: the old process
  * can still answer for a moment after accepting the request. */
-var restart = null;   /* {uptimeBefore, value, deadline, sawDown} */
+var restart = null;   /* {uptimeBefore, what, value, deadline, sawDown} */
 var RESTART_TIMEOUT_MS = 60000;
 var RESTART_BANNER_MS  = 10000;
 var plTouched = false, inTouched = false;   /* don't fight the user mid-drag */
@@ -1303,10 +1405,33 @@ function restartBanner(cls, text, detail){
   txt("restartDetail", detail || "");
 }
 
-function restartDone(value, d){
-  restartBanner("done", "Miner restarted \u2014 running again",
-                "intensity now " + (typeof d.gpu_intensity === "number" ? d.gpu_intensity : value));
-  note("Intensity " + value + " applied after restart.", "ok", 8000);
+/* One restart flow for every change that needs one: what is the kind of
+ * change, value the intensity when it is one. */
+function startRestart(what, label, value){
+  restart = {
+    uptimeBefore: (last && typeof last.uptime === "number") ? last.uptime : 0,
+    what: what, value: value,
+    deadline: Date.now() + RESTART_TIMEOUT_MS,
+    sawDown: false
+  };
+  $("offline").hidden = true;
+  restartBanner("", "Miner is restarting to apply " + label + "\u2026", "reconnecting automatically");
+  note((what === "intensity" ? "Intensity " + value : "Configuration") + " saved. Miner is restarting\u2026",
+       "busy", RESTART_TIMEOUT_MS);
+  /* systemd waits RestartSec (10s by default) before starting it again,
+   * so poll faster than the usual 5s until it answers. */
+  setTimeout(poll, 3000);
+}
+
+function restartDone(r, d){
+  if (r.what === "intensity"){
+    restartBanner("done", "Miner restarted \u2014 running again",
+                  "intensity now " + (typeof d.gpu_intensity === "number" ? d.gpu_intensity : r.value));
+    note("Intensity " + r.value + " applied after restart.", "ok", 8000);
+  } else {
+    restartBanner("done", "Miner restarted \u2014 running again", "new configuration in use");
+    note("Configuration applied after restart.", "ok", 8000);
+  }
   setTimeout(function(){
     if (restart) return;                 /* another restart started meanwhile */
     var o = $("restartOverlay");
@@ -1504,19 +1629,7 @@ $("inApply").addEventListener("click", function(){
     inTouched = false;
     if (st === 200 && d && d.ok){
       if (d.restarting){
-        restart = {
-          uptimeBefore: (last && typeof last.uptime === "number") ? last.uptime : 0,
-          value: v,
-          deadline: Date.now() + RESTART_TIMEOUT_MS,
-          sawDown: false
-        };
-        $("offline").hidden = true;
-        restartBanner("", "Miner is restarting to apply the new intensity\u2026",
-                      "reconnecting automatically");
-        note("Intensity " + v + " saved. Miner is restarting\u2026", "busy", RESTART_TIMEOUT_MS);
-        /* systemd waits RestartSec (10s by default) before starting it again,
-         * so poll faster than the usual 5s until it answers. */
-        setTimeout(poll, 3000);
+        startRestart("intensity", "intensity " + v, v);
       } else {
         note("Intensity " + v + " saved. " + (d.note || "Restart the miner to apply."), "ok", 10000);
       }
@@ -1525,6 +1638,284 @@ $("inApply").addEventListener("click", function(){
     else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 8000);
   });
 });
+
+/* ---- mining configuration --------------------------------------------
+ * The form is filled from /metrics and then left alone while it is being
+ * edited (cfgDirty). Only fields that differ from what is loaded are sent, and
+ * never one the command line pins - the server refuses those anyway. The
+ * checks mirror the miner's own, so most mistakes are caught before a round
+ * trip; the miner still has the last word. */
+var cfgDirty = false, cfgLoaded = null, cfgDevices = [];
+
+function cfgPoolParts(s){
+  var i = (s || "").lastIndexOf(":");
+  return i > 0 ? [s.slice(0, i), parseInt(s.slice(i + 1), 10)] : [s || "", 0];
+}
+
+function cfgFill(d){
+  var pp = cfgPoolParts(d.pool);
+  cfgLoaded = {
+    wallet: d.wallet_full || "", pool: pp[0], port: pp[1], worker: d.worker || "",
+    threads: typeof d.threads_config === "number" ? d.threads_config : -1,
+    gpu: d.gpu_device_sel || "0"
+  };
+  cfgDevices = d.gpu_devices || [];
+  $("cfgWallet").value = cfgLoaded.wallet;
+  $("cfgPool").value   = cfgLoaded.pool;
+  $("cfgPort").value   = cfgLoaded.port || "";
+  $("cfgWorker").value = cfgLoaded.worker;
+  txt("cfgPath", d.config_path || "config.env");
+
+  /* Threads: auto first, with what it means on this machine. 0 is GPU only,
+   * offered only while a card is mining - otherwise nothing would mine. */
+  var sel = $("cfgThreads"), cores = d.cpu_cores || 0, i, o;
+  sel.innerHTML = "";
+  o = document.createElement("option");
+  o.value = "-1"; o.textContent = "auto (" + (d.threads_auto || "?") + " of " + cores + ")";
+  sel.appendChild(o);
+  if ((d.gpu_count || 0) > 0){
+    o = document.createElement("option");
+    o.value = "0"; o.textContent = "0 — GPU only";
+    sel.appendChild(o);
+  }
+  for (i = 1; i <= cores; i++){
+    o = document.createElement("option");
+    o.value = String(i); o.textContent = String(i);
+    sel.appendChild(o);
+  }
+  sel.value = String(cfgLoaded.threads);
+  if (sel.value !== String(cfgLoaded.threads)) sel.value = "-1";
+  txt("cfgThreadsNote", cores + " logical cores detected · auto uses half");
+
+  /* Cards: shown only when the build sees any. With one, there is nothing to
+   * choose - the row just names it. */
+  var row = $("cfgGpuRow");
+  row.hidden = cfgDevices.length === 0;
+  if (cfgDevices.length){
+    var one = $("cfgGpuOne"), list = $("cfgGpuList");
+    one.innerHTML = ""; list.innerHTML = "";
+    for (i = 0; i < cfgDevices.length; i++){
+      var dv = cfgDevices[i], label = "card " + dv.index + " — " + dv.name;
+      o = document.createElement("option");
+      o.value = String(dv.index); o.textContent = label;
+      one.appendChild(o);
+      var lb = document.createElement("label"), cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = String(dv.index);
+      var sp = document.createElement("span"); sp.textContent = label;
+      lb.appendChild(cb); lb.appendChild(sp); list.appendChild(lb);
+    }
+    var mode = cfgLoaded.gpu === "all" ? "all" : (cfgLoaded.gpu.indexOf(",") >= 0 ? "list" : "one");
+    cfgSetMode(mode);
+    if (mode === "one") one.value = cfgLoaded.gpu;
+    if (mode === "list"){
+      var picked = cfgLoaded.gpu.split(","), boxes = list.getElementsByTagName("input");
+      for (i = 0; i < boxes.length; i++) boxes[i].checked = picked.indexOf(boxes[i].value) >= 0;
+    }
+    $("cfgGpuModes").hidden = cfgDevices.length < 2;
+    txt("cfgGpuNote", cfgDevices.length === 1
+      ? "one card detected: " + cfgDevices[0].name
+      : cfgDevices.length + " cards detected");
+  }
+
+  /* What the command line sets cannot be changed here. */
+  var pinned = d.config_cli || [];
+  var map = { wallet: ["cfgWallet"], pool: ["cfgPool"], port: ["cfgPort"], worker: ["cfgWorker"],
+              threads: ["cfgThreads"], gpu_device: ["cfgGpuOne", "cfgGpuList", "cfgGpuModes"] };
+  for (var k in map){
+    for (i = 0; i < map[k].length; i++) $(map[k][i]).classList.toggle("pinned", pinned.indexOf(k) >= 0);
+  }
+  cfgPinnedNotes(pinned);
+  cfgValidate();
+}
+
+function cfgPinnedNotes(pinned){
+  var notes = { wallet: ["cfgWalletNote", "where the pool pays out"],
+                pool: ["cfgPoolNote", "host name and port, no stratum+tcp://"],
+                worker: ["cfgWorkerNote", "sent as the Stratum password; the current pool ignores it"] };
+  for (var k in notes){
+    var on = pinned.indexOf(k) >= 0 || (k === "pool" && pinned.indexOf("port") >= 0);
+    txt(notes[k][0], on ? "set on the command line — change it there" : notes[k][1]);
+  }
+  if (pinned.indexOf("threads") >= 0) txt("cfgThreadsNote", "set on the command line — change it there");
+  if (pinned.indexOf("gpu_device") >= 0) txt("cfgGpuNote", "set on the command line — change it there");
+}
+
+function cfgSetMode(mode){
+  var r = document.getElementsByName("cfgGpuMode"), i;
+  for (i = 0; i < r.length; i++) r[i].checked = r[i].value === mode;
+  $("cfgGpuOne").hidden  = mode !== "one";
+  $("cfgGpuList").hidden = mode !== "list";
+}
+
+function cfgGpuValue(){
+  if (!cfgDevices.length) return null;
+  var r = document.getElementsByName("cfgGpuMode"), mode = "all", i;
+  for (i = 0; i < r.length; i++) if (r[i].checked) mode = r[i].value;
+  if (cfgDevices.length < 2) return cfgLoaded ? cfgLoaded.gpu : null;
+  if (mode === "all") return "all";
+  if (mode === "one") return $("cfgGpuOne").value;
+  var boxes = $("cfgGpuList").getElementsByTagName("input"), picked = [];
+  for (i = 0; i < boxes.length; i++) if (boxes[i].checked) picked.push(boxes[i].value);
+  return picked.join(",");
+}
+
+/* The form's values, and the first problem with them. */
+function cfgRead(){
+  return {
+    wallet: $("cfgWallet").value.trim(), pool: $("cfgPool").value.trim(),
+    port: parseInt($("cfgPort").value, 10), worker: $("cfgWorker").value.trim(),
+    threads: parseInt($("cfgThreads").value, 10), gpu: cfgGpuValue()
+  };
+}
+
+function cfgValidate(){
+  var v = cfgRead(), err = "", bad = {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(v.wallet)){ err = "Wallet: 0x followed by 40 hex digits."; bad.cfgWallet = 1; }
+  else if (/^0x0{40}$/.test(v.wallet)){ err = "Wallet: that is the example address, not yours."; bad.cfgWallet = 1; }
+  if (!err && (!/^[A-Za-z0-9.-]{1,253}$/.test(v.pool) || /^[.-]|[.-]$/.test(v.pool))){
+    err = "Pool: a host name or IP address only — no stratum+tcp://, no port."; bad.cfgPool = 1;
+  }
+  if (!err && !(v.port >= 1 && v.port <= 65535)){ err = "Port: 1 to 65535."; bad.cfgPort = 1; }
+  if (!err && !/^[A-Za-z0-9._-]{1,63}$/.test(v.worker)){
+    err = "Worker: 1 to 63 letters, digits, dots, dashes or underscores."; bad.cfgWorker = 1;
+  }
+  if (!err && v.gpu === ""){ err = "Graphics cards: tick at least one."; bad.cfgGpuList = 1; }
+  var ids = ["cfgWallet","cfgPool","cfgPort","cfgWorker","cfgGpuList"], i;
+  for (i = 0; i < ids.length; i++) $(ids[i]).classList.toggle("bad", !!bad[ids[i]]);
+  txt("cfgErr", cfgDirty ? err : "");
+  return err ? null : v;
+}
+
+/* Changed fields only, never pinned ones. */
+function cfgChanges(v){
+  var out = {}, n = 0, pinned = (last && last.config_cli) || [];
+  function put(k, val, was){ if (val !== was && pinned.indexOf(k) < 0){ out[k] = val; n++; } }
+  put("wallet", v.wallet, cfgLoaded.wallet);
+  put("pool", v.pool, cfgLoaded.pool);
+  put("port", v.port, cfgLoaded.port);
+  put("worker", v.worker, cfgLoaded.worker);
+  put("threads", v.threads, cfgLoaded.threads);
+  if (v.gpu !== null) put("gpu_device", v.gpu, cfgLoaded.gpu);
+  return n ? out : null;
+}
+
+function cfgRefreshButtons(){
+  var v = cfgDirty ? cfgValidate() : null;
+  var ch = v && cfgLoaded ? cfgChanges(v) : null;
+  var usable = !!token && online === true && !restart;
+  $("cfgSave").disabled = !(usable && ch);
+  $("cfgRevert").disabled = !cfgDirty;
+  var ids = ["cfgWallet","cfgPool","cfgPort","cfgWorker","cfgThreads","cfgGpuOne"], i;
+  for (i = 0; i < ids.length; i++) $(ids[i]).disabled = !usable || $(ids[i]).classList.contains("pinned");
+  var inputs = $("cfgGpuRow").getElementsByTagName("input");
+  var gpuPinned = $("cfgGpuModes").classList.contains("pinned");
+  for (i = 0; i < inputs.length; i++) inputs[i].disabled = !usable || gpuPinned;
+}
+
+/* Rebuilt only when what it shows has changed: rebuilding the selects on
+ * every poll would close a dropdown someone has just opened. */
+var cfgSig = "";
+function cfgSync(d){
+  var sig = JSON.stringify([d.wallet_full, d.pool, d.worker, d.threads_config, d.threads_auto,
+                            d.cpu_cores, d.gpu_count, d.gpu_device_sel, d.gpu_devices,
+                            d.config_cli, d.config_path]);
+  if (!cfgDirty && sig !== cfgSig){ cfgSig = sig; cfgFill(d); }
+  cfgRefreshButtons();
+}
+
+function cfgTouched(){ cfgDirty = true; cfgValidate(); cfgRefreshButtons(); }
+(function(){
+  var ids = ["cfgWallet","cfgPool","cfgPort","cfgWorker"], i;
+  for (i = 0; i < ids.length; i++) $(ids[i]).addEventListener("input", cfgTouched);
+  $("cfgThreads").addEventListener("change", cfgTouched);
+  $("cfgGpuOne").addEventListener("change", cfgTouched);
+  $("cfgGpuList").addEventListener("change", cfgTouched);
+  var r = document.getElementsByName("cfgGpuMode");
+  for (i = 0; i < r.length; i++) r[i].addEventListener("change", function(){ cfgSetMode(this.value); cfgTouched(); });
+})();
+
+$("cfgRevert").addEventListener("click", function(){
+  cfgDirty = false;
+  cfgSig = "";
+  if (last) cfgFill(last);
+  cfgRefreshButtons();
+});
+
+$("cfgSave").addEventListener("click", function(){
+  var v = cfgValidate();
+  if (!v) return;
+  var ch = cfgChanges(v);
+  if (!ch) return;
+  /* Wallet and pool decide where the work - and the payout - goes. Worth one
+   * deliberate click more than any other setting. */
+  if (ch.wallet !== undefined &&
+      !window.confirm("Payouts will go to\n\n" + v.wallet + "\n\nfrom the next restart on. Is that your address?")) return;
+  if ((ch.pool !== undefined || ch.port !== undefined) &&
+      !window.confirm("The miner will connect to\n\n" + v.pool + ":" + v.port + "\n\ninstead of " +
+                      cfgLoaded.pool + ":" + cfgLoaded.port + ". Continue?")) return;
+  note("Saving the configuration…", "busy", 15000);
+  $("cfgSave").disabled = true;
+  post("api/config", ch, function(st, d){
+    if (st === 200 && d && d.ok){
+      if (!d.changed){
+        cfgDirty = false;
+        note("Nothing to save — the miner already runs with these values.", "ok", 6000);
+      } else if (d.restarting){
+        cfgDirty = false; cfgSig = "";
+        startRestart("configuration", "the new configuration");
+      } else {
+        note("Configuration saved. " + (d.note || "Restart the miner to apply it."), "ok", 12000);
+      }
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else {
+      txt("cfgErr", (d && d.error) || ("HTTP " + st));
+      note("Not saved: " + ((d && d.error) || ("HTTP " + st)), "err", 10000);
+    }
+    cfgRefreshButtons();
+  });
+});
+
+/* ---- mining state and Pause/Resume --------------------------------
+ * The header chip says what the miner is doing, not just that it answers.
+ * Pause keeps the web server - this page - running, so Resume is always
+ * reachable from here. */
+var STATE_TEXT = { mining: "mining", connecting: "connecting", pausing: "pausing\u2026", paused: "paused" };
+var pauseBusy = false;
+function renderState(d){
+  var st = d.mining_state || "mining", paused = d.paused === true;
+  var s = $("status");
+  s.className = "status " + (st === "mining" ? "on" : (paused ? "paused" : "conn"));
+  txt("statusText", STATE_TEXT[st] || st);
+  $("pausedBar").hidden = !paused;
+  refreshPause(d);
+}
+function refreshPause(d){
+  var paused = d && d.paused === true;
+  var usable = !!token && online === true && !restart && !pauseBusy;
+  var b = $("pauseBtn");
+  b.textContent = paused ? "Resume mining" : "Pause mining";
+  b.disabled = !usable;
+  b.title = token ? "" : "needs the control token";
+  $("resumeBtn").disabled = !usable || !paused;
+}
+function setPaused(want){
+  pauseBusy = true; refreshPause(last);
+  note(want ? "Pausing\u2026" : "Resuming\u2026", "busy", 8000);
+  post("api/pause", { paused: want }, function(st, d){
+    pauseBusy = false;
+    if (st === 200 && d && d.ok){
+      note(want ? "Mining paused. The pool connection is closed; Resume mining starts it again."
+                : "Mining resumed \u2014 reconnecting to the pool.", "ok", 8000);
+      setTimeout(poll, 800);
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 10000);
+    refreshPause(last);
+  });
+}
+$("pauseBtn").addEventListener("click", function(){ setPaused(!(last && last.paused === true)); });
+$("resumeBtn").addEventListener("click", function(){ setPaused(false); });
 
 token = lsGet("dagcore_token");
 if (token){

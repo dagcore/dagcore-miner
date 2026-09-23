@@ -126,6 +126,22 @@ static int  cpu_limit          = 100; /* 1-100: % of CPU time to use per thread 
 static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle throttle) */
 static volatile int running    = 1;
 static volatile int keep_alive = 1;  /* 0 = clean program exit; stays 1 across reconnects */
+
+/* Pause from the dashboard (POST /api/pause): the session ends as it does on
+ * a dropped pool connection - mining threads joined, pool socket closed - and
+ * the reconnect loop waits instead of reconnecting. The web server is a
+ * thread of its own and keeps running, so the page that pressed Pause can
+ * press Resume. Not saved: a restarted miner mines. */
+static volatile int g_paused     = 0;   /* requested */
+static volatile int g_mine_state = 0;   /* 0 connecting, 1 mining, 2 paused */
+
+/* The main loop's waits between connection attempts. sleep() is cut short by
+ * a signal, but not by a flag another thread sets - Pause, or the exit for a
+ * restart after a config save - so those waited out the full 10 s. */
+static void main_wait(int seconds) {
+    for (int i = 0; i < seconds * 10 && keep_alive && !g_paused; i++)
+        usleep(100000);
+}
 static int  metrics_port       = 8881;  /* built-in metrics/dashboard endpoint */
 /* METRICS_BIND / --metrics-bind: interface the metrics + dashboard server binds.
  * Loopback by default. Until this existed the server bound INADDR_ANY, so the
@@ -279,6 +295,24 @@ static int gpu_device_list[MAX_GPUS];
 static int gpu_device_count    = 0;  /* 0 = use gpu_device (single) */
 static int gpu_use_all         = 0;  /* 1 = use every GPU on the platform */
 static int g_num_gpus          = 0;  /* GPUs successfully initialised */
+
+/* What the dashboard's configuration form needs to know, beyond the values
+ * themselves: the cards on gpu_platform by name, the thread count "auto"
+ * resolves to, the config file a save would write, and which settings came
+ * from the command line - those win over config.env on every start, so the
+ * form must not pretend to change them. */
+static char g_gpu_names[MAX_GPUS][128];
+static int  g_gpu_detected = 0;      /* GPUs on gpu_platform (gpu_list_devices) */
+static int  g_threads_cfg  = 0;      /* THREADS / --threads before -1 is resolved */
+static int  g_threads_auto = 0;      /* what -1 resolves to on this machine */
+static const char *g_config_path = "";
+#define CLI_WALLET     0x01
+#define CLI_POOL       0x02
+#define CLI_PORT       0x04
+#define CLI_WORKER     0x08
+#define CLI_THREADS    0x10
+#define CLI_GPU_DEVICE 0x20
+static int  g_cli_set = 0;
 
 /* Per-GPU intensity: GPU_INTENSITY=80,60 overrides the single global per card */
 static int gpu_intensity_list[MAX_GPUS];
@@ -822,6 +856,10 @@ static void gpu_list_devices(void) {
             char name[256] = {0};
             clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(name), name, NULL);
             printf("[DagCore GPU]   Platform %u Device %u: %s\n", p, d, name);
+            if ((int)p == gpu_platform && g_gpu_detected < MAX_GPUS) {
+                snprintf(g_gpu_names[g_gpu_detected], sizeof(g_gpu_names[0]), "%s", name);
+                g_gpu_detected++;
+            }
         }
     }
     free(platforms);
@@ -3384,6 +3422,32 @@ static void control_init(void) {
     snprintf(g_control_reason, sizeof(g_control_reason), "ok");
 }
 
+/* A string as a JSON string body (no quotes): escapes quotes, backslashes -
+ * every Windows path - and control characters. Truncates to fit. */
+static void json_escape(const char *in, char *out, size_t n) {
+    size_t o = 0;
+    for (; *in && o + 7 < n; in++) {
+        unsigned char c = (unsigned char)*in;
+        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
+        else if (c < 0x20)          o += (size_t)snprintf(out + o, n - o, "\\u%04x", c);
+        else                        out[o++] = (char)c;
+    }
+    out[o] = '\0';
+}
+
+/* GPU_DEVICE as it would be written: "all", "0,1" or "0". */
+static void gpu_device_sel_str(char *out, size_t n) {
+    if (gpu_use_all) { snprintf(out, n, "all"); return; }
+    if (gpu_device_count > 0) {
+        size_t o = 0;
+        out[0] = '\0';
+        for (int i = 0; i < gpu_device_count && o < n; i++)
+            o += (size_t)snprintf(out + o, n - o, "%s%d", i ? "," : "", gpu_device_list[i]);
+        return;
+    }
+    snprintf(out, n, "%d", gpu_device);
+}
+
 /* ---- tiny HTTP helpers (this server speaks just enough HTTP) ---- */
 static void http_send_json(int fd, int status, const char *reason, const char *body) {
     char hdr[256];
@@ -3401,17 +3465,30 @@ static void http_send_err(int fd, int status, const char *reason, const char *ms
     http_send_json(fd, status, reason, body);
 }
 
-/* Pull one integer out of a flat JSON object. The bodies this API accepts are
- * a single key and a number, so a full parser would be more code than the
- * feature. Anything more complex is rejected by the range checks. */
-static int json_get_int(const char *body, const char *key, long *out) {
+/* Where the value of "<key>" starts in a flat JSON object, or NULL. Only a
+ * quoted key followed by a colon counts, so a string value that happens to
+ * read "port" is not mistaken for the key - /api/config sends several keys,
+ * and a pool could be named anything. */
+static const char *json_value_of(const char *body, const char *key) {
     char pat[64];
     snprintf(pat, sizeof(pat), "\"%s\"", key);
-    const char *p = strstr(body, pat);
+    for (const char *p = strstr(body, pat); p; p = strstr(p + 1, pat)) {
+        const char *q = p + strlen(pat);
+        while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+        if (*q != ':') continue;
+        q++;
+        while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+        return q;
+    }
+    return NULL;
+}
+
+/* Pull one integer out of a flat JSON object. The bodies this API accepts are
+ * flat and small, so a full parser would be more code than the feature.
+ * Anything more complex is rejected by the range checks. */
+static int json_get_int(const char *body, const char *key, long *out) {
+    const char *p = json_value_of(body, key);
     if (!p) return -1;
-    p = strchr(p + strlen(pat), ':');
-    if (!p) return -1;
-    p++;
     while (*p == ' ' || *p == '\t') p++;
     char *end = NULL;
     long v = strtol(p, &end, 10);
@@ -3423,15 +3500,25 @@ static int json_get_int(const char *body, const char *key, long *out) {
 /* True when the body carries "<key>": true. The bodies this API accepts are
  * one key and one value, so this is enough. */
 static int json_is_true(const char *body, const char *key) {
-    char pat[64];
-    snprintf(pat, sizeof(pat), "\"%s\"", key);
-    const char *p = strstr(body, pat);
-    if (!p) return 0;
-    p = strchr(p + strlen(pat), ':');
-    if (!p) return 0;
+    const char *p = json_value_of(body, key);
+    return p && strncmp(p, "true", 4) == 0;
+}
+
+/* A string value, copied out. -1 if the key is missing or not a string,
+ * -2 if the value is too long or uses escapes: nothing /api/config accepts
+ * (addresses, host names, names, device lists) ever needs one. */
+static int json_get_str(const char *body, const char *key, char *out, size_t n) {
+    const char *p = json_value_of(body, key);
+    if (!p || *p != '"') return -1;
     p++;
-    while (*p == ' ' || *p == '\t') p++;
-    return strncmp(p, "true", 4) == 0;
+    size_t o = 0;
+    for (; *p && *p != '"'; p++) {
+        if (*p == '\\' || o + 1 >= n) return -2;
+        out[o++] = *p;
+    }
+    if (*p != '"') return -1;
+    out[o] = '\0';
+    return 0;
 }
 
 /* The path out of a request line: "GET /help?x HTTP/1.1" -> "/help". */
@@ -3507,12 +3594,366 @@ static int http_header(const char *req, const char *name, char *out, size_t out_
 
 /* Route and serve one control request. Auth first, capability second, then
  * the endpoint - so an unauthenticated caller learns nothing about the rig. */
+/* ---- Basic configuration from the dashboard: POST /api/config ----------
+ *
+ * Wallet, pool, port, worker, CPU threads and GPU selection, written into
+ * config.env itself. This reverses an earlier rule - the browser never
+ * touched config.env, so it could never redirect payouts - on purpose: the
+ * point is to configure a rig without a shell. What protects it now:
+ *   - the control token, as for every other change;
+ *   - validation of every field before anything is written, so the miner
+ *     cannot be left with a config it will not start with;
+ *   - the file is rewritten through a temporary and renamed into place, and
+ *     the previous version is kept as config.env.bak;
+ *   - only these six keys change; every other line, comment included, is
+ *     copied through;
+ *   - a setting given on the command line is refused: it overrides
+ *     config.env on every start, so saving it there would change nothing.
+ * Like intensity, it takes effect on a restart: under systemd the miner exits
+ * and is started again, otherwise the reply says to restart it. */
+
+static int cfg_valid_wallet(const char *w) {
+    if (strlen(w) != 42 || w[0] != '0' || (w[1] != 'x' && w[1] != 'X')) return 0;
+    int nonzero = 0;
+    for (int i = 2; i < 42; i++) {
+        if (!isxdigit((unsigned char)w[i])) return 0;
+        if (w[i] != '0') nonzero = 1;
+    }
+    return nonzero;           /* the all-zero address is the example's placeholder */
+}
+
+/* A host name or IPv4 address as the Stratum connect expects it: no scheme,
+ * no port, no spaces. Whether it resolves is checked separately. */
+static int cfg_valid_host(const char *h) {
+    size_t l = strlen(h);
+    if (l == 0 || l > 253 || h[0] == '.' || h[0] == '-' || h[l-1] == '.' || h[l-1] == '-')
+        return 0;
+    for (size_t i = 0; i < l; i++)
+        if (!isalnum((unsigned char)h[i]) && h[i] != '.' && h[i] != '-') return 0;
+    return 1;
+}
+
+static int cfg_valid_worker(const char *w) {
+    size_t l = strlen(w);
+    if (l == 0 || l >= sizeof(worker_name)) return 0;
+    for (size_t i = 0; i < l; i++)
+        if (!isalnum((unsigned char)w[i]) && w[i] != '.' && w[i] != '_' && w[i] != '-') return 0;
+    return 1;
+}
+
+/* "all", "N" or "N,M,...": every index a detected card, none twice. Written
+ * back normalised (no spaces). */
+static int cfg_parse_gpu_sel(const char *v, char *norm, size_t n, char *err, size_t en) {
+    if (g_gpu_detected == 0) {
+        snprintf(err, en, "no GPU detected - this build or this machine cannot select one");
+        return -1;
+    }
+    if (strcmp(v, "all") == 0) { snprintf(norm, n, "all"); return 0; }
+    int seen[MAX_GPUS] = {0}, count = 0;
+    size_t o = 0;
+    norm[0] = '\0';
+    const char *p = v;
+    while (*p) {
+        if (!isdigit((unsigned char)*p)) {
+            snprintf(err, en, "gpu_device must be all, a card number, or numbers separated by commas");
+            return -1;
+        }
+        char *end;
+        long idx = strtol(p, &end, 10);
+        if (idx < 0 || idx >= g_gpu_detected) {
+            snprintf(err, en, "gpu_device: there is no card %ld (detected: 0 to %d)",
+                     idx, g_gpu_detected - 1);
+            return -1;
+        }
+        if (seen[idx]) {
+            snprintf(err, en, "gpu_device: card %ld is listed twice", idx);
+            return -1;
+        }
+        seen[idx] = 1;
+        o += (size_t)snprintf(norm + o, n - o, "%s%ld", count ? "," : "", idx);
+        count++;
+        p = end;
+        if (*p == ',') { p++; if (!*p) break; }
+        else if (*p) {
+            snprintf(err, en, "gpu_device must be all, a card number, or numbers separated by commas");
+            return -1;
+        }
+    }
+    if (count == 0) {
+        snprintf(err, en, "gpu_device is empty");
+        return -1;
+    }
+    return 0;
+}
+
+/* Rewrite config.env with the given keys set, as dagtech_load_config reads
+ * it: KEY=value at the start of a line, '#' comments, last occurrence wins.
+ * The first occurrence of each key is replaced and later ones dropped, so an
+ * old duplicate further down cannot undo the change. The previous file is
+ * kept as <path>.bak; the new one goes through <path>.tmp and a rename. Both
+ * get the original's permissions - config.env holds the wallet and the pool
+ * password and is 0640, and a fresh file would get the umask's 0644. */
+static int config_write_keys(const char *path, const char *const *keys, const char *const *vals,
+                             int n, char *err, size_t en) {
+    char tmp[1100], bak[1100];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    snprintf(bak, sizeof(bak), "%s.bak", path);
+    int done[16] = {0};
+    if (n > 16) n = 16;
+#ifndef _WIN32
+    struct stat st;
+    mode_t mode = (stat(path, &st) == 0) ? (st.st_mode & 07777) : 0640;
+#endif
+
+    FILE *in = fopen(path, "r");
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        fprintf(stderr, "[DagCore] config save: cannot write %s: %s\n", tmp, strerror(errno));
+        snprintf(err, en, "cannot write next to config.env: %s", strerror(errno));
+        if (in) fclose(in);
+        return -1;
+    }
+    FILE *b = in ? fopen(bak, "w") : NULL;
+#ifndef _WIN32
+    /* Before a byte is written, so neither copy is ever readable wider. */
+    chmod(tmp, mode);
+    if (b) chmod(bak, mode);
+#endif
+    if (in && !b) {
+        fprintf(stderr, "[DagCore] config save: cannot write %s: %s\n", bak, strerror(errno));
+        snprintf(err, en, "cannot write the backup config.env.bak: %s", strerror(errno));
+        fclose(in); fclose(out); remove(tmp);
+        return -1;
+    }
+    if (in) {
+        char line[1024];
+        while (fgets(line, sizeof(line), in)) {
+            fputs(line, b);
+            int k = -1;
+            if (line[0] != '#') {
+                char *eq = strchr(line, '=');
+                if (eq) {
+                    size_t kl = (size_t)(eq - line);
+                    for (int i = 0; i < n; i++)
+                        if (strlen(keys[i]) == kl && strncmp(line, keys[i], kl) == 0) { k = i; break; }
+                }
+            }
+            if (k < 0) { fputs(line, out); continue; }
+            if (!done[k]) { fprintf(out, "%s=%s\n", keys[k], vals[k]); done[k] = 1; }
+            /* a later duplicate of a key already written: dropped */
+        }
+        fclose(in);
+        if (fclose(b) != 0) {
+            snprintf(err, en, "cannot write the backup config.env.bak");
+            fclose(out); remove(tmp);
+            return -1;
+        }
+    }
+    for (int i = 0; i < n; i++)
+        if (!done[i]) fprintf(out, "%s=%s\n", keys[i], vals[i]);
+    if (fclose(out) != 0) {
+        snprintf(err, en, "cannot finish writing the new config.env");
+        remove(tmp);
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr, "[DagCore] config save: cannot replace %s: %s\n", path, strerror(errno));
+        snprintf(err, en, "cannot replace config.env: %s", strerror(errno));
+        remove(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+static void api_config(int cfd, const char *body) {
+    const char *keys[6];
+    char vals[6][300];
+    const char *valp[6];
+    int n = 0, changed = 0;
+    char s[300], msg[300];
+
+    /* Refuse what the command line pins, before looking at anything else. */
+    static const struct { const char *field; int bit; const char *flag; } pinned[] = {
+        { "wallet", CLI_WALLET, "--wallet" }, { "pool", CLI_POOL, "--pool" },
+        { "port", CLI_PORT, "--port" },       { "worker", CLI_WORKER, "--worker" },
+        { "threads", CLI_THREADS, "--threads" }, { "gpu_device", CLI_GPU_DEVICE, "--gpu-device" },
+    };
+    for (size_t i = 0; i < sizeof(pinned) / sizeof(pinned[0]); i++) {
+        if ((g_cli_set & pinned[i].bit) && json_value_of(body, pinned[i].field)) {
+            snprintf(msg, sizeof(msg), "%s is set on the command line (%s), which overrides "
+                     "config.env - change it there", pinned[i].field, pinned[i].flag);
+            http_send_err(cfd, 409, "Conflict", msg);
+            return;
+        }
+    }
+
+    int r;
+    if ((r = json_get_str(body, "wallet", s, sizeof(s))) != -1) {
+        if (r != 0 || !cfg_valid_wallet(s)) {
+            http_send_err(cfd, 400, "Bad Request",
+                          "wallet must be 0x followed by 40 hex digits, and not the all-zero example");
+            return;
+        }
+        keys[n] = "WALLET"; snprintf(vals[n], sizeof(vals[n]), "%s", s);
+        if (strcmp(s, wallet) != 0) changed = 1;
+        n++;
+    }
+    if ((r = json_get_str(body, "pool", s, sizeof(s))) != -1) {
+        if (r != 0 || !cfg_valid_host(s)) {
+            http_send_err(cfd, 400, "Bad Request",
+                          "pool must be a host name or IP address, without stratum+tcp:// or a port");
+            return;
+        }
+        /* A pool that does not resolve would leave the miner retrying forever
+         * after the restart. Resolving blocks this (single-threaded) server
+         * for as long as DNS takes, which is acceptable for a rare save. */
+        struct addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(s, NULL, &hints, &res) != 0) {
+            snprintf(msg, sizeof(msg), "pool %s does not resolve - check the name", s);
+            http_send_err(cfd, 400, "Bad Request", msg);
+            return;
+        }
+        freeaddrinfo(res);
+        keys[n] = "POOL"; snprintf(vals[n], sizeof(vals[n]), "%s", s);
+        if (strcmp(s, pool_host) != 0) changed = 1;
+        n++;
+    }
+    long v;
+    if (json_value_of(body, "port")) {
+        if (json_get_int(body, "port", &v) != 0 || v < 1 || v > 65535) {
+            http_send_err(cfd, 400, "Bad Request", "port must be a number from 1 to 65535");
+            return;
+        }
+        keys[n] = "PORT"; snprintf(vals[n], sizeof(vals[n]), "%ld", v);
+        if (v != pool_port) changed = 1;
+        n++;
+    }
+    if ((r = json_get_str(body, "worker", s, sizeof(s))) != -1) {
+        if (r != 0 || !cfg_valid_worker(s)) {
+            http_send_err(cfd, 400, "Bad Request",
+                          "worker must be 1 to 63 letters, digits, dots, dashes or underscores");
+            return;
+        }
+        keys[n] = "WORKER"; snprintf(vals[n], sizeof(vals[n]), "%s", s);
+        if (strcmp(s, worker_name) != 0) changed = 1;
+        n++;
+    }
+    if (json_value_of(body, "threads")) {
+        if (json_get_int(body, "threads", &v) != 0 || v < -1 || v > g_cpu_cores) {
+            snprintf(msg, sizeof(msg), "threads must be -1 (auto) or 0 to %d", g_cpu_cores);
+            http_send_err(cfd, 400, "Bad Request", msg);
+            return;
+        }
+        /* 0 leaves only the GPU miner; with no card mining it mines nothing. */
+        if (v == 0 && g_num_gpus == 0) {
+            http_send_err(cfd, 400, "Bad Request",
+                          "threads 0 means GPU only, and no GPU is mining - use -1 (auto) or a number");
+            return;
+        }
+        keys[n] = "THREADS"; snprintf(vals[n], sizeof(vals[n]), "%ld", v);
+        if (v != g_threads_cfg) changed = 1;
+        n++;
+    }
+    if ((r = json_get_str(body, "gpu_device", s, sizeof(s))) != -1) {
+        char norm[64], err[200];
+        if (r != 0) {
+            http_send_err(cfd, 400, "Bad Request", "gpu_device is not valid");
+            return;
+        }
+        if (cfg_parse_gpu_sel(s, norm, sizeof(norm), err, sizeof(err)) != 0) {
+            http_send_err(cfd, 400, "Bad Request", err);
+            return;
+        }
+        char cur[64];
+        gpu_device_sel_str(cur, sizeof(cur));
+        keys[n] = "GPU_DEVICE"; snprintf(vals[n], sizeof(vals[n]), "%s", norm);
+        if (strcmp(norm, cur) != 0) changed = 1;
+        n++;
+    }
+    if (n == 0) {
+        http_send_err(cfd, 400, "Bad Request",
+                      "nothing to save: send wallet, pool, port, worker, threads or gpu_device");
+        return;
+    }
+    if (!changed) {
+        http_send_json(cfd, 200, "OK", "{\"ok\":true,\"saved\":false,\"changed\":false}");
+        return;
+    }
+
+    for (int i = 0; i < n; i++) valp[i] = vals[i];
+    char err[300];
+    if (config_write_keys(g_config_path, keys, valp, n, err, sizeof(err)) != 0) {
+        http_send_err(cfd, 500, "Internal Server Error", err);
+        return;
+    }
+
+    int supervised = (getenv("INVOCATION_ID") != NULL);
+    char resp[240];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":true,\"saved\":true,\"changed\":true,\"restarting\":%s%s}",
+             supervised ? "true" : "false",
+             supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+    http_send_json(cfd, 200, "OK", resp);
+    printf("[DagCore] Configuration saved to %s (%d setting%s; previous version in %s.bak)\n",
+           g_config_path, n, n == 1 ? "" : "s", g_config_path);
+    if (supervised) {
+        printf("[DagCore] Exiting for restart to apply it\n");
+        keep_alive = 0;
+        running = 0;
+    } else {
+        printf("[DagCore] Restart the miner to apply it (not supervised)\n");
+    }
+}
+
+/* POST /api/pause {"paused":true|false}. Refused while a clock test runs:
+ * its verdict needs shares, and its clock ticks only while connected. */
+static void api_pause(int cfd, const char *body) {
+    const char *p = json_value_of(body, "paused");
+    int want;
+    if (p && strncmp(p, "true", 4) == 0)       want = 1;
+    else if (p && strncmp(p, "false", 5) == 0) want = 0;
+    else {
+        http_send_err(cfd, 400, "Bad Request", "body must contain \\\"paused\\\": true or false");
+        return;
+    }
+    if (want && !g_paused) {
+        for (int i = 0; i < TRIAL_N; i++) {
+            if (g_trial[i].active) {
+                http_send_err(cfd, 409, "Conflict",
+                              "a clock test is running - let it finish or cancel it first");
+                return;
+            }
+        }
+        printf("[DagCore] Pause requested from the dashboard\n");
+        g_paused = 1;
+        running = 0;              /* ends the session like a dropped connection */
+    } else if (!want && g_paused) {
+        printf("[DagCore] Resume requested from the dashboard\n");
+        g_paused = 0;
+    }
+    http_send_json(cfd, 200, "OK", want ? "{\"ok\":true,\"paused\":true}"
+                                        : "{\"ok\":true,\"paused\":false}");
+}
+
 static void dagtech_handle_control(int cfd, const char *req, const char *body) {
     char tok[128] = "";
     if (!g_api_token[0] ||
         http_header(req, "x-dagcore-token", tok, sizeof(tok)) != 0 ||
         !token_equal(g_api_token, tok)) {
         http_send_err(cfd, 401, "Unauthorized", "missing or invalid token");
+        return;
+    }
+    /* Configuration does not depend on the GPU tuning controls being usable:
+     * it works on a CPU-only rig and with nvidia-smi missing. */
+    if (strncmp(req, "POST /api/config ", 17) == 0) {
+        api_config(cfd, body);
+        return;
+    }
+    if (strncmp(req, "POST /api/pause ", 16) == 0) {
+        api_pause(cfd, body);
         return;
     }
     if (!g_control_ok) {
@@ -4263,10 +4704,42 @@ static void *dagtech_metrics_thread(void *arg) {
         /* Before stats_mtx: stats_window() takes it itself. */
         window_stats_t win = stats_window();
 
+        /* For the configuration form: the detected cards by name, the
+         * current selection, and the settings the command line pins. */
+        char gpu_devs[MAX_GPUS * 320 + 8] = "[";
+        for (int gi = 0; gi < g_gpu_detected; gi++) {
+            char esc[260], item[320];
+            json_escape(g_gpu_names[gi], esc, sizeof(esc));
+            snprintf(item, sizeof(item), "%s{\"index\":%d,\"name\":\"%s\"}", gi ? "," : "", gi, esc);
+            strncat(gpu_devs, item, sizeof(gpu_devs) - strlen(gpu_devs) - 2);
+        }
+        strcat(gpu_devs, "]");
+        char gpu_sel[64];
+        gpu_device_sel_str(gpu_sel, sizeof(gpu_sel));
+        char cfg_path_esc[1100];
+        json_escape(g_config_path, cfg_path_esc, sizeof(cfg_path_esc));
+        char cli_set[128] = "[";
+        {
+            static const struct { int bit; const char *name; } k[] = {
+                { CLI_WALLET, "wallet" }, { CLI_POOL, "pool" }, { CLI_PORT, "port" },
+                { CLI_WORKER, "worker" }, { CLI_THREADS, "threads" },
+                { CLI_GPU_DEVICE, "gpu_device" },
+            };
+            int first = 1;
+            for (size_t ki = 0; ki < sizeof(k) / sizeof(k[0]); ki++) {
+                if (!(g_cli_set & k[ki].bit)) continue;
+                strcat(cli_set, first ? "\"" : ",\"");
+                strcat(cli_set, k[ki].name);
+                strcat(cli_set, "\"");
+                first = 0;
+            }
+            strcat(cli_set, "]");
+        }
+
         /* Build JSON metrics response */
         pthread_mutex_lock(&stats_mtx);
         time_t uptime = time(NULL) - start_time;
-        char json[3072];
+        char json[8192];
         snprintf(json, sizeof(json),
             "{"
             "\"version\":\"%s\","
@@ -4362,7 +4835,15 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"submit_min_interval_ms\":%d,"
             "\"dropped_window\":%" DT_PRIu64 ","
             "\"submitted_window\":%" DT_PRIu64 ","
-            "\"effective_window_full\":%s"
+            "\"effective_window_full\":%s,"
+            "\"gpu_devices\":%s,"
+            "\"gpu_device_sel\":\"%s\","
+            "\"threads_config\":%d,"
+            "\"threads_auto\":%d,"
+            "\"config_path\":\"%s\","
+            "\"config_cli\":%s,"
+            "\"paused\":%s,"
+            "\"mining_state\":\"%s\""
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4412,20 +4893,17 @@ static void *dagtech_metrics_thread(void *arg) {
             submit_min_interval_ms,
             (unsigned long long)win.dropped,
             (unsigned long long)win.submitted,
-            win.full ? "true" : "false");
+            win.full ? "true" : "false",
+            gpu_devs, gpu_sel, g_threads_cfg, g_threads_auto, cfg_path_esc, cli_set,
+            g_paused ? "true" : "false",
+            /* Requested but the session not yet wound down reads "pausing". */
+            g_paused ? (g_mine_state == 2 ? "paused" : "pausing")
+                     : (g_mine_state == 1 ? "mining" : "connecting"));
         pthread_mutex_unlock(&stats_mtx);
 
-        char response[4096];
-        snprintf(response, sizeof(response),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Connection: close\r\n"
-            "Content-Length: %d\r\n"
-            "\r\n%s",
-            (int)strlen(json), json);
-
-        send(cfd, response, (int)strlen(response), 0);
+        /* Same headers as before; the body no longer has to fit a fixed
+         * 4 KB response buffer, which the card list could have overflowed. */
+        http_send_json(cfd, 200, "OK", json);
         close(cfd);
     }
 
@@ -4958,6 +5436,7 @@ int main(int argc, char **argv) {
             break;
         }
     }
+    g_config_path = config_path;
 
     /* ---- Load config file (CLI args below will override) ---- */
     dagtech_load_config(config_path);
@@ -5003,16 +5482,26 @@ int main(int argc, char **argv) {
     /* ---- Pass 2: full argument parsing ---- */
     int do_save_config = 0;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--wallet") == 0 && i + 1 < argc)
+        if (strcmp(argv[i], "--wallet") == 0 && i + 1 < argc) {
             strncpy(wallet, argv[++i], sizeof(wallet) - 1);
-        else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_WALLET;
+        }
+        else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc) {
             strncpy(pool_host, argv[++i], sizeof(pool_host) - 1);
-        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_POOL;
+        }
+        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             pool_port = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_PORT;
+        }
+        else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             num_threads = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--worker") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_THREADS;
+        }
+        else if (strcmp(argv[i], "--worker") == 0 && i + 1 < argc) {
             strncpy(worker_name, argv[++i], sizeof(worker_name) - 1);
+            g_cli_set |= CLI_WORKER;
+        }
         else if (strcmp(argv[i], "--password") == 0 && i + 1 < argc)
             strncpy(password, argv[++i], sizeof(password) - 1);
         else if (strcmp(argv[i], "--submit-margin") == 0 && i + 1 < argc) {
@@ -5072,6 +5561,7 @@ int main(int argc, char **argv) {
             gpu_platform = atoi(argv[++i]);
         else if (strcmp(argv[i], "--gpu-device") == 0 && i + 1 < argc) {
             const char *val = argv[++i];
+            g_cli_set |= CLI_GPU_DEVICE;
             if (strcmp(val, "all") == 0) {
                 gpu_use_all = 1;
             } else if (strchr(val, ',')) {
@@ -5136,8 +5626,10 @@ int main(int argc, char **argv) {
      * cores). Zero is NOT auto-detect: it means "no CPU threads at all", which
      * is the default because a GPU rig gains little from the CPU miner and the
      * cores are better left to feeding the cards. */
+    g_threads_cfg  = num_threads;
+    g_threads_auto = dagtech_detect_threads();
     if (num_threads < 0)
-        num_threads = dagtech_detect_threads();
+        num_threads = g_threads_auto;
 
     /* Seed the adaptive margin from the configured base. */
     active_margin = submit_margin;
@@ -5311,6 +5803,18 @@ int main(int argc, char **argv) {
 
     /* Reconnection loop */
     while (keep_alive) {
+        if (g_paused) {
+            g_mine_state = 2;
+            current_hashrate = cpu_hashrate = gpu_hashrate = 0.0;
+#ifdef DAGTECH_GPU
+            for (int _gi = 0; _gi < g_num_gpus; _gi++) g_gpus[_gi].hashrate = 0.0;
+#endif
+            printf("[DagCore] Mining paused - disconnected from the pool; the dashboard stays up\n");
+            while (keep_alive && g_paused) usleep(100000);
+            if (!keep_alive) break;
+            printf("[DagCore] Mining resumed\n");
+        }
+        g_mine_state = 0;
         running = 1;
         current_job.valid = 0;
         cpu_hashes_session = 0;
@@ -5325,7 +5829,7 @@ int main(int argc, char **argv) {
         printf("[DagCore] Connecting to pool %s:%d...\n", pool_host, pool_port);
         if (dagtech_connect_pool() < 0) {
             fprintf(stderr, "[DagCore] Cannot connect - retrying in 10s\n");
-            sleep(10);
+            main_wait(10);
             continue;
         }
         printf("[DagCore] Connected!\n");
@@ -5341,14 +5845,16 @@ int main(int argc, char **argv) {
             usleep(100000);
 
         if (!current_job.valid) {
-            fprintf(stderr, "[DagCore] No job received - will retry in 10s\n");
+            if (!g_paused && keep_alive)
+                fprintf(stderr, "[DagCore] No job received - will retry in 10s\n");
             running = 0;
             dagtech_unblock_pool_socket();
             pthread_join(recv_tid, NULL);
             close(sockfd);
-            if (keep_alive) sleep(10);
+            if (keep_alive) main_wait(10);
             continue;
         }
+        g_mine_state = 1;
 
         /* Start CPU mining threads. num_threads == 0 is the default (GPU-only),
          * and malloc(0) may legitimately return NULL - so skip the allocation
@@ -5520,9 +6026,9 @@ int main(int argc, char **argv) {
         free(tids);
         close(sockfd);
 
-        if (keep_alive) {
+        if (keep_alive && !g_paused) {
             printf("[DagCore] Reconnecting in 10s...\n");
-            sleep(10);
+            main_wait(10);
         }
     }
 

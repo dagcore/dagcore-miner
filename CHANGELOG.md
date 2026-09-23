@@ -6,10 +6,50 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `/metrics` fields for a configuration form, appended at the end:
+  `gpu_devices` (index and name of every card on the OpenCL platform),
+  `gpu_device_sel`, `threads_config` (`-1` = auto), `threads_auto`,
+  `config_path`, and `config_cli`, the settings given on the command line.
+- `POST /api/config` (control token): wallet, pool, port, worker, CPU threads
+  and GPU selection, written into `config.env`, applied by a restart as for
+  intensity. Every field is validated first — wallet format, pool name that
+  resolves, port range, thread count, cards that exist — so a save cannot leave
+  a config the miner will not start with. Other lines and comments are kept,
+  the previous file is kept as `config.env.bak`, and settings given on the
+  command line are refused, since they would override the file anyway.
+- Dashboard, Settings: a **Mining configuration** block for wallet, pool and
+  port, worker, CPU threads (auto shows what it resolves to and the cores
+  detected) and graphics cards (all, one, or several, by name). The same checks
+  as the miner's run before a save, only changed fields are sent, a new wallet
+  or pool asks for confirmation, and settings pinned by the command line are
+  shown but locked. Saving restarts the miner as an intensity change does.
+- Dashboard: **Pause mining / Resume mining** in the header. The status chip
+  now shows what the miner is doing — mining, connecting, pausing, paused —
+  rather than only that it answers, and a banner with a Resume button stays up
+  while mining is paused.
+- `POST /api/pause` (control token), `{"paused": true|false}`: stops the
+  mining threads and disconnects from the pool, while the dashboard stays up
+  to resume. Refused while a clock test runs. Not saved: a restarted miner
+  mines. `/metrics` gains `paused` and `mining_state` (`connecting`,
+  `mining`, `pausing`, `paused`).
+- Help page, CONFIG.md and INSTALL.md: Mining configuration, Pause, the new
+  endpoints and fields, and what the token now allows.
+
+### Changed
+- **The dashboard can now change the wallet and the pool.** Until now
+  `config.env` was never written from the browser, so nothing there could
+  redirect payouts. Anyone holding the control token — and, with
+  `METRICS_BIND` open to the network, able to reach the port — can now change
+  them. Keep the token private and the port on localhost unless you need it.
+
 ### Fixed
 - The first total hashrate after every reconnection to the pool counted all
   the hashes since the miner started, divided by ten seconds: a spike on the
   Total card and in the chart, the larger the longer the miner had run.
+- After a restart requested from the dashboard (a config or intensity save),
+  a miner that could not reach the pool took up to 10 more seconds to exit:
+  the waits between connection attempts now end as soon as a stop is asked.
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
   a client closed the connection while the dashboard server was still sending
   its response. SIGPIPE is now ignored.

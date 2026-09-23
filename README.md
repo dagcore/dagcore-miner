@@ -44,7 +44,8 @@ sudo ./install.sh --wallet 0xYOURADDRESS --yes
 ## The dashboard
 
 Once the miner runs, open **http://localhost:8881/** — hashrate, temperatures,
-shares, and controls for power limit, clocks and offsets. Next to the raw
+shares, controls for power limit, clocks and offsets, the rig's own settings
+(wallet, pool, worker, threads, cards), and Pause/Resume. Next to the raw
 hashrate it shows the **effective** one, the work the pool actually accepted,
 and a 30-minute chart of both that the miner keeps, so it survives a page
 reload. A help page explaining every number and setting is at **/help**.
