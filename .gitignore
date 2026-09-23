@@ -3,3 +3,6 @@
 dagcore-miner
 dagcore-miner-cpu
 dagtech-gpu-miner
+dagcore-miner.exe
+dagcore-miner-cpu.exe
+build/

@@ -1,0 +1,28 @@
+; Import definitions for OpenCL.dll, the ICD loader the GPU driver installs in
+; System32. MinGW has no import library for it, so `make windows` builds one
+; from this list with dlltool. Only the functions dagcore_miner.c calls are
+; listed: a new cl* call shows up as an "undefined reference" at link time and
+; is added here.
+LIBRARY OpenCL.dll
+EXPORTS
+    clBuildProgram
+    clCreateBuffer
+    clCreateCommandQueue
+    clCreateContext
+    clCreateKernel
+    clCreateProgramWithSource
+    clEnqueueNDRangeKernel
+    clEnqueueReadBuffer
+    clEnqueueWriteBuffer
+    clGetDeviceIDs
+    clGetDeviceInfo
+    clGetPlatformIDs
+    clGetProgramBuildInfo
+    clReleaseCommandQueue
+    clReleaseContext
+    clReleaseEvent
+    clReleaseKernel
+    clReleaseMemObject
+    clReleaseProgram
+    clSetKernelArg
+    clWaitForEvents

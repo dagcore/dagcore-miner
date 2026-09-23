@@ -2,6 +2,8 @@
 #
 #   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
 #   make cpu            -> dagcore-miner-cpu  (without OpenCL)
+#   make windows        -> dagcore-miner.exe + dagcore-miner-cpu.exe, cross-compiled
+#                          with MinGW-w64 (apt install mingw-w64)
 #   make warn           -> syntax check with -Wall -Wextra
 #   make install        -> binary + kernel in $(PREFIX)/bin
 #
@@ -49,6 +51,24 @@ CONFIG_EX := config.env.example
 BIN_GPU := dagcore-miner
 BIN_CPU := dagcore-miner-cpu
 
+# Windows cross-build. The OpenCL headers are the same ones the Linux build uses;
+# they are exposed through a directory of their own because -I/usr/include
+# would pull glibc headers into a Windows build. MinGW ships no import library
+# for OpenCL.dll, so one is generated from win/OpenCL.def. Everything else is
+# linked statically (winpthreads included), so the .exe needs no MinGW DLLs -
+# only OpenCL.dll, which the GPU driver installs.
+MINGW_CC       ?= x86_64-w64-mingw32-gcc
+MINGW_DLLTOOL  ?= x86_64-w64-mingw32-dlltool
+OPENCL_HEADERS ?= /usr/include/CL
+WIN_BUILD      := build/win
+WIN_OPENCL_DEF := win/OpenCL.def
+WIN_OPENCL_LIB := $(WIN_BUILD)/libOpenCL.a
+WIN_CFLAGS     := -std=gnu11 -pthread -O3 -funroll-loops -Wall
+WIN_LDFLAGS    := -static
+WIN_LDLIBS     := -lws2_32 -lpthread -lm
+BIN_GPU_WIN    := dagcore-miner.exe
+BIN_CPU_WIN    := dagcore-miner-cpu.exe
+
 PREFIX   ?= /usr/local
 BINDIR   := $(PREFIX)/bin
 SHAREDIR := $(PREFIX)/share/dagcore-miner
@@ -56,7 +76,7 @@ SHAREDIR := $(PREFIX)/share/dagcore-miner
 # install payload. Overridable for packagers who want it elsewhere.
 SYSCONFDIR ?= /etc/dagcore-miner
 
-.PHONY: all cpu check warn install uninstall clean help
+.PHONY: all cpu windows check check-windows warn install uninstall clean help
 all: $(BIN_GPU)
 
 # $(KERNEL) is a prerequisite only for consistency: it is not compiled, it is read
@@ -68,13 +88,41 @@ cpu: $(BIN_CPU)
 $(BIN_CPU): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-# Builds both variants from scratch. Catches breakage that shows up on one path
+windows: $(BIN_GPU_WIN) $(BIN_CPU_WIN)
+
+$(WIN_BUILD)/include/CL:
+	@mkdir -p $(WIN_BUILD)/include
+	ln -sfn $(OPENCL_HEADERS) $@
+
+$(WIN_OPENCL_LIB): $(WIN_OPENCL_DEF)
+	@mkdir -p $(WIN_BUILD)
+	$(MINGW_DLLTOOL) -d $< -l $@ -D OpenCL.dll
+
+$(BIN_GPU_WIN): $(SRC) $(HDR) $(KERNEL) $(WIN_OPENCL_LIB) | $(WIN_BUILD)/include/CL
+	$(MINGW_CC) $(WIN_CFLAGS) $(CPPFLAGS) $(GPU_CPPFLAGS) -I$(WIN_BUILD)/include $< -o $@ \
+	    $(WIN_LDFLAGS) -L$(WIN_BUILD) -lOpenCL $(WIN_LDLIBS)
+
+$(BIN_CPU_WIN): $(SRC) $(HDR)
+	$(MINGW_CC) $(WIN_CFLAGS) $(CPPFLAGS) $< -o $@ $(WIN_LDFLAGS) $(WIN_LDLIBS)
+
+# Builds every variant from scratch. Catches breakage that shows up on one path
 # only - for example code inside #ifdef DAGTECH_GPU called from outside the guard,
-# which links fine with GPU and fails to link without it.
+# which links fine with GPU and fails to link without it, or code inside
+# #ifndef _WIN32 called from outside it. The Windows pair needs MinGW-w64; without
+# it that half is skipped, loudly, rather than failing the Linux check.
 check:
 	@$(MAKE) --no-print-directory -B $(BIN_GPU)
 	@$(MAKE) --no-print-directory -B $(BIN_CPU)
-	@echo "check: both variants (GPU + CPU) compile"
+	@echo "check: both Linux variants (GPU + CPU) compile"
+	@$(MAKE) --no-print-directory check-windows
+
+check-windows:
+	@if command -v $(MINGW_CC) >/dev/null 2>&1; then \
+	    $(MAKE) --no-print-directory -B $(BIN_GPU_WIN) $(BIN_CPU_WIN) && \
+	    echo "check: both Windows variants (GPU + CPU) compile and link"; \
+	else \
+	    echo "check: SKIPPED Windows variants - $(MINGW_CC) not found (apt install mingw-w64)"; \
+	fi
 
 # Noisy build, for auditing - not on the default path.
 warn: $(SRC) $(HDR)
@@ -116,8 +164,10 @@ uninstall:
 	    rmdir "$(DESTDIR)$(SYSCONFDIR)" 2>/dev/null || true
 
 clean:
-	$(RM) $(BIN_GPU) $(BIN_CPU)
+	$(RM) $(BIN_GPU) $(BIN_CPU) $(BIN_GPU_WIN) $(BIN_CPU_WIN)
+	$(RM) -r $(WIN_BUILD)
 
 help:
-	@printf '%s\n' 'targets: all cpu check warn install uninstall clean' \
-	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...'
+	@printf '%s\n' 'targets: all cpu windows check warn install uninstall clean' \
+	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...' \
+	                '       MINGW_CC=... OPENCL_HEADERS=... (windows)'

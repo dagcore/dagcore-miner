@@ -6,6 +6,12 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `make windows` cross-compiles `dagcore-miner.exe` and
+  `dagcore-miner-cpu.exe` with MinGW-w64, and `make check` builds them too.
+  The Windows build compiles and links but has not been run yet, and it has no
+  service, installer or GPU tuning (NVML); it is not ready for use.
+
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
   a client closed the connection while the dashboard server was still sending
