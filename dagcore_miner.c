@@ -28,7 +28,11 @@
     typedef int ssize_t;
   #endif
   #define usleep(x) Sleep((x)/1000)
-  #define sleep(x) Sleep((x)*1000)
+  /* Seconds-long sleeps check for shutdown every 100 ms (defined below, after
+   * keep_alive). POSIX sleep() is cut short by SIGINT; Windows Sleep() is
+   * not, and a closing console window gives the process only ~5 s. */
+  static void dt_win_sleep(unsigned int seconds);
+  #define sleep(x) dt_win_sleep(x)
 #else
   #include <arpa/inet.h>
   #include <netdb.h>
@@ -154,6 +158,16 @@ static int  cpu_limit          = 100; /* 1-100: % of CPU time to use per thread 
 static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle throttle) */
 static volatile int running    = 1;
 static volatile int keep_alive = 1;  /* 0 = clean program exit; stays 1 across reconnects */
+#ifdef _WIN32
+static void dt_win_sleep(unsigned int seconds) {
+    DWORD left = (DWORD)seconds * 1000;
+    while (left > 0 && keep_alive) {
+        DWORD step = left < 100 ? left : 100;
+        Sleep(step);
+        left -= step;
+    }
+}
+#endif
 static int  metrics_port       = 8881;  /* built-in metrics/dashboard endpoint */
 /* METRICS_BIND / --metrics-bind: interface the metrics + dashboard server binds.
  * Loopback by default. Until this existed the server bound INADDR_ANY, so the
@@ -4536,6 +4550,26 @@ static void dagtech_signal(int sig) {
     running = 0;
 }
 
+#ifdef _WIN32
+/* Closing the console window, logging off or shutting down arrive as console
+ * control events, not signals. The handler runs on a thread of its own, and
+ * once it returns from a close/logoff/shutdown event Windows ends the process
+ * - so it asks main() to stop, the same way SIGINT does, and waits for it to
+ * finish (sockets closed, "Shutdown complete" printed), up to 4.5 s of the
+ * roughly 5 s Windows allows. Ctrl+C and Ctrl+Break return at once: the
+ * process is not killed after those, and main() exits on its own. */
+static volatile LONG g_main_done = 0;
+static BOOL WINAPI dt_console_ctrl(DWORD type) {
+    dagtech_signal(0);
+    if (type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
+        type == CTRL_SHUTDOWN_EVENT) {
+        for (int waited = 0; waited < 4500 && !g_main_done; waited += 50)
+            Sleep(50);
+    }
+    return TRUE;
+}
+#endif
+
 /* =========================================================================
  * Usage / Help
  * ========================================================================= */
@@ -5040,6 +5074,11 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, dagtech_signal);
     signal(SIGTERM, dagtech_signal);
+#ifdef _WIN32
+    /* Registered after signal(), so it is called first and handles Ctrl+C
+     * too; the window-close case is the one signal() cannot catch. */
+    SetConsoleCtrlHandler(dt_console_ctrl, TRUE);
+#endif
 #ifndef _WIN32
     /* A client that drops the connection mid-response (a closed browser tab,
      * a reset) makes send() raise SIGPIPE, which kills the process by
@@ -5630,5 +5669,8 @@ int main(int argc, char **argv) {
 
     printf("[DagCore] Shutdown complete. Total hashes: %" DT_PRIu64 "\n",
            (unsigned long long)total_hashes);
+#ifdef _WIN32
+    g_main_done = 1;          /* releases a console handler waiting on a close */
+#endif
     return 0;
 }

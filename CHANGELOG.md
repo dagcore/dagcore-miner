@@ -21,6 +21,9 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     as on Linux, instead of hanging for every other client.
   - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no
     `/dev/null`, so temperature, power and the power limit were never read.
+  - Windows: closing the console window, logging off or shutting down stops
+    the miner cleanly (`SetConsoleCtrlHandler`), and its waits of several
+    seconds end as soon as a stop is requested.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
