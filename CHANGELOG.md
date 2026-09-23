@@ -18,6 +18,12 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   a config the miner will not start with. Other lines and comments are kept,
   the previous file is kept as `config.env.bak`, and settings given on the
   command line are refused, since they would override the file anyway.
+- Dashboard, Settings: a **Mining configuration** block for wallet, pool and
+  port, worker, CPU threads (auto shows what it resolves to and the cores
+  detected) and graphics cards (all, one, or several, by name). The same checks
+  as the miner's run before a save, only changed fields are sent, a new wallet
+  or pool asks for confirmation, and settings pinned by the command line are
+  shown but locked. Saving restarts the miner as an intensity change does.
 - `POST /api/pause` (control token), `{"paused": true|false}`: stops the
   mining threads and disconnects from the pool, while the dashboard stays up
   to resume. Refused while a clock test runs. Not saved: a restarted miner
