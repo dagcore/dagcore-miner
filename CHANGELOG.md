@@ -32,6 +32,9 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   them. Keep the token private and the port on localhost unless you need it.
 
 ### Fixed
+- The first total hashrate after every reconnection to the pool counted all
+  the hashes since the miner started, divided by ten seconds: a spike on the
+  Total card and in the chart, the larger the longer the miner had run.
 - After a restart requested from the dashboard (a config or intensity save),
   a miner that could not reach the pool took up to 10 more seconds to exit:
   the waits between connection attempts now end as soon as a stop is asked.

@@ -5904,7 +5904,13 @@ int main(int argc, char **argv) {
 
         /* Statistics reporting loop */
         time_t last_report = time(NULL);
-        uint64_t last_total  = 0;
+        /* total_hashes runs for the whole process, unlike the per-session
+         * CPU/GPU counters reset above, so its baseline is its value now.
+         * From 0, the first rate after every reconnect divided all the
+         * hashes since startup by ten seconds. */
+        pthread_mutex_lock(&stats_mtx);
+        uint64_t last_total  = total_hashes;
+        pthread_mutex_unlock(&stats_mtx);
         uint64_t last_cpu_h  = 0;
         uint64_t last_gpu_h  = 0;
 #ifdef DAGTECH_GPU
