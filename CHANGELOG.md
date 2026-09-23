@@ -14,20 +14,22 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   checked again on the CPU. `/metrics` gains `gpu_candidates_found`,
   `gpu_candidates_reported`, `gpu_candidates_extra` (beyond the first in their
   batch: what the old kernel lost) and `gpu_candidates_valid`, and Advanced
-  shows a GPU candidates row. Run on an RTX 3080: the kernel builds on the
-  NVIDIA driver and every candidate checked out, but the shares beyond the
-  first of a batch were dropped by `SUBMIT_MIN_INTERVAL_MS` before reaching the
-  pool.
+  shows a GPU candidates row.
 - **A submit queue for the rest of a batch's shares.** They come a fraction of
-  a millisecond after the first, so the 5 ms gap dropped them all; a thread of
-  its own now sends them one at a time, `SUBMIT_BURST_GAP_US` apart (500 µs),
-  at most `SUBMIT_BURST_MAX` per batch (8), and only while fewer than
-  `SUBMIT_MAX_INFLIGHT` submissions (8) await the pool's answer, so a batch at
-  difficulty 0.05 cannot flood the pool. A share whose job changes while it
-  waits is discarded. `/metrics` gains `submit_queue_queued`, `_sent`,
-  `_over_burst`, `_full`, `_expired`, `_max_depth`, `submit_inflight` and the
-  three settings; the GPU candidates row shows what the queue sent.
-  `SUBMIT_BURST_MAX=0` restores one share per batch. *Not yet run on a GPU.*
+  a millisecond after the first, too close for the 5 ms gap between
+  submissions; a thread of its own sends them one at a time,
+  `SUBMIT_BURST_GAP_US` apart (500 µs), at most `SUBMIT_BURST_MAX` per batch
+  (8), and only while fewer than `SUBMIT_MAX_INFLIGHT` submissions (8) await
+  the pool's answer, so a batch at difficulty 0.05 cannot flood the pool. A
+  share whose job changes while it waits is discarded. `/metrics` gains
+  `submit_queue_queued`, `_sent`, `_over_burst`, `_full`, `_expired`,
+  `_max_depth`, `submit_inflight` and the three settings; the GPU candidates
+  row shows what the queue sent. `SUBMIT_BURST_MAX=0` restores one share per
+  batch. Measured on an RTX 3080 against the public pool, 10 minutes after a
+  start: shares dropped by the gap 960 → 3, effective hashrate at 30 s 48% →
+  94% of raw, no rejects and no disconnects; the limit of 8 unanswered
+  submissions was reached only in peaks shorter than a second, while the
+  difficulty was still below 1.
 - `/metrics` fields for a configuration form, appended at the end:
   `gpu_devices` (index and name of every card on the OpenCL platform),
   `gpu_device_sel`, `threads_config` (`-1` = auto), `threads_auto`,
