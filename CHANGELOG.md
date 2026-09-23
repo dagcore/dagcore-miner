@@ -14,6 +14,9 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   saved, the box is outlined, the button is filled in, and a line says what is
   pending ("Not saved yet: CPU threads 2 → 3"). The intensity button asks first
   when the box has unsaved changes, since it saves the intensity only.
+- Primary buttons are 136px wide instead of 124px, so "Save & restart" is no
+  longer cut to "Save & rest…"; Settings rows switch to the two-column layout
+  below 780px instead of 560px, where the five columns no longer fit.
 - `POST /api/config` compared the new values with the running miner only, so
   after a save without a restart, going back to the running value answered
   "nothing to save" and left config.env as it was. It now also compares with

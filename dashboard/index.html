@@ -20,8 +20,10 @@
 
 :root{
   /* One width for every primary button, so "Apply" and "Save & restart" do not
-   * shift the columns around each other. */
-  --btn-w:124px;
+   * shift the columns around each other. Wide enough for "Save & restart":
+   * 14 characters of 13px Plex Mono (0.6em each) are 109px, plus 22px of
+   * padding and border - at 124px it was cut to "Save & rest...". */
+  --btn-w:136px;
   --bg:#060a12; --panel:#0f1c32;
   --line:rgba(110,155,220,.28); --line-soft:rgba(90,130,190,.12);
   --text:#e8eef7; --text-2:#cfe0f4; --muted:#a9bcd3; --muted-2:#8fa5bf; --label:#8aa0bc;
@@ -305,9 +307,11 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
   header{gap:14px}
   .status{margin-left:auto}
 }
-/* Under 560px the five columns become two: label and slider take a full row
- * each, the number another, and the two buttons share the last one. */
-@media (max-width:560px){
+/* Below 780px the five columns become two: label and slider take a full row
+ * each, the number another, and the two buttons share the last one. The five
+ * need 688px (190 + 90 + 88 + 2 x 136 + gaps) inside the card's 74px of
+ * padding and page margin; at 560px, the old threshold, they overflowed. */
+@media (max-width:780px){
   .set-row{grid-template-columns:1fr 1fr;gap:10px}
   .set-row .lab{grid-column:1 / -1}
   .set-row input[type=range]{grid-column:1 / -1}
