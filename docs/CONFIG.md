@@ -63,6 +63,9 @@ ignored. Values are taken literally — no quotes, no shell expansion.
 | `SUBMIT_MARGIN` | ≥ 1.0 | `1.0` | Multiplier on the share threshold. Higher submits fewer, safer shares. |
 | `AUTO_THRESHOLD` | `0`/`1` | `1` | Raise the margin automatically after low-difficulty rejects. |
 | `SUBMIT_MIN_INTERVAL_MS` | 0–1000 | `5` | Minimum gap between two share submissions. Default 5 since it was measured that 20 — the previous default — dropped every other share while the pool's difficulty was low: a GPU batch takes ~10 ms on an RTX 3080 and yields at most one share. Keep it below the batch time. A share found inside it is dropped, never sent (`dropped` since start and `dropped_window` for the last 10 minutes in `/metrics`, and under Advanced on the dashboard; the total comes mostly from the first minutes after a start). `0` = no limit. Config file only, no command-line flag. |
+| `SUBMIT_BURST_MAX` | 0–63 | `8` | Shares a GPU batch may send beyond its first. They come a fraction of a millisecond after it, so `SUBMIT_MIN_INTERVAL_MS` would drop them; they go through the submit queue instead. More than this in one batch are not sent (`submit_queue_over_burst`). `0` = one share per batch, as before the queue. |
+| `SUBMIT_BURST_GAP_US` | 100–100000 | `500` | Minimum gap, in microseconds, between a share sent from the queue and the previous submission of any kind. |
+| `SUBMIT_MAX_INFLIGHT` | 1–64 | `8` | The queue sends only while fewer submissions than this are waiting for the pool's answer; one unanswered for 3 s stops counting. Bounds how fast the queue can send: with the pool ~30 ms away, 8 allows at most ~250 a second. |
 
 ### GPU
 
@@ -245,6 +248,19 @@ limiter, since start; most of it comes from the first minutes after a start,
 while the pool's difficulty is still low. `dropped_window` and
 `submitted_window` are the same two counts over the effective hashrate's
 window. `submit_min_interval_ms` is the gap in force (`SUBMIT_MIN_INTERVAL_MS`).
+
+GPU batches: `gpu_candidates_found` counts every share the kernel found,
+`gpu_candidates_reported` how many were read back (up to 64 per batch),
+`gpu_candidates_extra` those beyond the first in their batch and
+`gpu_candidates_valid` those that passed the full check on the CPU. The first
+share of a batch is sent directly; the others go through the submit queue:
+`submit_queue_queued` got in, `submit_queue_sent` went to the pool,
+`submit_queue_over_burst` exceeded `SUBMIT_BURST_MAX` in their batch,
+`submit_queue_full` found no room, `submit_queue_expired` were discarded because
+their job changed while they waited, and `submit_queue_max_depth` is the most
+that ever waited at once. `submit_inflight` is how many submissions await the
+pool's answer now; `submit_burst_max`, `submit_burst_gap_us` and
+`submit_max_inflight` are the settings in force.
 
 ### Health
 `cpu_temp`, `gpu_temp`, `gpu_usage`, `gpu_memory`, `gpu_power` — `-1` when a
