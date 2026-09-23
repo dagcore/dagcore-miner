@@ -22,11 +22,10 @@ UNIT="/etc/systemd/system/${SERVICE}.service"
 
 DEF_POOL="stratum.dagcore.net"
 DEF_PORT="3334"
-DEF_WORKER="$(hostname -s 2>/dev/null || echo rig)"
 DEF_THREADS="0"
 MIN_DISK_MB=300
 
-WALLET=""; POOL=""; PORT=""; WORKER=""; THREADS=""; GPU_DEVICE=""
+WALLET=""; POOL=""; PORT=""; THREADS=""; GPU_DEVICE=""
 GPU_COUNT=0
 LAN=""; ASSUME_YES=0; DRY_RUN=0; WANT_SERVICE=""; WANT_START=""
 MODE=""                       # install | upgrade | reconfigure
@@ -81,7 +80,6 @@ Options
   --wallet 0x...      wallet address (required when not asked interactively)
   --pool HOST         pool hostname            (default: $DEF_POOL)
   --port N            pool port                (default: $DEF_PORT)
-  --worker NAME       worker name              (default: this host's name)
   --threads N         CPU mining threads, 0 = GPU only   (default: $DEF_THREADS)
   --gpu-device WHICH  which graphics cards to use: all, a single number, or a
                       list like 0,1. Default: all of them when there is more
@@ -103,7 +101,8 @@ while [ $# -gt 0 ]; do
     --wallet)  WALLET="${2:-}"; shift 2 ;;
     --pool)    POOL="${2:-}";   shift 2 ;;
     --port)    PORT="${2:-}";   shift 2 ;;
-    --worker)  WORKER="${2:-}"; shift 2 ;;
+    # The pool ignores worker names; still accepted so old install commands run.
+    --worker)  warn "--worker is ignored: the pool has no worker names"; shift 2 ;;
     --threads) THREADS="${2:-}"; shift 2 ;;
     --gpu-device) GPU_DEVICE="${2:-}"; shift 2 ;;
     --prefix)  PREFIX="${2:-}"; shift 2 ;;
@@ -522,7 +521,6 @@ ask_settings() {
 
   [ -n "$POOL" ]    || POOL="$(ask 'Pool address' "$DEF_POOL")"
   [ -n "$PORT" ]    || PORT="$(ask 'Pool port' "$DEF_PORT")"
-  [ -n "$WORKER" ]  || WORKER="$(ask 'A name for this machine' "$DEF_WORKER")"
   [ -n "$THREADS" ] || THREADS="$(ask 'CPU mining threads (0 = graphics card only)' "$DEF_THREADS")"
 
   printf '%s' "$PORT" | grep -Eq '^[0-9]+$' || die "the pool port must be a number; got '$PORT'."
@@ -595,12 +593,12 @@ write_config() {
   run mkdir -p "$CONFDIR"
   run_write "$CONFDIR/config.env" <<CFG
 # DAGCore Miner - written by install.sh on $(date -u '+%Y-%m-%d %H:%M UTC')
-# Settings you change from the dashboard are kept separately, in
-# $STATEDIR/overrides.env, and are loaded on top of this file.
+# The dashboard's Mining configuration can change the wallet, pool, port,
+# threads and cards here (keeping the previous file as config.env.bak); its
+# tuning goes to $STATEDIR/overrides.env, loaded on top of this file.
 WALLET=$WALLET
 POOL=$POOL
 PORT=$PORT
-WORKER=$WORKER
 THREADS=$THREADS
 GPU_ENABLED=1
 GPU_PLATFORM=0

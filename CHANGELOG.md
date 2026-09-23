@@ -37,6 +37,14 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   endpoints and fields, and what the token now allows.
 
 ### Changed
+- **No more worker name.** The pool has no worker names and ignores the field,
+  so it is gone from the dashboard's Mining configuration, `/api/config`, the
+  installer's questions and `config.env.example`. An existing `WORKER=` line or
+  `--worker` flag is still accepted, so old configs and command lines keep
+  working; `install.sh --worker` warns that it is ignored.
+- Mining configuration shows, under CPU threads, what the CPU adds right now
+  as a share of the total — on a GPU rig well under one percent, which is why
+  that setting barely matters there.
 - **The dashboard can now change the wallet and the pool.** Until now
   `config.env` was never written from the browser, so nothing there could
   redirect payouts. Anyone holding the control token — and, with

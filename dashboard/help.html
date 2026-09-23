@@ -268,11 +268,15 @@ view because they are the ones worth touching. The rest are behind
 value there costs more than it gains.</p>
 
 <h3 id="config">Mining configuration</h3>
-<p><b>What it holds.</b> The wallet the pool pays, the pool and its port, the
-worker name, how many CPU threads mine, and which graphics cards are used. The
+<p><b>What it holds.</b> The wallet the pool pays, the pool and its port, how
+many CPU threads mine, and which graphics cards are used. There is no worker
+name: the pool has none and would ignore it. The
 same settings as in <code>config.env</code>, and saving writes them there.</p>
 <p><b>CPU threads.</b> <i>auto</i> uses half the logical cores, and the list
-says what that comes to on this machine. <i>0 — GPU only</i> is offered only
+says what that comes to on this machine. Under it is what the CPU is actually
+adding right now, as a share of the total. On a rig with a card that is well
+under one percent — the RTX 3080 does about 99.6% of the work next to two CPU
+threads — which is why this setting barely matters there. <i>0 — GPU only</i> is offered only
 while a card is mining; with no card mining, 0 would mine nothing.</p>
 <p><b>Graphics cards.</b> Listed by name as the driver reports them: all of
 them, one, or several. With a single card there is nothing to choose and the
@@ -657,7 +661,7 @@ journalctl -u bdag-miner --since today</code></pre>
 <tr><td>/etc/dagcore-miner/<br>config.env</td>
     <td>You, by hand, or the Mining configuration block in Settings, which
     keeps the previous version as config.env.bak.</td>
-    <td>Wallet, pool, worker, threads, which cards to use
+    <td>Wallet, pool, threads, which cards to use
     (<code>GPU_DEVICE</code>), metrics port and bind address, dashboard
     directory. The things that define the rig.</td></tr>
 <tr><td>/var/lib/dagcore-miner/<br>overrides.env</td>
@@ -668,7 +672,7 @@ journalctl -u bdag-miner --since today</code></pre>
 </div>
 <p>Two files on purpose: tuning never touches the file that defines the rig,
 and throwing all tuning away is one deleted file. The dashboard does write
-<code>config.env</code>, but only through Mining configuration: six settings,
+<code>config.env</code>, but only through Mining configuration: five settings,
 checked first, the rest of the file kept as it was. To inspect them:</p>
 <pre><code>sudo cat /etc/dagcore-miner/config.env
 sudo cat /var/lib/dagcore-miner/overrides.env</code></pre>

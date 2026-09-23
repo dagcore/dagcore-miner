@@ -114,7 +114,7 @@ offset change is applied live but only saved after ten minutes without new
 rejected shares; on failure the previous value is restored automatically. See
 [CONFIG.md](CONFIG.md#control-api).
 
-`/api/config` writes the rig's own settings (wallet, pool, port, worker,
+`/api/config` writes the rig's own settings (wallet, pool, port,
 threads, cards) into `config.env`. That reverses the earlier rule that the
 browser never writes that file, deliberately, so a rig can be configured
 without a shell; validation, a `.bak` copy, keeping every other line and

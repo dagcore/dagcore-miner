@@ -250,6 +250,7 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .cfg-list b{color:var(--text-2);font-weight:600}
 .cfg-actions{display:flex;align-items:center;gap:10px;padding:12px 0 6px;flex-wrap:wrap}
 .cfg-actions button{width:var(--btn-w);flex:0 0 auto}
+.set-row .lab small.cfg-share{color:var(--text-2)}
 .cfg-err{flex:1 1 200px;font-size:12px;color:var(--bad);min-width:0}
 .set-help{font-size:12.5px;color:var(--muted);line-height:1.6;margin:-6px 0 4px}
 details.adv{margin-top:6px;border-top:1px solid var(--line-soft)}
@@ -506,13 +507,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
           <input type="number" id="cfgPort" class="cfg-port" min="1" max="65535" placeholder="3334"></span>
       </div>
       <div class="set-row">
-        <span class="lab"><b>Worker</b><small id="cfgWorkerNote">sent as the Stratum password; the
-          current pool ignores it</small></span>
-        <span class="set-ctl wide"><input type="text" id="cfgWorker" placeholder="dagcore"
-          spellcheck="false" autocomplete="off" maxlength="63"></span>
-      </div>
-      <div class="set-row">
-        <span class="lab"><b>CPU threads</b><small id="cfgThreadsNote">&mdash;</small></span>
+        <span class="lab"><b>CPU threads</b><small id="cfgThreadsNote">&mdash;</small>
+          <small class="cfg-share" id="cfgCpuShare">&mdash;</small></span>
         <span class="set-ctl wide"><select id="cfgThreads"></select></span>
       </div>
       <div class="set-row" id="cfgGpuRow" hidden>
@@ -1655,7 +1651,7 @@ function cfgPoolParts(s){
 function cfgFill(d){
   var pp = cfgPoolParts(d.pool);
   cfgLoaded = {
-    wallet: d.wallet_full || "", pool: pp[0], port: pp[1], worker: d.worker || "",
+    wallet: d.wallet_full || "", pool: pp[0], port: pp[1],
     threads: typeof d.threads_config === "number" ? d.threads_config : -1,
     gpu: d.gpu_device_sel || "0"
   };
@@ -1663,7 +1659,6 @@ function cfgFill(d){
   $("cfgWallet").value = cfgLoaded.wallet;
   $("cfgPool").value   = cfgLoaded.pool;
   $("cfgPort").value   = cfgLoaded.port || "";
-  $("cfgWorker").value = cfgLoaded.worker;
   txt("cfgPath", d.config_path || "config.env");
 
   /* Threads: auto first, with what it means on this machine. 0 is GPU only,
@@ -1719,7 +1714,7 @@ function cfgFill(d){
 
   /* What the command line sets cannot be changed here. */
   var pinned = d.config_cli || [];
-  var map = { wallet: ["cfgWallet"], pool: ["cfgPool"], port: ["cfgPort"], worker: ["cfgWorker"],
+  var map = { wallet: ["cfgWallet"], pool: ["cfgPool"], port: ["cfgPort"],
               threads: ["cfgThreads"], gpu_device: ["cfgGpuOne", "cfgGpuList", "cfgGpuModes"] };
   for (var k in map){
     for (i = 0; i < map[k].length; i++) $(map[k][i]).classList.toggle("pinned", pinned.indexOf(k) >= 0);
@@ -1730,8 +1725,7 @@ function cfgFill(d){
 
 function cfgPinnedNotes(pinned){
   var notes = { wallet: ["cfgWalletNote", "where the pool pays out"],
-                pool: ["cfgPoolNote", "host name and port, no stratum+tcp://"],
-                worker: ["cfgWorkerNote", "sent as the Stratum password; the current pool ignores it"] };
+                pool: ["cfgPoolNote", "host name and port, no stratum+tcp://"] };
   for (var k in notes){
     var on = pinned.indexOf(k) >= 0 || (k === "pool" && pinned.indexOf("port") >= 0);
     txt(notes[k][0], on ? "set on the command line — change it there" : notes[k][1]);
@@ -1763,7 +1757,7 @@ function cfgGpuValue(){
 function cfgRead(){
   return {
     wallet: $("cfgWallet").value.trim(), pool: $("cfgPool").value.trim(),
-    port: parseInt($("cfgPort").value, 10), worker: $("cfgWorker").value.trim(),
+    port: parseInt($("cfgPort").value, 10),
     threads: parseInt($("cfgThreads").value, 10), gpu: cfgGpuValue()
   };
 }
@@ -1776,11 +1770,8 @@ function cfgValidate(){
     err = "Pool: a host name or IP address only — no stratum+tcp://, no port."; bad.cfgPool = 1;
   }
   if (!err && !(v.port >= 1 && v.port <= 65535)){ err = "Port: 1 to 65535."; bad.cfgPort = 1; }
-  if (!err && !/^[A-Za-z0-9._-]{1,63}$/.test(v.worker)){
-    err = "Worker: 1 to 63 letters, digits, dots, dashes or underscores."; bad.cfgWorker = 1;
-  }
   if (!err && v.gpu === ""){ err = "Graphics cards: tick at least one."; bad.cfgGpuList = 1; }
-  var ids = ["cfgWallet","cfgPool","cfgPort","cfgWorker","cfgGpuList"], i;
+  var ids = ["cfgWallet","cfgPool","cfgPort","cfgGpuList"], i;
   for (i = 0; i < ids.length; i++) $(ids[i]).classList.toggle("bad", !!bad[ids[i]]);
   txt("cfgErr", cfgDirty ? err : "");
   return err ? null : v;
@@ -1793,7 +1784,6 @@ function cfgChanges(v){
   put("wallet", v.wallet, cfgLoaded.wallet);
   put("pool", v.pool, cfgLoaded.pool);
   put("port", v.port, cfgLoaded.port);
-  put("worker", v.worker, cfgLoaded.worker);
   put("threads", v.threads, cfgLoaded.threads);
   if (v.gpu !== null) put("gpu_device", v.gpu, cfgLoaded.gpu);
   return n ? out : null;
@@ -1805,7 +1795,7 @@ function cfgRefreshButtons(){
   var usable = !!token && online === true && !restart;
   $("cfgSave").disabled = !(usable && ch);
   $("cfgRevert").disabled = !cfgDirty;
-  var ids = ["cfgWallet","cfgPool","cfgPort","cfgWorker","cfgThreads","cfgGpuOne"], i;
+  var ids = ["cfgWallet","cfgPool","cfgPort","cfgThreads","cfgGpuOne"], i;
   for (i = 0; i < ids.length; i++) $(ids[i]).disabled = !usable || $(ids[i]).classList.contains("pinned");
   var inputs = $("cfgGpuRow").getElementsByTagName("input");
   var gpuPinned = $("cfgGpuModes").classList.contains("pinned");
@@ -1815,8 +1805,24 @@ function cfgRefreshButtons(){
 /* Rebuilt only when what it shows has changed: rebuilding the selects on
  * every poll would close a dropdown someone has just opened. */
 var cfgSig = "";
+/* What the CPU threads actually add, next to the setting that controls them:
+ * on a GPU rig it is a fraction of a percent, which is the whole argument
+ * for leaving the setting alone. Updated on every poll. */
+function cfgCpuShare(d){
+  var cpu = d.cpu_hashrate || 0, tot = d.hashrate || 0, gpu = d.gpu_hashrate || 0;
+  var s;
+  if (!(d.threads > 0))      s = "CPU is not mining now";
+  else if (!(tot > 0))       s = "CPU now: " + hashStr(cpu);
+  else {
+    s = "CPU now: " + hashStr(cpu) + " \u2014 " + pct(cpu, tot) + " of the total";
+    if (gpu > 0) s += "; the card does the other " + pct(gpu, tot);
+  }
+  txt("cfgCpuShare", s);
+}
+
 function cfgSync(d){
-  var sig = JSON.stringify([d.wallet_full, d.pool, d.worker, d.threads_config, d.threads_auto,
+  cfgCpuShare(d);
+  var sig = JSON.stringify([d.wallet_full, d.pool, d.threads_config, d.threads_auto,
                             d.cpu_cores, d.gpu_count, d.gpu_device_sel, d.gpu_devices,
                             d.config_cli, d.config_path]);
   if (!cfgDirty && sig !== cfgSig){ cfgSig = sig; cfgFill(d); }
@@ -1825,7 +1831,7 @@ function cfgSync(d){
 
 function cfgTouched(){ cfgDirty = true; cfgValidate(); cfgRefreshButtons(); }
 (function(){
-  var ids = ["cfgWallet","cfgPool","cfgPort","cfgWorker"], i;
+  var ids = ["cfgWallet","cfgPool","cfgPort"], i;
   for (i = 0; i < ids.length; i++) $(ids[i]).addEventListener("input", cfgTouched);
   $("cfgThreads").addEventListener("change", cfgTouched);
   $("cfgGpuOne").addEventListener("change", cfgTouched);

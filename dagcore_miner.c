@@ -309,7 +309,6 @@ static const char *g_config_path = "";
 #define CLI_WALLET     0x01
 #define CLI_POOL       0x02
 #define CLI_PORT       0x04
-#define CLI_WORKER     0x08
 #define CLI_THREADS    0x10
 #define CLI_GPU_DEVICE 0x20
 static int  g_cli_set = 0;
@@ -3596,7 +3595,7 @@ static int http_header(const char *req, const char *name, char *out, size_t out_
  * the endpoint - so an unauthenticated caller learns nothing about the rig. */
 /* ---- Basic configuration from the dashboard: POST /api/config ----------
  *
- * Wallet, pool, port, worker, CPU threads and GPU selection, written into
+ * Wallet, pool, port, CPU threads and GPU selection, written into
  * config.env itself. This reverses an earlier rule - the browser never
  * touched config.env, so it could never redirect payouts - on purpose: the
  * point is to configure a rig without a shell. What protects it now:
@@ -3630,14 +3629,6 @@ static int cfg_valid_host(const char *h) {
         return 0;
     for (size_t i = 0; i < l; i++)
         if (!isalnum((unsigned char)h[i]) && h[i] != '.' && h[i] != '-') return 0;
-    return 1;
-}
-
-static int cfg_valid_worker(const char *w) {
-    size_t l = strlen(w);
-    if (l == 0 || l >= sizeof(worker_name)) return 0;
-    for (size_t i = 0; i < l; i++)
-        if (!isalnum((unsigned char)w[i]) && w[i] != '.' && w[i] != '_' && w[i] != '-') return 0;
     return 1;
 }
 
@@ -3775,7 +3766,7 @@ static void api_config(int cfd, const char *body) {
     /* Refuse what the command line pins, before looking at anything else. */
     static const struct { const char *field; int bit; const char *flag; } pinned[] = {
         { "wallet", CLI_WALLET, "--wallet" }, { "pool", CLI_POOL, "--pool" },
-        { "port", CLI_PORT, "--port" },       { "worker", CLI_WORKER, "--worker" },
+        { "port", CLI_PORT, "--port" },
         { "threads", CLI_THREADS, "--threads" }, { "gpu_device", CLI_GPU_DEVICE, "--gpu-device" },
     };
     for (size_t i = 0; i < sizeof(pinned) / sizeof(pinned[0]); i++) {
@@ -3831,16 +3822,6 @@ static void api_config(int cfd, const char *body) {
         if (v != pool_port) changed = 1;
         n++;
     }
-    if ((r = json_get_str(body, "worker", s, sizeof(s))) != -1) {
-        if (r != 0 || !cfg_valid_worker(s)) {
-            http_send_err(cfd, 400, "Bad Request",
-                          "worker must be 1 to 63 letters, digits, dots, dashes or underscores");
-            return;
-        }
-        keys[n] = "WORKER"; snprintf(vals[n], sizeof(vals[n]), "%s", s);
-        if (strcmp(s, worker_name) != 0) changed = 1;
-        n++;
-    }
     if (json_value_of(body, "threads")) {
         if (json_get_int(body, "threads", &v) != 0 || v < -1 || v > g_cpu_cores) {
             snprintf(msg, sizeof(msg), "threads must be -1 (auto) or 0 to %d", g_cpu_cores);
@@ -3875,7 +3856,7 @@ static void api_config(int cfd, const char *body) {
     }
     if (n == 0) {
         http_send_err(cfd, 400, "Bad Request",
-                      "nothing to save: send wallet, pool, port, worker, threads or gpu_device");
+                      "nothing to save: send wallet, pool, port, threads or gpu_device");
         return;
     }
     if (!changed) {
@@ -4722,7 +4703,7 @@ static void *dagtech_metrics_thread(void *arg) {
         {
             static const struct { int bit; const char *name; } k[] = {
                 { CLI_WALLET, "wallet" }, { CLI_POOL, "pool" }, { CLI_PORT, "port" },
-                { CLI_WORKER, "worker" }, { CLI_THREADS, "threads" },
+                { CLI_THREADS, "threads" },
                 { CLI_GPU_DEVICE, "gpu_device" },
             };
             int first = 1;
@@ -4983,7 +4964,8 @@ static void dagtech_usage(void) {
     printf("    --port <n>             Pool port (default: %d)\n", DAGTECH_DEFAULT_PORT);
     printf("    --threads <n>          CPU mining threads: 0 = none, GPU-only (default),\n");
     printf("                             -1 = auto (half the logical cores), N = N threads\n");
-    printf("    --worker <name>        Worker name (default: dagtech)\n");
+    printf("    --worker <name>        Ignored by the current pool; kept so old\n"
+           "                             command lines still start\n");
     printf("    --password <pw>        Pool password (default: x)\n");
     printf("    --submit-margin <f>    Share threshold margin >=1.0 (default: 1.0)\n");
     printf("    --no-auto-threshold    Don't auto-raise margin after low-difficulty rejects\n");
@@ -5499,8 +5481,9 @@ int main(int argc, char **argv) {
             g_cli_set |= CLI_THREADS;
         }
         else if (strcmp(argv[i], "--worker") == 0 && i + 1 < argc) {
+            /* The pool ignores it (see dagtech_subscribe_authorize); still
+             * accepted so an existing command line keeps starting. */
             strncpy(worker_name, argv[++i], sizeof(worker_name) - 1);
-            g_cli_set |= CLI_WORKER;
         }
         else if (strcmp(argv[i], "--password") == 0 && i + 1 < argc)
             strncpy(password, argv[++i], sizeof(password) - 1);
@@ -5654,7 +5637,6 @@ int main(int argc, char **argv) {
     printf("[DagCore] Wallet:  %s\n", wallet);
     printf("[DagCore] Pool:    %s:%d\n", pool_host, pool_port);
     printf("[DagCore] Threads: %d (CPU)\n", num_threads);
-    printf("[DagCore] Worker:  %s\n", worker_name);
     if (submit_min_interval_ms != SUBMIT_MIN_INTERVAL_MS_DEFAULT)
         printf("[DagCore] Share submit gap: %d ms%s\n", submit_min_interval_ms,
                submit_min_interval_ms == 0 ? " (no limit)" : "");

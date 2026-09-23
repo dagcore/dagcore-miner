@@ -19,7 +19,7 @@ config.env   <   overrides.env   <   command line
 ```
 
 - **`/etc/dagcore-miner/config.env`** — yours. The dashboard's Mining
-  configuration also writes six keys in it (`WALLET`, `POOL`, `PORT`, `WORKER`,
+  configuration also writes five keys in it (`WALLET`, `POOL`, `PORT`,
   `THREADS`, `GPU_DEVICE`), keeping the previous file as `config.env.bak`.
 - **`/var/lib/dagcore-miner/overrides.env`** — written by the dashboard's control
   API. Only tuning keys, never identity.
@@ -45,8 +45,8 @@ ignored. Values are taken literally — no quotes, no shell expansion.
 | `WALLET` | `0x` + 40 hex | *(none)* | Your payout address. The only required key. Sent as the Stratum username. |
 | `POOL` | hostname | `stratum.dagcore.net` | Pool to connect to. |
 | `PORT` | 1–65535 | `3334` | Stratum port. |
-| `WORKER` | text | `dagcore` | Machine name. Sent in the Stratum password field; the current DagCore pool ignores it, because that pool build has no worker names. |
-| `PASSWORD` | text | *(empty)* | Pool password. Shares the Stratum password field with `WORKER`, and `WORKER` wins when both are set. |
+| `PASSWORD` | text | *(empty)* | Pool password. Sent only when `WORKER` is empty, see below. |
+| `WORKER` | text | `dagcore` | **Legacy.** The pool has no worker names and ignores it; the installer and the dashboard no longer write it. Still read, and sent in the Stratum password field, so an old config keeps working. |
 
 ### CPU mining
 
@@ -143,7 +143,7 @@ always wins.
 | `--wallet ADDR` | `WALLET` | |
 | `--pool HOST` | `POOL` | |
 | `--port N` | `PORT` | |
-| `--worker NAME` | `WORKER` | |
+| `--worker NAME` | `WORKER` | Legacy, ignored by the pool. |
 | `--password PW` | `PASSWORD` | |
 | `--threads N` | `THREADS` | |
 | `--cpu-limit N` | `CPU_LIMIT` | |
@@ -182,7 +182,7 @@ Bodies and replies are JSON. Every reply carries `ok`.
 | `/api/mem-offset` | `{"mhz":1200}` or `{"reset":true}` | Same for memory. |
 | `/api/intensity` | `{"value":90}` | Saves and exits so the supervisor restarts the miner — intensity is fixed when buffers are allocated. Replies `restarting:false` when not supervised. |
 | `/api/cancel-trial` | `{"domain":"mem-clock"}` | Ends a running trial and puts the previous value back. Domains: `core-clock`, `mem-clock`, `core-offset`, `mem-offset`. |
-| `/api/config` | Any of `{"wallet","pool","port","worker","threads","gpu_device"}` | Validates every field, writes them into `config.env` (previous file kept as `config.env.bak`, other lines untouched) and exits for a restart like `/api/intensity`. Unchanged values answer `saved:false`. `threads` is `-1` (auto) to the core count, `0` only while a GPU mines; `gpu_device` is `all`, `N` or `N,M`. Works even when the tuning controls are unavailable. |
+| `/api/config` | Any of `{"wallet","pool","port","threads","gpu_device"}` | Validates every field, writes them into `config.env` (previous file kept as `config.env.bak`, other lines untouched) and exits for a restart like `/api/intensity`. Unchanged values answer `saved:false`. `threads` is `-1` (auto) to the core count, `0` only while a GPU mines; `gpu_device` is `all`, `N` or `N,M`. Works even when the tuning controls are unavailable. |
 | `/api/pause` | `{"paused":true}` or `{"paused":false}` | Stops the mining threads and disconnects from the pool, or resumes. The web server keeps running. Not saved across restarts. Refused during a trial. Works even when the tuning controls are unavailable. |
 | `/api/adopt` | `{}`, `{"core":true}`, `{"mem":true}` | Saves what the card runs now, with no trial. Offsets always; clock locks only when named, because NVML cannot report a lock. |
 
@@ -300,7 +300,7 @@ What the dashboard's Mining configuration form shows:
 | `threads_config` | `THREADS` as configured, `-1` for auto; `threads` is what it resolved to |
 | `threads_auto` | What auto resolves to on this machine |
 | `config_path` | The `config.env` this process loaded, and the one a save writes |
-| `config_cli` | Settings given on the command line, which `/api/config` refuses: any of `wallet`, `pool`, `port`, `worker`, `threads`, `gpu_device` |
+| `config_cli` | Settings given on the command line, which `/api/config` refuses: any of `wallet`, `pool`, `port`, `threads`, `gpu_device` |
 
 ### Mining state
 `paused` — whether a pause is requested. `mining_state` — `connecting`,

@@ -47,7 +47,7 @@ Remove DAGCore Miner
 
   ./uninstall.sh [options]
 
-  --keep-config    keep $CONFDIR (wallet, pool, worker)
+  --keep-config    keep $CONFDIR (wallet, pool, settings)
   --keep-tuning    keep $STATEDIR (clocks, offsets, power limit)
   --purge          remove everything, including both of those
   --yes            ask nothing; keeps config and tuning unless --purge
@@ -96,7 +96,7 @@ run rm -rf "$PREFIX"
 did "removed $PREFIX"
 
 step "Your settings"
-say "$CONFDIR holds the wallet address, pool and worker name."
+say "$CONFDIR holds the wallet address, the pool and your settings."
 if [ -e "$CONFDIR" ]; then
   if [ -z "$KEEP_CONFIG" ]; then
     if confirm "Keep them, in case you reinstall?" y; then KEEP_CONFIG=y; else KEEP_CONFIG=n; fi

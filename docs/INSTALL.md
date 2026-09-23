@@ -39,9 +39,6 @@ else, so there is no default.
 
 **Pool address** and **Pool port** — default `stratum.dagcore.net` and `3334`.
 
-**A name for this machine** — defaults to the hostname. The current DagCore pool
-ignores worker names, so this is for your own records.
-
 **CPU mining threads** — default `0`, graphics card only. CPU mining on this
 algorithm contributes well under one percent of a GPU's hashrate while taking
 cores the GPU needs to keep fed. `-1` auto-detects half the logical cores.
@@ -66,7 +63,7 @@ sudo ./install.sh --wallet 0xYOURADDRESS --yes
 ```
 
 `--yes` takes every default and asks nothing, so `--wallet` becomes mandatory.
-Other options: `--pool`, `--port`, `--worker`, `--threads`, `--gpu-device`,
+Other options: `--pool`, `--port`, `--threads`, `--gpu-device`,
 `--lan`, `--no-service`, `--start`, `--prefix`. `./install.sh --help` lists them.
 
 ## Special cases
@@ -170,7 +167,7 @@ sudo journalctl -u dagcore-miner -n 100      # last 100 lines
 
 Two files on purpose: tuning never touches the file that defines the rig, and
 throwing all tuning away is one deleted file. The dashboard writes
-`config.env` only through Mining configuration — six settings, validated first,
+`config.env` only through Mining configuration — five settings, validated first,
 every other line kept.
 
 ## Upgrading, reconfiguring, removing
