@@ -24,6 +24,7 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   - Windows: closing the console window, logging off or shutting down stops
     the miner cleanly (`SetConsoleCtrlHandler`), and its waits of several
     seconds end as soon as a stop is requested.
+  - README: how to run the Windows build by hand, CPU-only, for testing.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when

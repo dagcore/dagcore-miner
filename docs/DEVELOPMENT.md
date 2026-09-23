@@ -203,13 +203,15 @@ present. Mining across all cards works and scales linearly; only the controls
 are held back. This is the main thing standing between the dashboard and a
 multi-card rig.
 
-**Windows.** The `#ifdef _WIN32` paths are inherited. They now compile and
-link (`make windows`), but have never been run. Still missing: NVML (stubbed,
-so no offsets or clock locks), a Windows service and installer, Windows paths
-for the token, overrides and cache, a receive timeout on the metrics server,
-atomic replace of `overrides.env` (`rename()` fails when the file exists), a
-token source without `/dev/urandom`, and `2>NUL` instead of `2>/dev/null` in
-the `nvidia-smi` commands. Treat the Windows build as unverified.
+**Windows.** The `#ifdef _WIN32` paths are inherited. They compile and link
+(`make windows`) and can be run by hand (README, "Windows (experimental)"),
+with the token from `BCryptGenRandom`, files in `%ProgramData%\DAGCore\`,
+`overrides.env` replaced with `MoveFileEx`, the metrics receive timeout,
+`2>NUL` for `nvidia-smi`, and a clean stop on console close. Still missing:
+NVML (stubbed, so no offsets or clock locks), a Windows service and
+installer, an ACL on the token file (other local accounts can read it), and
+the autotune cache, which still defaults to `C:\dagtech-gpu-miner\`. None of
+it has run on Windows yet; treat the build as unverified.
 
 **Memory junction temperature.** Not exposed by the Linux driver to any tool, so
 the dashboard cannot show the one temperature that matters most when tuning
