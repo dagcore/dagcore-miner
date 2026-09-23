@@ -50,7 +50,7 @@ make            # GPU build -> dagcore-miner
 make cpu        # CPU-only  -> dagcore-miner-cpu
 make check      # builds both, from scratch
 make warn       # -Wall -Wextra -Wshadow, syntax only
-make install    # PREFIX=/usr/local by default
+make install    # into /opt/dagcore-miner, as the installer does
 ```
 
 **Always `make check` before committing.** The two builds take different paths
@@ -63,8 +63,32 @@ happened.
 | `NATIVE` | `0` | `1` adds `-march=native`. Only for a binary that stays on the machine that built it. |
 | `DEBUG` | `0` | `1` gives `-O0 -g3` with address and UB sanitizers. |
 | `USE_OPENSSL` | unset | `1` uses libcrypto's SHA-256 instead of the bundled one. |
-| `PREFIX` | `/usr/local` | Install location. |
+| `PREFIX` | `/opt/dagcore-miner` | Install location, the installer's. `/usr/local` until 1.2.1. |
 | `SYSCONFDIR` | `/etc/dagcore-miner` | Configuration, regardless of `PREFIX`. |
+
+**Installing by hand on a rig set up by `install.sh`.** The installer uses
+`PREFIX=/opt/dagcore-miner`, and its service runs
+`/opt/dagcore-miner/bin/dagcore-miner` with the dashboard from
+`/opt/dagcore-miner/share/dagcore-miner/dashboard`. `make install` uses the same
+prefix by default since 1.2.1:
+
+```sh
+make
+sudo make install
+sudo systemctl restart dagcore-miner
+```
+
+That replaces the binary, the kernel and the dashboard under the prefix, and
+`config.env.example` in `SYSCONFDIR`; an existing `config.env` is never
+touched. The dashboard's pages are read on every request, so a change to them
+alone shows after a browser reload, without the restart. The installer's
+Upgrade does the same from a fresh build.
+
+Before 1.2.1 the default was `/usr/local`, which nothing on an installed rig
+reads: the service kept the old binary or, when only the binary was copied
+across, ran a new binary next to the old dashboard. A setup that installs into
+`/usr/local` on purpose now needs `make install PREFIX=/usr/local` (and
+`make uninstall PREFIX=/usr/local`).
 
 `-Wall` is on. The build is warning-free; keep it that way.
 

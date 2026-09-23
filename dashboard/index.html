@@ -20,8 +20,10 @@
 
 :root{
   /* One width for every primary button, so "Apply" and "Save & restart" do not
-   * shift the columns around each other. */
-  --btn-w:124px;
+   * shift the columns around each other. Wide enough for "Save & restart":
+   * 14 characters of 13px Plex Mono (0.6em each) are 109px, plus 22px of
+   * padding and border - at 124px it was cut to "Save & rest...". */
+  --btn-w:136px;
   --bg:#060a12; --panel:#0f1c32;
   --line:rgba(110,155,220,.28); --line-soft:rgba(90,130,190,.12);
   --text:#e8eef7; --text-2:#cfe0f4; --muted:#a9bcd3; --muted-2:#8fa5bf; --label:#8aa0bc;
@@ -230,7 +232,10 @@ button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
 .adopt-picks .hint{color:var(--muted-2)}
 /* Mining configuration: a block of its own inside Settings. Its rows reuse
  * .set-row, with the controls spanning the control columns. */
-.cfg{margin:6px 0 4px;padding-top:4px;border-top:1px solid var(--line-soft)}
+.cfg{margin:14px 0 10px;padding:2px 16px 6px;border:1px solid var(--line);border-radius:12px;
+  background:rgba(0,0,0,.18)}
+/* Changed but not saved: the whole block says so, not just the button. */
+.cfg.pending{border-color:rgba(255,171,46,.75)}
 .cfg-head{padding:14px 0 2px}
 .cfg-head b{display:block;font-size:12px;font-weight:600;letter-spacing:.2em;
   text-transform:uppercase;color:var(--label)}
@@ -248,7 +253,12 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .cfg-modes input,.cfg-list input{accent-color:var(--mine);width:15px;height:15px;margin:0}
 .cfg-list{display:flex;flex-direction:column;gap:7px}
 .cfg-list b{color:var(--text-2);font-weight:600}
-.cfg-actions{display:flex;align-items:center;gap:10px;padding:12px 0 6px;flex-wrap:wrap}
+.cfg-actions{display:flex;align-items:center;gap:10px;padding:12px 0 6px;flex-wrap:wrap;
+  border-top:1px solid var(--line-soft)}
+.cfg-pending{flex:1 1 200px;font-size:12px;color:var(--mine-soft);min-width:0}
+.cfg-pending:empty{display:none}
+#cfgSave.pending{background:var(--mine);color:#1b1204;border-color:var(--mine)}
+#cfgSave.pending:hover{background:var(--mine-soft)}
 .cfg-actions button{width:var(--btn-w);flex:0 0 auto}
 .set-row .lab small.cfg-share{color:var(--text-2)}
 .cfg-err{flex:1 1 200px;font-size:12px;color:var(--bad);min-width:0}
@@ -297,9 +307,11 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
   header{gap:14px}
   .status{margin-left:auto}
 }
-/* Under 560px the five columns become two: label and slider take a full row
- * each, the number another, and the two buttons share the last one. */
-@media (max-width:560px){
+/* Below 780px the five columns become two: label and slider take a full row
+ * each, the number another, and the two buttons share the last one. The five
+ * need 688px (190 + 90 + 88 + 2 x 136 + gaps) inside the card's 74px of
+ * padding and page margin; at 560px, the old threshold, they overflowed. */
+@media (max-width:780px){
   .set-row{grid-template-columns:1fr 1fr;gap:10px}
   .set-row .lab{grid-column:1 / -1}
   .set-row input[type=range]{grid-column:1 / -1}
@@ -490,9 +502,11 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
     <div class="cfg" id="cfgBox">
       <div class="cfg-head">
         <b>Mining configuration</b>
-        <small>Saved in <span id="cfgPath">config.env</span> and applied by
-        restarting the miner. Every field is checked before anything is
-        written; the previous file is kept as <code>config.env.bak</code>.</small>
+        <small>Change any of these, then press <b>Save &amp; restart</b> at the
+        bottom of this box: it saves them in <span id="cfgPath">config.env</span>
+        and restarts the miner to apply them. Every field is checked before
+        anything is written; the previous file is kept as
+        <code>config.env.bak</code>.</small>
       </div>
 
       <div class="set-row">
@@ -526,6 +540,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
       <div class="cfg-actions">
         <span class="cfg-err" id="cfgErr"></span>
+        <span class="cfg-pending" id="cfgPending"></span>
         <button class="ghost" id="cfgRevert" type="button" disabled>Revert</button>
         <button class="btn-main" id="cfgSave" type="button" disabled>Save &amp; restart</button>
       </div>
@@ -1642,6 +1657,12 @@ $("inDefault").addEventListener("click", function(){
 $("inApply").addEventListener("click", function(){
   var v = parseInt($("inNum").value, 10);
   if (!isFinite(v)) return note("Enter an intensity first.", "err", 5000);
+  /* Its button reads like the configuration's; say so before the restart
+   * leaves those changes unsaved. */
+  var cv = cfgDirty && cfgLoaded ? cfgValidate() : null, cch = cv ? cfgChanges(cv) : null;
+  if (cch && !window.confirm("This saves the GPU intensity only.\n\nThe Mining configuration " +
+      "above has changes that are not saved (" + cfgPendingText(cch).replace(/^Not saved yet: |\. Press.*$/g, "") +
+      "); they need their own Save & restart.\n\nSave the intensity anyway?")) return;
   note("Saving intensity " + v + "\u2026", "busy", 15000);
   post("api/intensity", { value: v }, function(st, d){
     inTouched = false;
@@ -1811,11 +1832,31 @@ function cfgChanges(v){
   return n ? out : null;
 }
 
+/* "CPU threads 2 → 3", for each field that differs from what is loaded. */
+var CFG_LABELS = { wallet: "wallet", pool: "pool", port: "port", threads: "CPU threads",
+                   gpu_device: "graphics cards" };
+function cfgShow(k, x){
+  if (k === "threads") return x === -1 ? "auto" : (x === 0 ? "0 (GPU only)" : String(x));
+  if (k === "wallet") return String(x).slice(0, 6) + "\u2026" + String(x).slice(-4);
+  return String(x);
+}
+function cfgPendingText(ch){
+  var parts = [], k;
+  for (k in ch){
+    var was = cfgLoaded[k === "gpu_device" ? "gpu" : k];
+    parts.push(CFG_LABELS[k] + " " + cfgShow(k, was) + " \u2192 " + cfgShow(k, ch[k]));
+  }
+  return parts.length ? "Not saved yet: " + parts.join(", ") + ". Press Save & restart to apply." : "";
+}
+
 function cfgRefreshButtons(){
   var v = cfgDirty ? cfgValidate() : null;
   var ch = v && cfgLoaded ? cfgChanges(v) : null;
   var usable = !!token && online === true && !restart;
   $("cfgSave").disabled = !(usable && ch);
+  $("cfgSave").classList.toggle("pending", !!(usable && ch));
+  $("cfgBox").classList.toggle("pending", !!ch);
+  txt("cfgPending", ch ? cfgPendingText(ch) + (usable ? "" : " (Needs the control token above.)") : "");
   $("cfgRevert").disabled = !cfgDirty;
   var ids = ["cfgWallet","cfgPool","cfgPort","cfgThreads","cfgGpuOne"], i;
   for (i = 0; i < ids.length; i++) $(ids[i]).disabled = !usable || $(ids[i]).classList.contains("pinned");

@@ -3947,6 +3947,25 @@ static int config_write_keys(const char *path, const char *const *keys, const ch
     return 0;
 }
 
+/* The value config.env holds for key, as dagtech_load_config reads it: the
+ * last KEY= line wins. 0 if found, -1 if the key is not in the file. */
+static int config_file_value(const char *path, const char *key, char *out, size_t n) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char line[512];
+    size_t kl = strlen(key);
+    int found = -1;
+    while (fgets(line, sizeof(line), f)) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
+        if (line[0] == '#' || strncmp(line, key, kl) != 0 || line[kl] != '=') continue;
+        snprintf(out, n, "%s", line + kl + 1);
+        found = 0;
+    }
+    fclose(f);
+    return found;
+}
+
 static void api_config(int cfd, const char *body) {
     const char *keys[6];
     char vals[6][300];
@@ -4049,6 +4068,14 @@ static void api_config(int cfd, const char *body) {
         http_send_err(cfd, 400, "Bad Request",
                       "nothing to save: send wallet, pool, port, threads or gpu_device");
         return;
+    }
+    /* Unchanged only if both the running miner and config.env already have
+     * every value: after a save that was not followed by a restart the two
+     * differ, and going back to the running value must still be written. */
+    for (int i = 0; i < n && !changed; i++) {
+        char cur[300];
+        if (config_file_value(g_config_path, keys[i], cur, sizeof(cur)) != 0 ||
+            strcmp(cur, vals[i]) != 0) changed = 1;
     }
     if (!changed) {
         http_send_json(cfd, 200, "OK", "{\"ok\":true,\"saved\":false,\"changed\":false}");
