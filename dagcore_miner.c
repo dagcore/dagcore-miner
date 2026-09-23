@@ -280,6 +280,24 @@ static int gpu_device_count    = 0;  /* 0 = use gpu_device (single) */
 static int gpu_use_all         = 0;  /* 1 = use every GPU on the platform */
 static int g_num_gpus          = 0;  /* GPUs successfully initialised */
 
+/* What the dashboard's configuration form needs to know, beyond the values
+ * themselves: the cards on gpu_platform by name, the thread count "auto"
+ * resolves to, the config file a save would write, and which settings came
+ * from the command line - those win over config.env on every start, so the
+ * form must not pretend to change them. */
+static char g_gpu_names[MAX_GPUS][128];
+static int  g_gpu_detected = 0;      /* GPUs on gpu_platform (gpu_list_devices) */
+static int  g_threads_cfg  = 0;      /* THREADS / --threads before -1 is resolved */
+static int  g_threads_auto = 0;      /* what -1 resolves to on this machine */
+static const char *g_config_path = "";
+#define CLI_WALLET     0x01
+#define CLI_POOL       0x02
+#define CLI_PORT       0x04
+#define CLI_WORKER     0x08
+#define CLI_THREADS    0x10
+#define CLI_GPU_DEVICE 0x20
+static int  g_cli_set = 0;
+
 /* Per-GPU intensity: GPU_INTENSITY=80,60 overrides the single global per card */
 static int gpu_intensity_list[MAX_GPUS];
 static int gpu_intensity_count = 0;  /* 0 = use gpu_intensity for all GPUs */
@@ -822,6 +840,10 @@ static void gpu_list_devices(void) {
             char name[256] = {0};
             clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(name), name, NULL);
             printf("[DagCore GPU]   Platform %u Device %u: %s\n", p, d, name);
+            if ((int)p == gpu_platform && g_gpu_detected < MAX_GPUS) {
+                snprintf(g_gpu_names[g_gpu_detected], sizeof(g_gpu_names[0]), "%s", name);
+                g_gpu_detected++;
+            }
         }
     }
     free(platforms);
@@ -3384,6 +3406,32 @@ static void control_init(void) {
     snprintf(g_control_reason, sizeof(g_control_reason), "ok");
 }
 
+/* A string as a JSON string body (no quotes): escapes quotes, backslashes -
+ * every Windows path - and control characters. Truncates to fit. */
+static void json_escape(const char *in, char *out, size_t n) {
+    size_t o = 0;
+    for (; *in && o + 7 < n; in++) {
+        unsigned char c = (unsigned char)*in;
+        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
+        else if (c < 0x20)          o += (size_t)snprintf(out + o, n - o, "\\u%04x", c);
+        else                        out[o++] = (char)c;
+    }
+    out[o] = '\0';
+}
+
+/* GPU_DEVICE as it would be written: "all", "0,1" or "0". */
+static void gpu_device_sel_str(char *out, size_t n) {
+    if (gpu_use_all) { snprintf(out, n, "all"); return; }
+    if (gpu_device_count > 0) {
+        size_t o = 0;
+        out[0] = '\0';
+        for (int i = 0; i < gpu_device_count && o < n; i++)
+            o += (size_t)snprintf(out + o, n - o, "%s%d", i ? "," : "", gpu_device_list[i]);
+        return;
+    }
+    snprintf(out, n, "%d", gpu_device);
+}
+
 /* ---- tiny HTTP helpers (this server speaks just enough HTTP) ---- */
 static void http_send_json(int fd, int status, const char *reason, const char *body) {
     char hdr[256];
@@ -4263,10 +4311,42 @@ static void *dagtech_metrics_thread(void *arg) {
         /* Before stats_mtx: stats_window() takes it itself. */
         window_stats_t win = stats_window();
 
+        /* For the configuration form: the detected cards by name, the
+         * current selection, and the settings the command line pins. */
+        char gpu_devs[MAX_GPUS * 320 + 8] = "[";
+        for (int gi = 0; gi < g_gpu_detected; gi++) {
+            char esc[260], item[320];
+            json_escape(g_gpu_names[gi], esc, sizeof(esc));
+            snprintf(item, sizeof(item), "%s{\"index\":%d,\"name\":\"%s\"}", gi ? "," : "", gi, esc);
+            strncat(gpu_devs, item, sizeof(gpu_devs) - strlen(gpu_devs) - 2);
+        }
+        strcat(gpu_devs, "]");
+        char gpu_sel[64];
+        gpu_device_sel_str(gpu_sel, sizeof(gpu_sel));
+        char cfg_path_esc[1100];
+        json_escape(g_config_path, cfg_path_esc, sizeof(cfg_path_esc));
+        char cli_set[128] = "[";
+        {
+            static const struct { int bit; const char *name; } k[] = {
+                { CLI_WALLET, "wallet" }, { CLI_POOL, "pool" }, { CLI_PORT, "port" },
+                { CLI_WORKER, "worker" }, { CLI_THREADS, "threads" },
+                { CLI_GPU_DEVICE, "gpu_device" },
+            };
+            int first = 1;
+            for (size_t ki = 0; ki < sizeof(k) / sizeof(k[0]); ki++) {
+                if (!(g_cli_set & k[ki].bit)) continue;
+                strcat(cli_set, first ? "\"" : ",\"");
+                strcat(cli_set, k[ki].name);
+                strcat(cli_set, "\"");
+                first = 0;
+            }
+            strcat(cli_set, "]");
+        }
+
         /* Build JSON metrics response */
         pthread_mutex_lock(&stats_mtx);
         time_t uptime = time(NULL) - start_time;
-        char json[3072];
+        char json[8192];
         snprintf(json, sizeof(json),
             "{"
             "\"version\":\"%s\","
@@ -4362,7 +4442,13 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"submit_min_interval_ms\":%d,"
             "\"dropped_window\":%" DT_PRIu64 ","
             "\"submitted_window\":%" DT_PRIu64 ","
-            "\"effective_window_full\":%s"
+            "\"effective_window_full\":%s,"
+            "\"gpu_devices\":%s,"
+            "\"gpu_device_sel\":\"%s\","
+            "\"threads_config\":%d,"
+            "\"threads_auto\":%d,"
+            "\"config_path\":\"%s\","
+            "\"config_cli\":%s"
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4412,20 +4498,13 @@ static void *dagtech_metrics_thread(void *arg) {
             submit_min_interval_ms,
             (unsigned long long)win.dropped,
             (unsigned long long)win.submitted,
-            win.full ? "true" : "false");
+            win.full ? "true" : "false",
+            gpu_devs, gpu_sel, g_threads_cfg, g_threads_auto, cfg_path_esc, cli_set);
         pthread_mutex_unlock(&stats_mtx);
 
-        char response[4096];
-        snprintf(response, sizeof(response),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Connection: close\r\n"
-            "Content-Length: %d\r\n"
-            "\r\n%s",
-            (int)strlen(json), json);
-
-        send(cfd, response, (int)strlen(response), 0);
+        /* Same headers as before; the body no longer has to fit a fixed
+         * 4 KB response buffer, which the card list could have overflowed. */
+        http_send_json(cfd, 200, "OK", json);
         close(cfd);
     }
 
@@ -4958,6 +5037,7 @@ int main(int argc, char **argv) {
             break;
         }
     }
+    g_config_path = config_path;
 
     /* ---- Load config file (CLI args below will override) ---- */
     dagtech_load_config(config_path);
@@ -5003,16 +5083,26 @@ int main(int argc, char **argv) {
     /* ---- Pass 2: full argument parsing ---- */
     int do_save_config = 0;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--wallet") == 0 && i + 1 < argc)
+        if (strcmp(argv[i], "--wallet") == 0 && i + 1 < argc) {
             strncpy(wallet, argv[++i], sizeof(wallet) - 1);
-        else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_WALLET;
+        }
+        else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc) {
             strncpy(pool_host, argv[++i], sizeof(pool_host) - 1);
-        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_POOL;
+        }
+        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             pool_port = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_PORT;
+        }
+        else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             num_threads = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--worker") == 0 && i + 1 < argc)
+            g_cli_set |= CLI_THREADS;
+        }
+        else if (strcmp(argv[i], "--worker") == 0 && i + 1 < argc) {
             strncpy(worker_name, argv[++i], sizeof(worker_name) - 1);
+            g_cli_set |= CLI_WORKER;
+        }
         else if (strcmp(argv[i], "--password") == 0 && i + 1 < argc)
             strncpy(password, argv[++i], sizeof(password) - 1);
         else if (strcmp(argv[i], "--submit-margin") == 0 && i + 1 < argc) {
@@ -5072,6 +5162,7 @@ int main(int argc, char **argv) {
             gpu_platform = atoi(argv[++i]);
         else if (strcmp(argv[i], "--gpu-device") == 0 && i + 1 < argc) {
             const char *val = argv[++i];
+            g_cli_set |= CLI_GPU_DEVICE;
             if (strcmp(val, "all") == 0) {
                 gpu_use_all = 1;
             } else if (strchr(val, ',')) {
@@ -5136,8 +5227,10 @@ int main(int argc, char **argv) {
      * cores). Zero is NOT auto-detect: it means "no CPU threads at all", which
      * is the default because a GPU rig gains little from the CPU miner and the
      * cores are better left to feeding the cards. */
+    g_threads_cfg  = num_threads;
+    g_threads_auto = dagtech_detect_threads();
     if (num_threads < 0)
-        num_threads = dagtech_detect_threads();
+        num_threads = g_threads_auto;
 
     /* Seed the adaptive margin from the configured base. */
     active_margin = submit_margin;

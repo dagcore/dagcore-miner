@@ -6,6 +6,12 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `/metrics` fields for a configuration form, appended at the end:
+  `gpu_devices` (index and name of every card on the OpenCL platform),
+  `gpu_device_sel`, `threads_config` (`-1` = auto), `threads_auto`,
+  `config_path`, and `config_cli`, the settings given on the command line.
+
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
   a client closed the connection while the dashboard server was still sending
