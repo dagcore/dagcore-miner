@@ -15,6 +15,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     `/dev/urandom`); without it the control API was always disabled.
   - Windows: `overrides.env` is replaced with `MoveFileEx`; `rename()` fails
     there when the file exists, so only the first dashboard change was kept.
+  - Windows: `config.env`, `overrides.env` and the token live in
+    `%ProgramData%\DAGCore\` instead of `/etc` and `/var/lib`.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when

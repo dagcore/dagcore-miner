@@ -187,9 +187,23 @@ static char dashboard_dir[512] = "";
  * operator editing config.env never fights the API over the same file.
  *
  * Both paths, and the token file, can be redirected with environment
- * variables - needed to test without root, useful for containers. */
+ * variables - needed to test without root, useful for containers.
+ *
+ * On Windows all three live in %ProgramData%\DAGCore\ (config.env,
+ * overrides.env, api-token): machine-wide, like /etc and /var/lib, and
+ * writable without administrator rights for the account that creates it. */
 #define DT_TOKEN_PATH_DEFAULT     "/etc/dagcore-miner/api-token"
 #define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
+#ifdef _WIN32
+static const char *dt_win_datadir(void) {
+    static char dir[512];
+    if (!dir[0]) {
+        const char *pd = getenv("ProgramData");
+        snprintf(dir, sizeof(dir), "%s\\DAGCore", (pd && pd[0]) ? pd : "C:\\ProgramData");
+    }
+    return dir;
+}
+#endif
 
 static int  gpu_power_limit = 0;      /* GPU_POWER_LIMIT, watts; 0 = leave alone */
 /* A lock is stored as a step of the card's BASE clock table, not as the MHz
@@ -229,11 +243,25 @@ static double g_pl_min = -1, g_pl_max = -1, g_pl_default = -1, g_pl_current = -1
 
 static const char *dt_token_path(void) {
     const char *e = getenv("DAGCORE_TOKEN_FILE");
-    return (e && e[0]) ? e : DT_TOKEN_PATH_DEFAULT;
+    if (e && e[0]) return e;
+#ifdef _WIN32
+    static char p[600];
+    snprintf(p, sizeof(p), "%s\\api-token", dt_win_datadir());
+    return p;
+#else
+    return DT_TOKEN_PATH_DEFAULT;
+#endif
 }
 static const char *dt_overrides_path(void) {
     const char *e = getenv("DAGCORE_OVERRIDES_FILE");
-    return (e && e[0]) ? e : DT_OVERRIDES_PATH_DEFAULT;
+    if (e && e[0]) return e;
+#ifdef _WIN32
+    static char p[600];
+    snprintf(p, sizeof(p), "%s\\overrides.env", dt_win_datadir());
+    return p;
+#else
+    return DT_OVERRIDES_PATH_DEFAULT;
+#endif
 }
 
 /* Detected host CPU, shown at startup and in the metrics JSON. */
@@ -4583,8 +4611,11 @@ static int dagtech_file_exists(const char *p) {
  *   1. <exedir>/config.env          - next to the binary (e.g. install\bin\)
  *   2. <exedir>/../config.env       - install root, where the installer writes it
  *   3. ./config.env                 - current working directory
- *   4. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
- * If none exist, returns (4) so any "not found" message points somewhere sane.
+ *   4. Windows only: %ProgramData%\DAGCore\config.env - the Windows home of
+ *      the configuration, next to overrides.env and the token
+ *   5. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
+ * If none exist, returns (4) on Windows and (5) elsewhere, so a "not found"
+ * message - and --save-config - point somewhere sane.
  * exe_path is typically argv[0]; pass NULL to skip the exe-relative candidates. */
 static const char *dagtech_default_config_path(const char *exe_path) {
     static char path[1024];
@@ -4633,7 +4664,18 @@ static const char *dagtech_default_config_path(const char *exe_path) {
         return path;
     }
 
-    /* 4. legacy $USERPROFILE/dagtech-gpu-miner/config.env */
+#ifdef _WIN32
+    /* 4. %ProgramData%\DAGCore\config.env */
+    char win_cfg[600];
+    snprintf(win_cfg, sizeof(win_cfg), "%s\\config.env", dt_win_datadir());
+    if (dagtech_file_exists(win_cfg)) {
+        strncpy(path, win_cfg, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        return path;
+    }
+#endif
+
+    /* 5. legacy $USERPROFILE/dagtech-gpu-miner/config.env */
     const char *home = NULL;
 #ifdef _WIN32
     home = getenv("USERPROFILE");
@@ -4646,6 +4688,13 @@ static const char *dagtech_default_config_path(const char *exe_path) {
     else
         snprintf(path, sizeof(path), "dagtech-gpu-miner/config.env");
 
+#ifdef _WIN32
+    /* Nothing found: the legacy file is used only if it exists. */
+    if (!dagtech_file_exists(path)) {
+        strncpy(path, win_cfg, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+    }
+#endif
     return path;
 }
 
