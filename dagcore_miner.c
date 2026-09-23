@@ -26,7 +26,6 @@
     #pragma comment(lib, "ws2_32.lib")
     typedef int ssize_t;
   #endif
-  #define close closesocket
   #define usleep(x) Sleep((x)/1000)
   #define sleep(x) Sleep((x)*1000)
 #else
@@ -94,6 +93,20 @@
   #define DT_PRIu64 "I64u"
 #else
   #define DT_PRIu64 "llu"
+#endif
+
+/* Sockets. Winsock's SOCKET is an unsigned 64-bit handle: stored in an int it
+ * truncates, and "< 0" can never catch INVALID_SOCKET. Closing needs
+ * closesocket(); a "#define close closesocket" also renamed the CRT's own
+ * close() declaration and broke the build. */
+#ifdef _WIN32
+  typedef SOCKET dt_sock_t;
+  #define DT_BAD_SOCK      INVALID_SOCKET
+  #define dt_closesock(s)  closesocket(s)
+#else
+  typedef int dt_sock_t;
+  #define DT_BAD_SOCK      (-1)
+  #define dt_closesock(s)  close(s)
 #endif
 
 /* =========================================================================
@@ -300,7 +313,7 @@ static char gpu_autotune_cache[512]     = "";   /* AUTOTUNE_CACHE: file path; em
                                                    at startup, see dagtech_default_autotune_cache() */
 
 /* Stratum connection */
-static int sockfd = -1;
+static dt_sock_t sockfd = DT_BAD_SOCK;
 static pthread_mutex_t sock_mtx  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t job_mtx   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t stats_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -2175,14 +2188,14 @@ static int dagtech_connect_pool(void) {
 
     for (rp = res; rp != NULL; rp = rp->ai_next) {
         sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (sockfd < 0) continue;
+        if (sockfd == DT_BAD_SOCK) continue;
         if (connect(sockfd, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
-        close(sockfd);
-        sockfd = -1;
+        dt_closesock(sockfd);
+        sockfd = DT_BAD_SOCK;
     }
     freeaddrinfo(res);
 
-    if (sockfd < 0) {
+    if (sockfd == DT_BAD_SOCK) {
         fprintf(stderr, "[DagCore] Failed to connect to %s:%d\n", pool_host, pool_port);
         return -1;
     }
@@ -3385,7 +3398,7 @@ static void control_init(void) {
 }
 
 /* ---- tiny HTTP helpers (this server speaks just enough HTTP) ---- */
-static void http_send_json(int fd, int status, const char *reason, const char *body) {
+static void http_send_json(dt_sock_t fd, int status, const char *reason, const char *body) {
     char hdr[256];
     snprintf(hdr, sizeof(hdr),
              "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
@@ -3395,7 +3408,7 @@ static void http_send_json(int fd, int status, const char *reason, const char *b
     send(fd, body, (int)strlen(body), 0);
 }
 
-static void http_send_err(int fd, int status, const char *reason, const char *msg) {
+static void http_send_err(dt_sock_t fd, int status, const char *reason, const char *msg) {
     char body[320];
     snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", msg);
     http_send_json(fd, status, reason, body);
@@ -3452,7 +3465,7 @@ static void http_path(const char *req, char *out, size_t out_size) {
  *
  * The name is chosen from a fixed set below, never taken from the request, so
  * there is no path for a caller to traverse out of the directory. */
-static void serve_dashboard_file(int cfd, const char *name, const char *ctype,
+static void serve_dashboard_file(dt_sock_t cfd, const char *name, const char *ctype,
                                  const char *extra_hdr) {
     char path[600];
     snprintf(path, sizeof(path), "%s/%s", dashboard_dir, name);
@@ -3507,7 +3520,7 @@ static int http_header(const char *req, const char *name, char *out, size_t out_
 
 /* Route and serve one control request. Auth first, capability second, then
  * the endpoint - so an unauthenticated caller learns nothing about the rig. */
-static void dagtech_handle_control(int cfd, const char *req, const char *body) {
+static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *body) {
     char tok[128] = "";
     if (!g_api_token[0] ||
         http_header(req, "x-dagcore-token", tok, sizeof(tok)) != 0 ||
@@ -4041,7 +4054,7 @@ static window_stats_t stats_window(void) {
 
 /* GET /history: the buffer oldest first, plus the miner's clock ("now"), so
  * the page can place the samples even when its own clock disagrees. */
-static void serve_history(int cfd) {
+static void serve_history(dt_sock_t cfd) {
     /* ~115 bytes per sample in practice; 192 leaves room for huge values. */
     size_t cap = 128 + (size_t)HIST_LEN * 192;
     char *out = malloc(cap);
@@ -4077,12 +4090,8 @@ static void serve_history(int cfd) {
 static void *dagtech_metrics_thread(void *arg) {
     (void)arg;
 
-    #ifdef _WIN32
-    SOCKET srv = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    #else
-    int srv = socket(AF_INET, SOCK_STREAM, 0);
-    #endif
-    if (srv < 0) {
+    dt_sock_t srv = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (srv == DT_BAD_SOCK) {
         fprintf(stderr, "[DagCore] Metrics server failed to create socket\n");
         return NULL;
     }
@@ -4098,7 +4107,7 @@ static void *dagtech_metrics_thread(void *arg) {
 
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         fprintf(stderr, "[DagCore] Metrics bind failed on %s:%d\n", metrics_bind, metrics_port);
-        close(srv);
+        dt_closesock(srv);
         return NULL;
     }
     listen(srv, 5);
@@ -4111,12 +4120,11 @@ static void *dagtech_metrics_thread(void *arg) {
         struct sockaddr_in client;
         #ifdef _WIN32
         int clen = sizeof(client);
-        SOCKET cfd = accept(srv, (struct sockaddr *)&client, &clen);
         #else
         socklen_t clen = sizeof(client);
-        int cfd = accept(srv, (struct sockaddr *)&client, &clen);
         #endif
-        if (cfd < 0) continue;
+        dt_sock_t cfd = accept(srv, (struct sockaddr *)&client, &clen);
+        if (cfd == DT_BAD_SOCK) continue;
 
         /* A stalled client must not wedge the whole (single-threaded) server. */
 #ifndef _WIN32
@@ -4148,14 +4156,14 @@ static void *dagtech_metrics_thread(void *arg) {
             if ((long)(have - (size_t)(body - reqbuf)) >= want) break;
             if (have >= sizeof(reqbuf) - 1) break;
         }
-        if (have == 0) { close(cfd); continue; }
+        if (have == 0) { dt_closesock(cfd); continue; }
         reqbuf[have] = '\0';
         if (!body) body = "";
 
         /* ---- Control API (#46): token-protected POST ---- */
         if (strncmp(reqbuf, "POST ", 5) == 0) {
             dagtech_handle_control(cfd, reqbuf, body);
-            close(cfd);
+            dt_closesock(cfd);
             continue;
         }
 
@@ -4164,7 +4172,7 @@ static void *dagtech_metrics_thread(void *arg) {
             http_path(reqbuf, path, sizeof(path));
             if (strcmp(path, "/history") == 0) {
                 serve_history(cfd);
-                close(cfd);
+                dt_closesock(cfd);
                 continue;
             }
         }
@@ -4190,7 +4198,7 @@ static void *dagtech_metrics_thread(void *arg) {
                 extra = "Cache-Control: max-age=86400\r\n";
             }
             serve_dashboard_file(cfd, name, ctype, extra);
-            close(cfd);
+            dt_closesock(cfd);
             continue;
         }
 
@@ -4426,10 +4434,10 @@ static void *dagtech_metrics_thread(void *arg) {
             (int)strlen(json), json);
 
         send(cfd, response, (int)strlen(response), 0);
-        close(cfd);
+        dt_closesock(cfd);
     }
 
-    close(srv);
+    dt_closesock(srv);
     return NULL;
 }
 
@@ -4443,7 +4451,7 @@ static void *dagtech_metrics_thread(void *arg) {
  * shutdown until systemd's TimeoutStopSec fires SIGKILL.
  * shutdown() makes the pending recv() return 0 at once; close() follows. */
 static void dagtech_unblock_pool_socket(void) {
-    if (sockfd < 0) return;
+    if (sockfd == DT_BAD_SOCK) return;
 #ifdef _WIN32
     shutdown(sockfd, SD_BOTH);
 #else
@@ -5345,7 +5353,7 @@ int main(int argc, char **argv) {
             running = 0;
             dagtech_unblock_pool_socket();
             pthread_join(recv_tid, NULL);
-            close(sockfd);
+            dt_closesock(sockfd);
             if (keep_alive) sleep(10);
             continue;
         }
@@ -5512,7 +5520,7 @@ int main(int argc, char **argv) {
         pthread_join(recv_tid, NULL);
         free(threads);
         free(tids);
-        close(sockfd);
+        dt_closesock(sockfd);
 
         if (keep_alive) {
             printf("[DagCore] Reconnecting in 10s...\n");
