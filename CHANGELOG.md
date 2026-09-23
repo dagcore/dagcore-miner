@@ -13,6 +13,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   service, installer or GPU tuning (NVML); it is not ready for use.
   - Windows: the control API token comes from `BCryptGenRandom` (there is no
     `/dev/urandom`); without it the control API was always disabled.
+  - Windows: `overrides.env` is replaced with `MoveFileEx`; `rename()` fails
+    there when the file exists, so only the first dashboard change was kept.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when

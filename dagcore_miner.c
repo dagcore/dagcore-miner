@@ -3263,6 +3263,18 @@ static void overrides_load(void) {
     if (n) printf("[DagCore] Overrides loaded from %s (%d key%s)\n", path, n, n == 1 ? "" : "s");
 }
 
+/* Put tmp in place of path in one step. POSIX rename() replaces an existing
+ * target; Windows rename() refuses one, so after the first save every later
+ * change would have been lost. MoveFileEx with REPLACE_EXISTING is the Windows
+ * equivalent, and WRITE_THROUGH returns only once the move is on disk. */
+static int dt_replace_file(const char *tmp, const char *path) {
+#ifdef _WIN32
+    return MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+#else
+    return rename(tmp, path);
+#endif
+}
+
 /* Rewrite the override file with one key changed. Every other line is copied
  * through verbatim, and the result is renamed into place, so a crash halfway
  * cannot leave a truncated file behind. */
@@ -3304,7 +3316,7 @@ static int overrides_set(const char *key, const char *value) {
 #ifndef _WIN32
     chmod(tmp, 0640);
 #endif
-    if (rename(tmp, path) != 0) { remove(tmp); return -1; }
+    if (dt_replace_file(tmp, path) != 0) { remove(tmp); return -1; }
     return 0;
 }
 
