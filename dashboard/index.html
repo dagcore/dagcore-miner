@@ -26,6 +26,7 @@
   --line:rgba(110,155,220,.28); --line-soft:rgba(90,130,190,.12);
   --text:#e8eef7; --text-2:#cfe0f4; --muted:#a9bcd3; --muted-2:#8fa5bf; --label:#8aa0bc;
   --blue:#4d9dff; --mine:#ffab2e; --mine-soft:#ffc878;
+  --explore:#5aa7ff; --build:#c07cff; --verify:#3fe08a;
   --ok:#3fe08a; --warn:#f2c66d; --bad:#f4a29c;
   --radius:14px;
   --pad-top:env(safe-area-inset-top,0px);
@@ -102,14 +103,20 @@ a.helplink:hover{background:rgba(77,157,255,.16)}
 .stat .sub{color:var(--muted-2);font-size:12px;margin-top:6px}
 .stat .sub + .sub{margin-top:2px}
 .stat .why{color:var(--label);font-size:11px}
-/* Primary card takes the site's "Mine" accent treatment. */
-.stat.primary{
-  border-color:rgba(255,171,46,.5);
-  background:linear-gradient(160deg,rgba(255,171,46,.14),rgba(10,14,22,.88) 70%);
-  box-shadow:0 0 34px rgba(255,171,46,.09) inset,0 12px 40px rgba(0,0,0,.45);
+/* Coloured cards, as on dagcore.net/mining.html: each stat has its own
+ * accent (--c) for the border, the tint and the label; the number stays
+ * white. Unclassed stats fall back to blue, like the site's. */
+.card.stat{
+  --c:var(--blue);
+  border:1px solid color-mix(in srgb,var(--c) 50%,transparent);
+  background:linear-gradient(160deg,color-mix(in srgb,var(--c) 14%,#0a0e16),rgba(10,14,22,.88) 70%);
+  box-shadow:0 0 34px color-mix(in srgb,var(--c) 9%,transparent) inset,0 12px 40px rgba(0,0,0,.45);
 }
-.stat.primary .label{color:var(--mine-soft)}
-.stat.primary .big{color:var(--mine)}
+.stat .label{color:var(--c);font-weight:600}
+.stat.c-mine{--c:var(--mine)}
+.stat.c-verify{--c:var(--verify)}
+.stat.c-explore{--c:var(--explore)}
+.stat.c-build{--c:var(--build)}
 
 /* ---------- chart ---------- */
 .chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
@@ -290,24 +297,24 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
   </header>
 
   <section class="grid stats">
-    <div class="card stat primary">
+    <div class="card stat c-mine">
       <span class="label">Total hashrate</span>
       <div class="big"><span id="hrTotal">&mdash;</span><span class="u" id="hrTotalU"></span></div>
       <div class="sub">raw work of the card(s)</div>
       <div class="sub" id="hrTotalSub">&nbsp;</div>
     </div>
-    <div class="card stat">
+    <div class="card stat c-verify">
       <span class="label">Effective hashrate</span>
       <div class="big"><span id="hrEff">&mdash;</span><span class="u" id="hrEffU"></span></div>
       <div class="sub">work the pool accepted</div>
       <div class="sub"><span id="hrEffSub">&nbsp;</span> <a class="why" href="help#effective">why?</a></div>
     </div>
-    <div class="card stat">
+    <div class="card stat c-explore">
       <span class="label">GPU hashrate</span>
       <div class="big"><span id="hrGpu">&mdash;</span><span class="u" id="hrGpuU"></span></div>
       <div class="sub" id="hrGpuSub">&nbsp;</div>
     </div>
-    <div class="card stat">
+    <div class="card stat c-build">
       <span class="label">CPU hashrate</span>
       <div class="big"><span id="hrCpu">&mdash;</span><span class="u" id="hrCpuU"></span></div>
       <div class="sub" id="hrCpuSub">&nbsp;</div>
