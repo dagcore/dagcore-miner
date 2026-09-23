@@ -144,29 +144,28 @@ that stays is not.</p>
 the card: every hash it computes. <b>Effective</b> is the work the pool
 accepted: the accepted shares of the last ten minutes, each counted as the
 hashes it takes on average to find a share at its difficulty. The percentage
-compares the two over the same ten minutes. On the RTX 3080 it sits around
-90–95%. Over time it stays below 100%, and the gap has three causes:</p>
+compares the two over the same ten minutes. On the RTX 3080 in normal
+running it reads close to 100% — 99.4% measured. Over the long run it can only
+be lower than raw, and the gap has three causes:</p>
 <ul>
-<li><b>Rate limit</b> — the largest one on this rig. The miner leaves a
-minimum gap between two share submissions, 20 ms by default, to protect the
-pool from a runaway loop. A share found inside that gap is dropped, never
-sent. Shares come in bursts, so this is not rare: about 6% of the shares
-found here, twice the stale rate. The count is under
-<a href="#dropped">Advanced: Dropped shares</a>.</li>
 <li><b>Stale shares</b> — valid work that arrived after the pool had moved to
-a new job. It cost hashes and earns nothing. About 3% of shares on this
-rig.</li>
+a new job. It cost hashes and earns nothing.</li>
 <li><b>Wrong shares from an overclock</b> — a card pushed too far computes
 answers the pool refuses. The card still reports full hashrate, because it
 is still hashing; only effective drops. This is the case the figure is best
 at catching: raw flat, effective falling, rejected climbing.</li>
+<li><b>Rate limit</b> — the miner leaves a minimum gap between two share
+submissions, 20 ms by default, and drops a share found inside it. In normal
+running this costs next to nothing; it bites only in the first minutes after
+a start. See <a href="#dropped">Advanced: Dropped shares</a>.</li>
 </ul>
-<p>Effective is also noisier than raw. It is built from about a hundred
-shares per ten minutes, and finding a share is luck, so a few percent up or
-down from one window to the next means nothing. A figure above 100% for a
-while is the same luck, in your favour. What counts is a drop that
-lasts, together with stale or rejected shares going up. During the first
-ten minutes after a start the window is shorter, and the card says so.</p>
+<p><b>Effective is a statistical estimate built from shares, not a
+measurement, so over a short window it can come out above raw — that is luck,
+not extra work.</b> It rests on about a hundred shares per ten minutes, so a
+few percent up or down from one window to the next means nothing either.
+What counts is a drop that lasts, together with stale or rejected shares
+going up. During the first ten minutes after a start the window is shorter,
+and the card says so.</p>
 
 <h3>Efficiency</h3>
 <p>GPU hashrate divided by GPU power draw, in <b>kH/W</b> — how much work you
@@ -367,14 +366,24 @@ locked; the software cannot find out.</p>
 <h3 id="dropped">Advanced: Dropped shares</h3>
 <p><b>What it shows.</b> Shares the card found that the miner never sent to
 the pool, because they came less than the submit gap after the previous one.
-Next to the count: its share of everything found, and the gap in use.</p>
+Two figures: how many in the <b>last ten minutes</b>, with their share of
+everything found in that time, and the <b>total since the miner
+started</b>. Then the gap in use.</p>
+<p><b>Read the ten-minute figure, not the total.</b> The total comes almost
+entirely from the first minutes after a start: the pool begins every
+connection at a low difficulty and raises it over the first minutes
+(vardiff), and until it does the card finds shares faster than one every
+20 ms. Once the difficulty settles, drops all but stop. On this rig the 552
+dropped since a restart came almost all from those first minutes, and in
+normal running effective hashrate was 99.4% of raw. A large total is not an
+ongoing loss.</p>
 <p><b>Why it is here and not on the front page.</b> It is not a fault. A
 dropped share is not a rejected one: the card did nothing wrong, and it says
 nothing about an overclock. It is the price of the limiter, and on its own it
 would look like an alarm.</p>
-<p><b>What to do with it.</b> Usually nothing. If it stays well above the
-stale rate — this rig drops about 6% with the 20 ms default, against 3%
-stale — you can lower the gap in the configuration file:
+<p><b>What to do with it.</b> Usually nothing; keep the 20 ms default. Only
+if the <em>ten-minute</em> figure stays above a percent or two in normal
+running is it worth lowering the gap in the configuration file:
 <code>SUBMIT_MIN_INTERVAL_MS=10</code>, or <code>0</code> for no limit, then
 restart the miner. Fewer drops means more accepted work, as long as the pool
 tolerates the burst; if it starts refusing shares or disconnecting, go back

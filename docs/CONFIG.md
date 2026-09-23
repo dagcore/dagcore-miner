@@ -59,7 +59,7 @@ ignored. Values are taken literally — no quotes, no shell expansion.
 |-----|--------|---------|--------------|
 | `SUBMIT_MARGIN` | ≥ 1.0 | `1.0` | Multiplier on the share threshold. Higher submits fewer, safer shares. |
 | `AUTO_THRESHOLD` | `0`/`1` | `1` | Raise the margin automatically after low-difficulty rejects. |
-| `SUBMIT_MIN_INTERVAL_MS` | 0–1000 | `20` | Minimum gap between two share submissions. A share found inside it is dropped, never sent (`dropped` in `/metrics`, and under Advanced on the dashboard). `0` = no limit. Config file only, no command-line flag. |
+| `SUBMIT_MIN_INTERVAL_MS` | 0–1000 | `20` | Minimum gap between two share submissions. A share found inside it is dropped, never sent (`dropped` since start and `dropped_window` for the last 10 minutes in `/metrics`, and under Advanced on the dashboard; the total comes mostly from the first minutes after a start). `0` = no limit. Config file only, no command-line flag. |
 
 ### GPU
 

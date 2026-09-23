@@ -341,8 +341,9 @@ static time_t   start_time;
 typedef struct {
     int64_t  t;
     double   total, gpu, cpu;      /* served at /history */
-    uint64_t hashes;               /* total_hashes then - not served; the */
-    double   accepted_work;        /* two feed the 10-minute window below */
+    uint64_t hashes;               /* counters then - not served; they */
+    double   accepted_work;        /* feed the 10-minute window below */
+    uint64_t submitted, dropped;
 } hist_sample_t;
 static hist_sample_t   hist_buf[HIST_LEN];
 static int             hist_head  = 0;   /* next slot to write */
@@ -360,6 +361,13 @@ static pthread_mutex_t hist_mtx   = PTHREAD_MUTEX_INITIALIZER;
 #define HASHES_PER_DIFF1 (18446744073709551616.0 / (double)0x0000FFFF00000000ULL)
 #define EFFECTIVE_WINDOW_S 600
 static double accepted_work = 0.0;         /* cumulative, under stats_mtx */
+
+/* The counters above, over the last EFFECTIVE_WINDOW_S (see stats_window). */
+typedef struct {
+    double   eff, raw;             /* H/s */
+    long     span_s;
+    uint64_t submitted, dropped;
+} window_stats_t;
 
 /* Per-session hash counters for hashrate tracking */
 static uint64_t cpu_hashes_session = 0;
@@ -2456,8 +2464,9 @@ static uint64_t last_submit_ms = 0;
 static uint64_t rate_limited_shares = 0;  /* #44: shares dropped by the limiter */
 static pthread_mutex_t submit_rate_mtx = PTHREAD_MUTEX_INITIALIZER;
 /* SUBMIT_MIN_INTERVAL_MS in config.env; 0 turns the limiter off. On the
- * production rig 20 ms dropped ~6% of found shares, more than went stale -
- * the largest single gap between raw and effective hashrate. */
+ * production rig 20 ms costs next to nothing in steady state (effective 99.4%
+ * of raw); its drops come almost all from the first minutes after a start,
+ * while vardiff still has the difficulty low and shares come in floods. */
 #define SUBMIT_MIN_INTERVAL_MS_DEFAULT 20
 #define SUBMIT_MIN_INTERVAL_MS_MAX     1000
 static int submit_min_interval_ms = SUBMIT_MIN_INTERVAL_MS_DEFAULT;
@@ -3946,9 +3955,13 @@ static void *dagtech_history_thread(void *arg) {
     while (keep_alive) {
         sleep(HIST_INTERVAL_S);
         pthread_mutex_lock(&stats_mtx);
-        uint64_t hashes = total_hashes;
-        double   work   = accepted_work;
+        uint64_t hashes    = total_hashes;
+        double   work      = accepted_work;
+        uint64_t submitted = total_submitted;
         pthread_mutex_unlock(&stats_mtx);
+        pthread_mutex_lock(&submit_rate_mtx);
+        uint64_t dropped = rate_limited_shares;
+        pthread_mutex_unlock(&submit_rate_mtx);
         pthread_mutex_lock(&hist_mtx);
         hist_sample_t *s = &hist_buf[hist_head];
         s->t     = (int64_t)time(NULL);
@@ -3957,6 +3970,8 @@ static void *dagtech_history_thread(void *arg) {
         s->cpu   = cpu_hashrate;
         s->hashes        = hashes;
         s->accepted_work = work;
+        s->submitted     = submitted;
+        s->dropped       = dropped;
         hist_head = (hist_head + 1) % HIST_LEN;
         if (hist_count < HIST_LEN) hist_count++;
         pthread_mutex_unlock(&hist_mtx);
@@ -3964,20 +3979,27 @@ static void *dagtech_history_thread(void *arg) {
     return NULL;
 }
 
-/* Effective and raw hashrate over the last EFFECTIVE_WINDOW_S: the counters
- * now minus the oldest history sample still inside the window. Until the
- * miner has run that long the window starts at start_time, where both
- * counters were 0. Both rates cover the same span, so their ratio compares
- * like with like - the 10s raw figure on the dashboard would make it jump. */
-static void effective_window(double *eff, double *raw, long *span_s) {
+/* Effective and raw hashrate, and the submitted and dropped shares, over the
+ * last EFFECTIVE_WINDOW_S: the counters now minus the oldest history sample
+ * still inside the window. Until the miner has run that long the window
+ * starts at start_time, where every counter was 0. The two rates cover the
+ * same span, so their ratio compares like with like - the 10s raw figure on
+ * the dashboard would make it jump. The dropped count gets a window because
+ * the cumulative one is mostly the first minutes after a start, while vardiff
+ * still has the difficulty low; on its own it reads like a constant loss. */
+static window_stats_t stats_window(void) {
     time_t now = time(NULL);
     pthread_mutex_lock(&stats_mtx);
-    uint64_t hashes = total_hashes;
-    double   work   = accepted_work;
+    uint64_t hashes    = total_hashes;
+    double   work      = accepted_work;
+    uint64_t submitted = total_submitted;
     pthread_mutex_unlock(&stats_mtx);
+    pthread_mutex_lock(&submit_rate_mtx);
+    uint64_t dropped = rate_limited_shares;
+    pthread_mutex_unlock(&submit_rate_mtx);
 
     int64_t  t0 = (int64_t)start_time;
-    uint64_t h0 = 0;
+    uint64_t h0 = 0, s0 = 0, d0 = 0;
     double   w0 = 0.0;
     if ((int64_t)now - t0 > EFFECTIVE_WINDOW_S) {
         pthread_mutex_lock(&hist_mtx);
@@ -3986,16 +4008,20 @@ static void effective_window(double *eff, double *raw, long *span_s) {
             const hist_sample_t *s = &hist_buf[(first + i) % HIST_LEN];
             if (s->t >= (int64_t)now - EFFECTIVE_WINDOW_S) {
                 t0 = s->t; h0 = s->hashes; w0 = s->accepted_work;
+                s0 = s->submitted; d0 = s->dropped;
                 break;
             }
         }
         pthread_mutex_unlock(&hist_mtx);
     }
 
-    long span = (long)((int64_t)now - t0);
-    *span_s = span;
-    *eff = span > 0 ? (work - w0) / span : 0.0;
-    *raw = span > 0 ? (double)(hashes - h0) / span : 0.0;
+    window_stats_t w;
+    w.span_s    = (long)((int64_t)now - t0);
+    w.eff       = w.span_s > 0 ? (work - w0) / w.span_s : 0.0;
+    w.raw       = w.span_s > 0 ? (double)(hashes - h0) / w.span_s : 0.0;
+    w.submitted = submitted - s0;
+    w.dropped   = dropped - d0;
+    return w;
 }
 
 /* GET /history: the buffer oldest first, plus the miner's clock ("now"), so
@@ -4215,10 +4241,8 @@ static void *dagtech_metrics_thread(void *arg) {
                 (lock_mem_eff < g_mem_lo || lock_mem_eff > g_mem_hi)) lock_stale = 1;
         }
 
-        /* Before stats_mtx: effective_window() takes it itself. */
-        double eff_hr, eff_raw;
-        long   eff_span;
-        effective_window(&eff_hr, &eff_raw, &eff_span);
+        /* Before stats_mtx: stats_window() takes it itself. */
+        window_stats_t win = stats_window();
 
         /* Build JSON metrics response */
         pthread_mutex_lock(&stats_mtx);
@@ -4316,7 +4340,9 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"effective_raw_hashrate\":%.2f,"
             "\"effective_pct\":%.1f,"
             "\"effective_window_s\":%ld,"
-            "\"submit_min_interval_ms\":%d"
+            "\"submit_min_interval_ms\":%d,"
+            "\"dropped_window\":%" DT_PRIu64 ","
+            "\"submitted_window\":%" DT_PRIu64
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4362,8 +4388,10 @@ static void *dagtech_metrics_thread(void *arg) {
             (gpu_enabled == 1) ? 1 : 0,
             g_num_gpus,
             gpu_hr_arr,
-            eff_hr, eff_raw, eff_raw > 0 ? 100.0 * eff_hr / eff_raw : 0.0, eff_span,
-            submit_min_interval_ms);
+            win.eff, win.raw, win.raw > 0 ? 100.0 * win.eff / win.raw : 0.0, win.span_s,
+            submit_min_interval_ms,
+            (unsigned long long)win.dropped,
+            (unsigned long long)win.submitted);
         pthread_mutex_unlock(&stats_mtx);
 
         char response[4096];

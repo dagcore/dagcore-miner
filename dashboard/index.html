@@ -528,8 +528,9 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
     <div class="set-row">
       <span class="lab"><b>Dropped shares</b>
         <small>Found by the card but never sent: they came too soon after the
-        previous share. Not an error. Set by SUBMIT_MIN_INTERVAL_MS in the
-        configuration file. <a href="help#dropped">What to do with it</a></small></span>
+        previous share. Not an error. The total comes mostly from the first
+        minutes after a start; the last 10 minutes is what counts.
+        <a href="help#dropped">More</a></small></span>
       <span class="set-ctl wide"><span class="ro-val" id="droppedVal">&mdash;</span></span>
     </div>
 
@@ -712,11 +713,23 @@ function render(d){
 
   /* Advanced: shares dropped by the submit gap, against everything found. */
   if (typeof d.dropped === "number"){
-    var found = (d.submitted || 0) + d.dropped;
     var gap = typeof d.submit_min_interval_ms === "number"
       ? (d.submit_min_interval_ms ? d.submit_min_interval_ms + " ms gap" : "no limit") : "";
-    txt("droppedVal", num(d.dropped) + (found ? " \u00b7 " + pct(d.dropped, found) + " of found" : "")
-      + (gap ? " \u00b7 " + gap : ""));
+    var parts = [];
+    /* The window is the effective hashrate's: 10 minutes, shorter just
+     * after a start - and then it is the same as the total, so say it once. */
+    if (typeof d.dropped_window === "number" && (d.effective_window_s || 0) >= 600){
+      var wf = (d.submitted_window || 0) + d.dropped_window;
+      parts.push(num(d.dropped_window) + " in the last 10 min"
+        + (wf ? " (" + pct(d.dropped_window, wf) + " of found)" : ""));
+      parts.push(num(d.dropped) + " since start");
+    } else {
+      var found = (d.submitted || 0) + d.dropped;
+      parts.push(num(d.dropped) + " since start"
+        + (found ? " (" + pct(d.dropped, found) + " of found)" : ""));
+    }
+    if (gap) parts.push(gap);
+    txt("droppedVal", parts.join(" \u00b7 "));
   }
 
   var tot = d.hashrate || 0;
