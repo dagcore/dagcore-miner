@@ -89,7 +89,12 @@
   #include <cpuid.h>
 #endif
 
-#ifdef _WIN32
+/* Every uint64_t printed through this is cast to unsigned long long, so "llu"
+ * fits everywhere. MinGW used to get "I64u", but with -std=gnu11 it compiles
+ * against its ANSI stdio, which reads that as a 32-bit %u and shifts every
+ * argument after it - /metrics would come out corrupt. Only MSVC's own
+ * printf needs I64. */
+#if defined(_MSC_VER)
   #define DT_PRIu64 "I64u"
 #else
   #define DT_PRIu64 "llu"
