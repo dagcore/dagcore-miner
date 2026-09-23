@@ -8,6 +8,7 @@ Every setting, option, endpoint and metrics field.
 - [Command-line options](#command-line-options)
 - [Control API](#control-api)
 - [/metrics fields](#metrics-fields)
+- [/history](#history)
 
 ## Where settings come from
 
@@ -203,7 +204,9 @@ second describes a state the card has been in all along.
 
 ## /metrics fields
 
-`GET /metrics` returns one JSON object, 86 fields. No authentication.
+`GET /metrics` returns one JSON object, 94 fields. No authentication. New
+fields are only ever appended at the end, so the order of the existing ones
+does not change.
 
 ### Identity
 `version`, `pool`, `worker`, `wallet` (abbreviated), `wallet_full`,
@@ -215,10 +218,28 @@ second describes a state the card has been in all along.
 seconds. `gpu_hashrates` — array, one per card. `total_hashes` — since this
 process started.
 
+### Effective hashrate
+Over a sliding window of the last 10 minutes — shorter during the first 10
+minutes after a start:
+
+| Field | Means |
+|-------|-------|
+| `effective_hashrate` | Accepted work as H/s: each accepted share counted at the pool difficulty of its job, × 65537 hashes per difficulty-1 share |
+| `effective_raw_hashrate` | Raw hashrate averaged over the same window |
+| `effective_pct` | The first as a percentage of the second |
+| `effective_window_s` | The window's length in seconds; 595–600 once full |
+| `effective_window_full` | `true` once the window no longer reaches back to the start. Use this, not `effective_window_s >= 600` |
+
+The 65537 is not Bitcoin's 2^32: it comes from this miner's share target, see
+[DEVELOPMENT.md](DEVELOPMENT.md#traps).
+
 ### Shares
 `submitted`, `accepted`, `rejected`, `stale`, `dropped`, and the same five split
 as `cpu_*` and `gpu_*`. `dropped` counts shares discarded by the submission rate
-limiter.
+limiter, since start; most of it comes from the first minutes after a start,
+while the pool's difficulty is still low. `dropped_window` and
+`submitted_window` are the same two counts over the effective hashrate's
+window. `submit_min_interval_ms` is the gap in force (`SUBMIT_MIN_INTERVAL_MS`).
 
 ### Health
 `cpu_temp`, `gpu_temp`, `gpu_usage`, `gpu_memory`, `gpu_power` — `-1` when a
@@ -263,3 +284,19 @@ card's range.
 
 ### Session
 `difficulty`, `uptime` (seconds, this process), `job_id`
+
+## /history
+
+`GET /history` returns the last 30 minutes of hashrate, kept by the miner in
+memory: one sample every 5 seconds, at most 360. It is empty after a miner
+restart and never written to disk. No authentication.
+
+```json
+{"interval_s":5,"now":1790136380,"samples":[
+  {"t":1790136372,"hashrate":1650420.00,"gpu_hashrate":1643315.20,
+   "cpu_hashrate":7104.80,"effective_hashrate":1641003.50}, ...]}
+```
+
+Samples are oldest first. `t` and `now` are Unix seconds on the miner's clock;
+a client should place samples by `now - t` rather than trust its own clock.
+`effective_hashrate` is `null` until the effective window is full.

@@ -182,6 +182,12 @@ Run the installer again. It notices the existing installation and offers:
 
 `--yes` picks Upgrade.
 
+To upgrade to a new version, fetch it first (`git pull` in the directory you
+cloned), then run the installer. What changed is in
+[CHANGELOG.md](../CHANGELOG.md). Settings added by a new version are not
+written into an existing `config.env`; while they are missing, the miner uses
+their defaults, and [CONFIG.md](CONFIG.md) lists them.
+
 To remove it:
 
 ```sh

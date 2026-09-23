@@ -44,8 +44,10 @@ sudo ./install.sh --wallet 0xYOURADDRESS --yes
 ## The dashboard
 
 Once the miner runs, open **http://localhost:8881/** — hashrate, temperatures,
-shares, and controls for power limit, clocks and offsets. A help page explaining
-every number and setting is at **/help**.
+shares, and controls for power limit, clocks and offsets. Next to the raw
+hashrate it shows the **effective** one, the work the pool actually accepted,
+and a 30-minute chart of both that the miner keeps, so it survives a page
+reload. A help page explaining every number and setting is at **/help**.
 
 By default it listens on localhost only. Read the
 [security notes](docs/INSTALL.md#security) before opening it to your network.
@@ -75,6 +77,7 @@ tuning moves the number and core clock mostly does not.
 | [docs/CONFIG.md](docs/CONFIG.md) | Every setting, CLI option, API endpoint and metrics field |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Building on the source, and the traps in it |
 | `/help` on the dashboard | What each number and control means, in the browser |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 
 ## Contributors
 

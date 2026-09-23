@@ -16,7 +16,7 @@
 | `dashboard/` | `index.html`, `help.html`, shared `fonts.css` and `logo.webp`. |
 | `install.sh`, `uninstall.sh` | Packaging. |
 
-**One `.c` file.** Around 4700 lines, no build system beyond a Makefile, no
+**One `.c` file.** Around 5500 lines, no build system beyond a Makefile, no
 dependency except libc, pthreads and `libOpenCL`. Inherited from DagTech Miner
 and kept: a miner is one long-running process with a handful of threads, and
 splitting it would add build machinery without making anything clearer. Stratum
@@ -156,10 +156,30 @@ conventional but unverified here — the core offset on the test card was 0.
 **`nice()` returns the new priority**, so `-1` is a legitimate success. Clear
 `errno` before calling it.
 
+**A difficulty-1 share is ~65537 hashes, not 2^32.** A share passes when the top
+64 bits of its hash are `<= 0xFFFF00000000 / difficulty`, so one share at
+difficulty 1 takes 2^64 / 0xFFFF00000000 hashes on average. Bitcoin's 2^32
+turns the effective hashrate into 10^11 H/s. Checked against 682 accepted
+shares on the production rig: raw 1.65 MH/s, effective 1.56 MH/s with the
+right constant (`HASHES_PER_DIFF1`).
+
+**A full 10-minute window is seldom 600 seconds.** The effective window starts
+at the oldest 5-second history sample inside it, so once full it spans 595–600s.
+Testing `effective_window_s >= 600` fails on almost every poll; that is what
+`effective_window_full` is for.
+
 **`make install` creates `config.env` from the example when none exists.**
 Anything that writes a configuration must record whether one existed *before*
 it ran. `install.sh` did not, kept the freshly-dropped template, and shipped a
 rig mining to `0x0000...0000`.
+
+## Releases
+
+Every functional change goes into [CHANGELOG.md](../CHANGELOG.md), under
+`[Unreleased]`, in the same commit as the change. A release moves those entries
+under a new version heading and bumps `DAGTECH_VERSION` in `dagcore_miner.c`,
+following semantic versioning: new features raise the minor version, fixes
+alone the patch.
 
 ## Not done yet
 
