@@ -185,7 +185,7 @@ rig mining to `0x0000...0000`.
 
 Every functional change goes into [CHANGELOG.md](../CHANGELOG.md), under
 `[Unreleased]`, in the same commit as the change. A release moves those entries
-under a new version heading and bumps `DAGTECH_VERSION` in `dagcore_miner.c`,
+under a new version heading and bumps `DAGCORE_VERSION` in `dagcore_miner.c`,
 following semantic versioning: new features raise the minor version, fixes
 alone the patch.
 

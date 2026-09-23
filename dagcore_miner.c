@@ -100,8 +100,8 @@
  * DagTech GPU Miner Configuration
  * ========================================================================= */
 /* DagCore versioning restarts at 1.0.0; derived from DagTech GPU-2026.0628.1. */
-#define DAGTECH_VERSION       "1.1.0"
-#define DAGTECH_BANNER        "DagCore Miner v" DAGTECH_VERSION " - dagcore.net"
+#define DAGCORE_VERSION       "1.1.0"
+#define DAGCORE_BANNER        "DagCore Miner v" DAGCORE_VERSION " - dagcore.net"
 #define DAGTECH_AUTHOR        "Dawie Nel / DagTech Ltd"
 #define DAGTECH_DEFAULT_POOL  "stratum.dagcore.net"
 #define DAGTECH_DEFAULT_PORT  3334
@@ -2272,7 +2272,7 @@ static void dagtech_send(const char *line) {
 static void dagtech_subscribe_authorize(void) {
     char buf[512];
     snprintf(buf, sizeof(buf),
-        "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"DagCore/" DAGTECH_VERSION "\"]}");
+        "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"DagCore/" DAGCORE_VERSION "\"]}");
     dagtech_send(buf);
 
     /* The pool requires a bare EVM address as the stratum username, so WORKER
@@ -5041,7 +5041,7 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"submit_burst_gap_us\":%d,"
             "\"submit_max_inflight\":%d"
             "}",
-            DAGTECH_VERSION, pool_host, pool_port,
+            DAGCORE_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
             wallet,
             worker_name,
@@ -5176,7 +5176,7 @@ static void dagtech_reject_arg(const char *arg) {
 
 static void dagtech_usage(void) {
     printf("\n");
-    printf("  %s\n", DAGTECH_BANNER);
+    printf("  %s\n", DAGCORE_BANNER);
     printf("  %s\n\n", DAGTECH_AUTHOR);
     printf("  Usage: dagcore-miner [options]\n\n");
     printf("  Options:\n");
@@ -5814,7 +5814,7 @@ int main(int argc, char **argv) {
     if (do_save_config) {
         printf("\n");
         printf("  ============================================\n");
-        printf("  %s\n", DAGTECH_BANNER);
+        printf("  %s\n", DAGCORE_BANNER);
         printf("  ============================================\n\n");
         if (wallet[0] == 0) {
             fprintf(stderr, "[DagCore] ERROR: --wallet is required when saving config.\n");
@@ -5826,7 +5826,7 @@ int main(int argc, char **argv) {
     /* Banner */
     printf("\n");
     printf("  ============================================\n");
-    printf("  %s\n", DAGTECH_BANNER);
+    printf("  %s\n", DAGCORE_BANNER);
     printf("  %s\n", DAGTECH_AUTHOR);
     printf("  ============================================\n\n");
 
