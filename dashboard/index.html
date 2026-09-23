@@ -83,6 +83,19 @@ a.helplink:hover{background:rgba(77,157,255,.16)}
 .status.on .dot{background:var(--ok);box-shadow:0 0 12px rgba(63,224,138,.7)}
 .status.off{color:var(--bad);border-color:rgba(244,162,156,.5);background:rgba(244,162,156,.09)}
 .status.off .dot{background:var(--bad)}
+/* Mining state, once the miner answers: paused in the warning colour, the
+ * in-between states in blue, mining in green (.on). */
+.status.paused{color:var(--warn);border-color:rgba(242,198,109,.55);background:rgba(242,198,109,.10)}
+.status.paused .dot{background:var(--warn)}
+.status.conn{color:var(--blue);border-color:rgba(77,157,255,.5);background:rgba(77,157,255,.08)}
+.status.conn .dot{background:var(--blue);animation:pulse 1.4s ease-in-out infinite}
+button.pausebtn{width:auto;min-height:34px;padding:6px 14px;font-size:12.5px}
+#pausedBar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  background:rgba(242,198,109,.10);border:1px solid rgba(242,198,109,.45);
+  color:var(--warn);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px;font-weight:600}
+#pausedBar .dot{width:9px;height:9px;border-radius:50%;background:var(--warn);flex:0 0 auto}
+#pausedBar small{font-weight:400;color:var(--muted);flex:1 1 260px}
+#pausedBar button{width:auto;min-width:140px;flex:0 0 auto}
 
 /* ---------- layout ---------- */
 .grid{display:grid;gap:16px}
@@ -322,9 +335,19 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <div class="item"><span class="k">Pool</span><span class="v" id="pool">&mdash;</span></div>
       <div class="item"><span class="k">Wallet</span><span class="v" id="wallet">&mdash;</span></div>
       <a class="helplink" href="help">Help</a>
+      <button class="ghost pausebtn" id="pauseBtn" type="button" disabled
+        title="needs the control token">Pause mining</button>
       <div class="status" id="status"><span class="dot"></span><span id="statusText">connecting</span></div>
     </div>
   </header>
+
+  <div id="pausedBar" hidden>
+    <span class="dot"></span>
+    <span>Mining is paused</span>
+    <small>The miner is disconnected from the pool and its threads are stopped.
+    This page keeps working. A restart of the miner resumes mining too.</small>
+    <button id="resumeBtn" type="button" disabled>Resume mining</button>
+  </div>
 
   <section class="grid stats">
     <div class="card stat c-mine">
@@ -949,6 +972,11 @@ function setOnline(ok, detail){
   txt("statusText", ok ? "online" : "offline");
   $("offline").hidden = ok;
   if (!ok && detail) txt("offlineDetail", detail);
+  if (!ok){
+    /* Whether it is paused is unknown until it answers again. */
+    $("pausedBar").hidden = true;
+    refreshPause(null);
+  }
   document.querySelector(".wrap").classList.toggle("stale", !ok && !!last);
 }
 
@@ -1003,6 +1031,7 @@ function poll(){
     render(d);
     syncSettings(d);
     cfgSync(d);
+    renderState(d);
     var now = Date.now();
     /* Effective only once its 10-minute window is full, as in /history. The
      * miner says so with a flag; the span itself is 595-600s when full. */
@@ -1846,6 +1875,47 @@ $("cfgSave").addEventListener("click", function(){
     cfgRefreshButtons();
   });
 });
+
+/* ---- mining state and Pause/Resume --------------------------------
+ * The header chip says what the miner is doing, not just that it answers.
+ * Pause keeps the web server - this page - running, so Resume is always
+ * reachable from here. */
+var STATE_TEXT = { mining: "mining", connecting: "connecting", pausing: "pausing\u2026", paused: "paused" };
+var pauseBusy = false;
+function renderState(d){
+  var st = d.mining_state || "mining", paused = d.paused === true;
+  var s = $("status");
+  s.className = "status " + (st === "mining" ? "on" : (paused ? "paused" : "conn"));
+  txt("statusText", STATE_TEXT[st] || st);
+  $("pausedBar").hidden = !paused;
+  refreshPause(d);
+}
+function refreshPause(d){
+  var paused = d && d.paused === true;
+  var usable = !!token && online === true && !restart && !pauseBusy;
+  var b = $("pauseBtn");
+  b.textContent = paused ? "Resume mining" : "Pause mining";
+  b.disabled = !usable;
+  b.title = token ? "" : "needs the control token";
+  $("resumeBtn").disabled = !usable || !paused;
+}
+function setPaused(want){
+  pauseBusy = true; refreshPause(last);
+  note(want ? "Pausing\u2026" : "Resuming\u2026", "busy", 8000);
+  post("api/pause", { paused: want }, function(st, d){
+    pauseBusy = false;
+    if (st === 200 && d && d.ok){
+      note(want ? "Mining paused. The pool connection is closed; Resume mining starts it again."
+                : "Mining resumed \u2014 reconnecting to the pool.", "ok", 8000);
+      setTimeout(poll, 800);
+    }
+    else if (st === 401) note("Rejected: invalid token.", "err", 8000);
+    else note("Failed: " + ((d && d.error) || ("HTTP " + st)), "err", 10000);
+    refreshPause(last);
+  });
+}
+$("pauseBtn").addEventListener("click", function(){ setPaused(!(last && last.paused === true)); });
+$("resumeBtn").addEventListener("click", function(){ setPaused(false); });
 
 token = lsGet("dagcore_token");
 if (token){

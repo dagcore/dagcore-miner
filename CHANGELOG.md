@@ -24,6 +24,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   as the miner's run before a save, only changed fields are sent, a new wallet
   or pool asks for confirmation, and settings pinned by the command line are
   shown but locked. Saving restarts the miner as an intensity change does.
+- Dashboard: **Pause mining / Resume mining** in the header. The status chip
+  now shows what the miner is doing — mining, connecting, pausing, paused —
+  rather than only that it answers, and a banner with a Resume button stays up
+  while mining is paused.
 - `POST /api/pause` (control token), `{"paused": true|false}`: stops the
   mining threads and disconnects from the pool, while the dashboard stays up
   to resume. Refused while a clock test runs. Not saved: a restarted miner
