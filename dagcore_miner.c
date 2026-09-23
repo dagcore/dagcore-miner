@@ -367,9 +367,14 @@ static uint64_t cpu_stale       = 0;
 static uint64_t gpu_stale       = 0;
 
 /* Pending submission ring buffer: maps submission id -> source (CPU=0, GPU=1)
-   so that pool accept/reject responses can be attributed to the right source. */
+   so that pool accept/reject responses can be attributed to the right source.
+   sent_ms and answered let the submit queue count what the pool has not yet
+   answered (submit_inflight). */
 #define PENDING_SUB_MAX 64
-static struct { uint64_t id; int is_gpu; double diff; } pending_subs[PENDING_SUB_MAX];
+static struct {
+    uint64_t id; int is_gpu; double diff;
+    uint64_t sent_ms; int answered;
+} pending_subs[PENDING_SUB_MAX];
 static int pending_head  = 0;
 static int pending_count = 0;
 static pthread_mutex_t pending_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -1393,7 +1398,12 @@ static int gpu_realloc_buffers(GpuCtx *ctx, size_t new_batchsize, int new_mode) 
  * nonces, as many as fit. Each is checked again on the CPU with the full
  * 64-bit target - the kernel compares only the top 32 bits - and submitted if
  * the job it was found for is still the current one. The old kernel kept a
- * single nonce per batch; the counters show what reporting all of them adds. */
+ * single nonce per batch; the counters show what reporting all of them adds.
+ *
+ * The first share of the batch is sent here, through SUBMIT_MIN_INTERVAL_MS as
+ * before. The rest arrive within a fraction of a millisecond of it, so that
+ * gap would drop every one; they go to the submit queue instead, which sends
+ * them from its own thread, spaced out and capped (dagtech_queue_share). */
 static void gpu_process_candidates(int gpu_idx, const uint8_t *header80, uint32_t *V_cpu,
                                    double difficulty, uint64_t job_seq, const cl_uint *out) {
     uint32_t found = out[0];
@@ -1403,7 +1413,7 @@ static void gpu_process_candidates(int gpu_idx, const uint8_t *header80, uint32_
     double threshold_d = (double)0x0000FFFF00000000ULL / dagtech_effective_diff(difficulty);
     uint64_t threshold64 = (threshold_d >= 18446744073709551615.0) ?
                             0xFFFFFFFFFFFFFFFFULL : (uint64_t)threshold_d;
-    uint32_t valid = 0;
+    uint32_t valid = 0, sent_or_queued = 0;
     for (uint32_t i = 0; i < n; i++) {
         uint32_t cand_nonce = out[1 + i];
         uint8_t verify_hdr[80];
@@ -1431,7 +1441,11 @@ static void gpu_process_candidates(int gpu_idx, const uint8_t *header80, uint32_
         pthread_mutex_unlock(&job_mtx);
         if (jcur.seq == job_seq && jcur.valid) {
             extern void dagtech_submit_share_ext(const DagTechJob *j, uint32_t nonce);
-            dagtech_submit_share_ext(&jcur, cand_nonce);
+            extern void dagtech_queue_share(const DagTechJob *j, uint32_t nonce,
+                                            uint32_t burst_pos);
+            if (sent_or_queued == 0) dagtech_submit_share_ext(&jcur, cand_nonce);
+            else                     dagtech_queue_share(&jcur, cand_nonce, sent_or_queued);
+            sent_or_queued++;
         }
     }
 
@@ -2383,6 +2397,7 @@ static void dagtech_parse_stratum(const char *line) {
             if (pending_subs[idx].id == resp_id) {
                 src        = pending_subs[idx].is_gpu;
                 share_diff = pending_subs[idx].diff;
+                pending_subs[idx].answered = 1;
                 break;
             }
         }
@@ -2407,7 +2422,11 @@ static void dagtech_parse_stratum(const char *line) {
         pthread_mutex_lock(&pending_mtx);
         for (int pi = 0; pi < pending_count; pi++) {
             int idx = (pending_head + pi) % PENDING_SUB_MAX;
-            if (pending_subs[idx].id == resp_id) { src = pending_subs[idx].is_gpu; break; }
+            if (pending_subs[idx].id == resp_id) {
+                src = pending_subs[idx].is_gpu;
+                pending_subs[idx].answered = 1;
+                break;
+            }
         }
         pthread_mutex_unlock(&pending_mtx);
         int is_stale = strstr(line, "\"21\"") || strstr(line, ",21,") ||
@@ -2539,6 +2558,28 @@ static uint64_t dagtech_now_ms(void) {
 #endif
 }
 
+static uint64_t dagtech_now_us(void) {
+#ifdef _WIN32
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return (uint64_t)(count.QuadPart / freq.QuadPart * 1000000 +
+                      count.QuadPart % freq.QuadPart * 1000000 / freq.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+#endif
+}
+
+/* When the last mining.submit of any kind went out, under submit_rate_mtx: the
+ * submit queue spaces its sends from it. last_submit_ms above is only moved
+ * by the shares that pass SUBMIT_MIN_INTERVAL_MS, so queued sends do not make
+ * that gap drop the next batch's first share or a CPU share. */
+static uint64_t last_send_us = 0;
+
+static void dagtech_send_share(const DagTechJob *j, uint32_t nonce, int is_gpu);
+
 static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu) {
     /* Throttle: skip if we submitted too recently */
     uint64_t now_ms = dagtech_now_ms();
@@ -2550,8 +2591,14 @@ static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu
         return;
     }
     last_submit_ms = now_ms;
+    last_send_us   = dagtech_now_us();
     pthread_mutex_unlock(&submit_rate_mtx);
 
+    dagtech_send_share(j, nonce, is_gpu);
+}
+
+/* The mining.submit itself, with no limiter: the caller has decided to send. */
+static void dagtech_send_share(const DagTechJob *j, uint32_t nonce, int is_gpu) {
     char nonce_hex[16];
     uint8_t nb[4];
     nb[0] = nonce & 0xff;
@@ -2573,6 +2620,8 @@ static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu
     pending_subs[slot].id     = sub_id;
     pending_subs[slot].is_gpu = is_gpu;
     pending_subs[slot].diff   = j->difficulty;
+    pending_subs[slot].sent_ms  = dagtech_now_ms();
+    pending_subs[slot].answered = 0;
     if (pending_count < PENDING_SUB_MAX) pending_count++;
     else pending_head = (pending_head + 1) % PENDING_SUB_MAX;
     pthread_mutex_unlock(&pending_mtx);
@@ -2587,6 +2636,132 @@ static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu
 /* External alias used by GPU thread (avoids forward-declaration complexity) */
 void dagtech_submit_share_ext(const DagTechJob *j, uint32_t nonce) {
     dagtech_submit_share(j, nonce, 1);  /* GPU */
+}
+
+/* ---- Submit queue: the second and later shares of one GPU batch ----------
+ *
+ * They arrive within a fraction of a millisecond of the first, so
+ * SUBMIT_MIN_INTERVAL_MS would drop them all (it did: 960 in the first test on
+ * an RTX 3080, nearly every one beyond the first of its batch). Sending them
+ * all at once is no better: at difficulty 0.05 a batch holds a handful, now and
+ * then dozens, and the pool limits each client - unanswered requests, and
+ * floods of low-difficulty shares, which it can answer by disconnecting.
+ *
+ * So a thread of its own sends them one at a time, and each send waits for
+ * all of these:
+ *   - SUBMIT_BURST_GAP_US since the last mining.submit of any kind;
+ *   - fewer than SUBMIT_MAX_INFLIGHT submits the pool has not answered yet
+ *     (a submit left unanswered for SUBMIT_INFLIGHT_TIMEOUT_MS stops
+ *     counting, so a lost reply cannot stall the queue);
+ *   - the share's job still being the current one; if it changed while the
+ *     share waited, the share is discarded - it would only come back stale.
+ * And before a share gets in: at most SUBMIT_BURST_MAX per batch beyond the
+ * first, and room in the queue (SUBMIT_QUEUE_LEN).
+ *
+ * The GPU thread only copies a share in, so none of this slows a batch. */
+#define SUBMIT_QUEUE_LEN              64
+#define SUBMIT_INFLIGHT_TIMEOUT_MS    3000
+#define SUBMIT_BURST_MAX_DEFAULT      8
+#define SUBMIT_BURST_GAP_US_DEFAULT   500
+#define SUBMIT_BURST_GAP_US_MIN       100
+#define SUBMIT_BURST_GAP_US_MAX       100000
+#define SUBMIT_MAX_INFLIGHT_DEFAULT   8
+static int submit_burst_max    = SUBMIT_BURST_MAX_DEFAULT;     /* 0 = one share per batch, as before */
+static int submit_burst_gap_us = SUBMIT_BURST_GAP_US_DEFAULT;
+static int submit_max_inflight = SUBMIT_MAX_INFLIGHT_DEFAULT;
+
+typedef struct { DagTechJob job; uint32_t nonce; } submit_queue_entry;
+static submit_queue_entry sq_buf[SUBMIT_QUEUE_LEN];
+static int sq_head = 0, sq_count = 0;
+static pthread_mutex_t sq_mtx  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  sq_cond = PTHREAD_COND_INITIALIZER;
+/* Counters, under sq_mtx:
+ *   queued     - shares that got into the queue
+ *   sent       - sent to the pool from it
+ *   over_burst - beyond SUBMIT_BURST_MAX in their batch, never queued
+ *   full       - the queue had no room, never queued
+ *   expired    - their job changed while they waited, never sent
+ *   max_depth  - the most shares waiting at once */
+static uint64_t sq_queued = 0, sq_sent = 0, sq_over_burst = 0;
+static uint64_t sq_full = 0, sq_expired = 0;
+static int      sq_max_depth = 0;
+
+/* Submits the pool has not answered yet, younger than the timeout. */
+static int submit_inflight(void) {
+    uint64_t now_ms = dagtech_now_ms();
+    int n = 0;
+    pthread_mutex_lock(&pending_mtx);
+    for (int pi = 0; pi < pending_count; pi++) {
+        int idx = (pending_head + pi) % PENDING_SUB_MAX;
+        if (!pending_subs[idx].answered &&
+            now_ms - pending_subs[idx].sent_ms < SUBMIT_INFLIGHT_TIMEOUT_MS)
+            n++;
+    }
+    pthread_mutex_unlock(&pending_mtx);
+    return n;
+}
+
+/* A GPU share that came burst_pos-th after the first of its batch (1, 2, ...). */
+void dagtech_queue_share(const DagTechJob *j, uint32_t nonce, uint32_t burst_pos) {
+    pthread_mutex_lock(&sq_mtx);
+    if (burst_pos > (uint32_t)submit_burst_max) {
+        sq_over_burst++;
+    } else if (sq_count >= SUBMIT_QUEUE_LEN) {
+        sq_full++;
+    } else {
+        submit_queue_entry *e = &sq_buf[(sq_head + sq_count) % SUBMIT_QUEUE_LEN];
+        e->job   = *j;
+        e->nonce = nonce;
+        sq_count++;
+        sq_queued++;
+        if (sq_count > sq_max_depth) sq_max_depth = sq_count;
+        pthread_cond_signal(&sq_cond);
+    }
+    pthread_mutex_unlock(&sq_mtx);
+}
+
+static void *dagtech_submit_queue_thread(void *arg) {
+    (void)arg;
+    while (keep_alive) {
+        pthread_mutex_lock(&sq_mtx);
+        while (sq_count == 0 && keep_alive) pthread_cond_wait(&sq_cond, &sq_mtx);
+        if (sq_count == 0) { pthread_mutex_unlock(&sq_mtx); break; }
+        submit_queue_entry e = sq_buf[sq_head];
+        sq_head = (sq_head + 1) % SUBMIT_QUEUE_LEN;
+        sq_count--;
+        pthread_mutex_unlock(&sq_mtx);
+
+        while (keep_alive) {
+            pthread_mutex_lock(&job_mtx);
+            int current = current_job.valid && current_job.seq == e.job.seq;
+            pthread_mutex_unlock(&job_mtx);
+            if (!current) {
+                pthread_mutex_lock(&sq_mtx);
+                sq_expired++;
+                pthread_mutex_unlock(&sq_mtx);
+                break;
+            }
+            if (submit_inflight() >= submit_max_inflight) { usleep(200); continue; }
+
+            pthread_mutex_lock(&submit_rate_mtx);
+            uint64_t now_us = dagtech_now_us();
+            uint64_t since  = now_us - last_send_us;
+            if (since < (uint64_t)submit_burst_gap_us) {
+                pthread_mutex_unlock(&submit_rate_mtx);
+                usleep((unsigned)((uint64_t)submit_burst_gap_us - since));
+                continue;
+            }
+            last_send_us = now_us;
+            pthread_mutex_unlock(&submit_rate_mtx);
+
+            dagtech_send_share(&e.job, e.nonce, 1);  /* GPU */
+            pthread_mutex_lock(&sq_mtx);
+            sq_sent++;
+            pthread_mutex_unlock(&sq_mtx);
+            break;
+        }
+    }
+    return NULL;
 }
 
 static int dagtech_check_target(const uint8_t *hash, double difficulty) {
@@ -4704,6 +4879,12 @@ static void *dagtech_metrics_thread(void *arg) {
         uint64_t cand_found = gpu_cand_found, cand_reported = gpu_cand_reported;
         uint64_t cand_extra = gpu_cand_extra, cand_valid = gpu_cand_valid;
         pthread_mutex_unlock(&gpu_stats_mtx);
+        int inflight = submit_inflight();
+        pthread_mutex_lock(&sq_mtx);
+        uint64_t q_queued = sq_queued, q_sent = sq_sent, q_over = sq_over_burst;
+        uint64_t q_full = sq_full, q_expired = sq_expired;
+        int      q_depth = sq_max_depth;
+        pthread_mutex_unlock(&sq_mtx);
 
         /* For the configuration form: the detected cards by name, the
          * current selection, and the settings the command line pins. */
@@ -4848,7 +5029,17 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"gpu_candidates_found\":%" DT_PRIu64 ","
             "\"gpu_candidates_reported\":%" DT_PRIu64 ","
             "\"gpu_candidates_extra\":%" DT_PRIu64 ","
-            "\"gpu_candidates_valid\":%" DT_PRIu64
+            "\"gpu_candidates_valid\":%" DT_PRIu64 ","
+            "\"submit_queue_queued\":%" DT_PRIu64 ","
+            "\"submit_queue_sent\":%" DT_PRIu64 ","
+            "\"submit_queue_over_burst\":%" DT_PRIu64 ","
+            "\"submit_queue_full\":%" DT_PRIu64 ","
+            "\"submit_queue_expired\":%" DT_PRIu64 ","
+            "\"submit_queue_max_depth\":%d,"
+            "\"submit_inflight\":%d,"
+            "\"submit_burst_max\":%d,"
+            "\"submit_burst_gap_us\":%d,"
+            "\"submit_max_inflight\":%d"
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4905,7 +5096,11 @@ static void *dagtech_metrics_thread(void *arg) {
             g_paused ? (g_mine_state == 2 ? "paused" : "pausing")
                      : (g_mine_state == 1 ? "mining" : "connecting"),
             (unsigned long long)cand_found, (unsigned long long)cand_reported,
-            (unsigned long long)cand_extra, (unsigned long long)cand_valid);
+            (unsigned long long)cand_extra, (unsigned long long)cand_valid,
+            (unsigned long long)q_queued, (unsigned long long)q_sent,
+            (unsigned long long)q_over, (unsigned long long)q_full,
+            (unsigned long long)q_expired, q_depth, inflight,
+            submit_burst_max, submit_burst_gap_us, submit_max_inflight);
         pthread_mutex_unlock(&stats_mtx);
 
         /* Same headers as before; the body no longer has to fit a fixed
@@ -5201,6 +5396,21 @@ static void dagtech_load_config(const char *path) {
             if (submit_min_interval_ms > SUBMIT_MIN_INTERVAL_MS_MAX)
                 submit_min_interval_ms = SUBMIT_MIN_INTERVAL_MS_MAX;
         }
+        else if (strcmp(key, "SUBMIT_BURST_MAX") == 0) {
+            submit_burst_max = atoi(val);
+            if (submit_burst_max < 0) submit_burst_max = 0;
+            if (submit_burst_max > DT_MAX_CANDIDATES - 1) submit_burst_max = DT_MAX_CANDIDATES - 1;
+        }
+        else if (strcmp(key, "SUBMIT_BURST_GAP_US") == 0) {
+            submit_burst_gap_us = atoi(val);
+            if (submit_burst_gap_us < SUBMIT_BURST_GAP_US_MIN) submit_burst_gap_us = SUBMIT_BURST_GAP_US_MIN;
+            if (submit_burst_gap_us > SUBMIT_BURST_GAP_US_MAX) submit_burst_gap_us = SUBMIT_BURST_GAP_US_MAX;
+        }
+        else if (strcmp(key, "SUBMIT_MAX_INFLIGHT") == 0) {
+            submit_max_inflight = atoi(val);
+            if (submit_max_inflight < 1) submit_max_inflight = 1;
+            if (submit_max_inflight > PENDING_SUB_MAX) submit_max_inflight = PENDING_SUB_MAX;
+        }
         else if (strcmp(key, "LOW_PRIORITY") == 0) cpu_priority  = atoi(val);
         else if (strcmp(key, "CPU_LIMIT")    == 0) { cpu_limit = atoi(val); if (cpu_limit < 1) cpu_limit = 1; if (cpu_limit > 100) cpu_limit = 100; }
         else if (strcmp(key, "GPU_THROTTLE") == 0) { gpu_throttle = atoi(val); if (gpu_throttle < 1) gpu_throttle = 1; if (gpu_throttle > 100) gpu_throttle = 100; }
@@ -5305,6 +5515,9 @@ static int dagtech_save_config(const char *path) {
     fprintf(f, "SUBMIT_MARGIN=%.3f\n", submit_margin);
     fprintf(f, "AUTO_THRESHOLD=%d\n",  auto_threshold);
     fprintf(f, "SUBMIT_MIN_INTERVAL_MS=%d\n", submit_min_interval_ms);
+    fprintf(f, "SUBMIT_BURST_MAX=%d\n",       submit_burst_max);
+    fprintf(f, "SUBMIT_BURST_GAP_US=%d\n",    submit_burst_gap_us);
+    fprintf(f, "SUBMIT_MAX_INFLIGHT=%d\n",    submit_max_inflight);
     fprintf(f, "LOW_PRIORITY=%d\n",  cpu_priority);
     fprintf(f, "CPU_LIMIT=%d\n",     cpu_limit);
     fprintf(f, "GPU_THROTTLE=%d\n",  gpu_throttle);
@@ -5666,6 +5879,12 @@ int main(int argc, char **argv) {
     if (submit_min_interval_ms != SUBMIT_MIN_INTERVAL_MS_DEFAULT)
         printf("[DagCore] Share submit gap: %d ms%s\n", submit_min_interval_ms,
                submit_min_interval_ms == 0 ? " (no limit)" : "");
+    if (submit_burst_max != SUBMIT_BURST_MAX_DEFAULT ||
+        submit_burst_gap_us != SUBMIT_BURST_GAP_US_DEFAULT ||
+        submit_max_inflight != SUBMIT_MAX_INFLIGHT_DEFAULT)
+        printf("[DagCore] Share queue: up to %d more per GPU batch, %d us apart, "
+               "at most %d unanswered\n",
+               submit_burst_max, submit_burst_gap_us, submit_max_inflight);
 
 #ifdef DAGTECH_GPU
     /* List and initialize GPU */
@@ -5808,6 +6027,8 @@ int main(int argc, char **argv) {
     pthread_create(&metrics_tid, NULL, dagtech_metrics_thread, NULL);
     pthread_t history_tid;
     pthread_create(&history_tid, NULL, dagtech_history_thread, NULL);
+    pthread_t submit_queue_tid;
+    pthread_create(&submit_queue_tid, NULL, dagtech_submit_queue_thread, NULL);
 
     /* Reconnection loop */
     while (keep_alive) {

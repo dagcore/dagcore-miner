@@ -894,8 +894,12 @@ function render(d){
     $("candRow").hidden = false;
     var cf = d.gpu_candidates_found, cx = d.gpu_candidates_extra || 0;
     var lost = cf - (d.gpu_candidates_reported || 0);
+    var qs = d.submit_queue_sent || 0;
+    var qn = (d.submit_queue_over_burst || 0) + (d.submit_queue_full || 0) + (d.submit_queue_expired || 0);
     txt("candVal", num(cf) + " found \u00b7 " + num(cx) + " beyond the first in a batch" +
-        (cf ? " (" + pct(cx, cf) + ")" : "") + (lost > 0 ? " \u00b7 " + num(lost) + " did not fit" : ""));
+        (cf ? " (" + pct(cx, cf) + ")" : "") + (lost > 0 ? " \u00b7 " + num(lost) + " did not fit" : "") +
+        (typeof d.submit_queue_sent === "number" ? " \u00b7 " + num(qs) + " sent by the queue" +
+         (qn > 0 ? ", " + num(qn) + " not sent" : "") : ""));
   }
 
   var tot = d.hashrate || 0;

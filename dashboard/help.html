@@ -448,6 +448,18 @@ counted them. That hardly matters once the pool's difficulty has settled — a
 batch then almost never holds two — but in the first minutes of every
 connection nearly every batch does, and those shares were lost. The second
 number is what the change recovers.</p>
+<p><b>How they are sent.</b> The first share of a batch goes to the pool at
+once. The others come a fraction of a millisecond after it, too close for the
+5 ms gap between submissions, so a queue sends them one at a time: half a
+millisecond apart, never more than 8 per batch, and only while fewer than 8
+submissions are still waiting for the pool's answer — sending everything at
+once could trip the pool's flood protection. A share whose job changes while
+it waits is discarded, since the pool would only call it stale. <i>Sent by the
+queue</i> counts the ones that went out; <i>not sent</i> the ones over the
+per-batch limit, the ones with no room in the queue, and the discarded ones.
+The limits are <code>SUBMIT_BURST_MAX</code>, <code>SUBMIT_BURST_GAP_US</code>
+and <code>SUBMIT_MAX_INFLIGHT</code> in <code>config.env</code>;
+<code>SUBMIT_BURST_MAX=0</code> goes back to one share per batch.</p>
 <p>If <i>did not fit</i> ever appears, a batch found more shares than the 64
 slots it reports; that should not happen at any difficulty the pool uses.</p>
 <a class="up" href="#top">back to top</a>
