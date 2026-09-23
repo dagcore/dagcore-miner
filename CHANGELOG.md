@@ -11,6 +11,20 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   `gpu_devices` (index and name of every card on the OpenCL platform),
   `gpu_device_sel`, `threads_config` (`-1` = auto), `threads_auto`,
   `config_path`, and `config_cli`, the settings given on the command line.
+- `POST /api/config` (control token): wallet, pool, port, worker, CPU threads
+  and GPU selection, written into `config.env`, applied by a restart as for
+  intensity. Every field is validated first — wallet format, pool name that
+  resolves, port range, thread count, cards that exist — so a save cannot leave
+  a config the miner will not start with. Other lines and comments are kept,
+  the previous file is kept as `config.env.bak`, and settings given on the
+  command line are refused, since they would override the file anyway.
+
+### Changed
+- **The dashboard can now change the wallet and the pool.** Until now
+  `config.env` was never written from the browser, so nothing there could
+  redirect payouts. Anyone holding the control token — and, with
+  `METRICS_BIND` open to the network, able to reach the port — can now change
+  them. Keep the token private and the port on localhost unless you need it.
 
 ### Fixed
 - A miner started by hand (not as the systemd service) died with SIGPIPE when
