@@ -2455,7 +2455,12 @@ static int dagtech_make_header(const DagTechJob *j, uint32_t nonce, uint8_t head
 static uint64_t last_submit_ms = 0;
 static uint64_t rate_limited_shares = 0;  /* #44: shares dropped by the limiter */
 static pthread_mutex_t submit_rate_mtx = PTHREAD_MUTEX_INITIALIZER;
-#define SUBMIT_MIN_INTERVAL_MS 20
+/* SUBMIT_MIN_INTERVAL_MS in config.env; 0 turns the limiter off. On the
+ * production rig 20 ms dropped ~6% of found shares, more than went stale -
+ * the largest single gap between raw and effective hashrate. */
+#define SUBMIT_MIN_INTERVAL_MS_DEFAULT 20
+#define SUBMIT_MIN_INTERVAL_MS_MAX     1000
+static int submit_min_interval_ms = SUBMIT_MIN_INTERVAL_MS_DEFAULT;
 
 static uint64_t dagtech_now_ms(void) {
 #ifdef _WIN32
@@ -2475,7 +2480,7 @@ static void dagtech_submit_share(const DagTechJob *j, uint32_t nonce, int is_gpu
     uint64_t now_ms = dagtech_now_ms();
     pthread_mutex_lock(&submit_rate_mtx);
     uint64_t elapsed_ms = now_ms - last_submit_ms;
-    if (elapsed_ms < SUBMIT_MIN_INTERVAL_MS) {
+    if (elapsed_ms < (uint64_t)submit_min_interval_ms) {
         rate_limited_shares++;
         pthread_mutex_unlock(&submit_rate_mtx);
         return;
@@ -4310,7 +4315,8 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"effective_hashrate\":%.2f,"
             "\"effective_raw_hashrate\":%.2f,"
             "\"effective_pct\":%.1f,"
-            "\"effective_window_s\":%ld"
+            "\"effective_window_s\":%ld,"
+            "\"submit_min_interval_ms\":%d"
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4356,7 +4362,8 @@ static void *dagtech_metrics_thread(void *arg) {
             (gpu_enabled == 1) ? 1 : 0,
             g_num_gpus,
             gpu_hr_arr,
-            eff_hr, eff_raw, eff_raw > 0 ? 100.0 * eff_hr / eff_raw : 0.0, eff_span);
+            eff_hr, eff_raw, eff_raw > 0 ? 100.0 * eff_hr / eff_raw : 0.0, eff_span,
+            submit_min_interval_ms);
         pthread_mutex_unlock(&stats_mtx);
 
         char response[4096];
@@ -4653,6 +4660,12 @@ static void dagtech_load_config(const char *path) {
         else if (strcmp(key, "PASSWORD")     == 0) strncpy(password,     val, sizeof(password)     - 1);
         else if (strcmp(key, "SUBMIT_MARGIN")== 0) { submit_margin = atof(val); if (submit_margin < 1.0) submit_margin = 1.0; if (submit_margin > 8.0) submit_margin = 8.0; }
         else if (strcmp(key, "AUTO_THRESHOLD")==0) auto_threshold = atoi(val);
+        else if (strcmp(key, "SUBMIT_MIN_INTERVAL_MS") == 0) {
+            submit_min_interval_ms = atoi(val);
+            if (submit_min_interval_ms < 0) submit_min_interval_ms = 0;
+            if (submit_min_interval_ms > SUBMIT_MIN_INTERVAL_MS_MAX)
+                submit_min_interval_ms = SUBMIT_MIN_INTERVAL_MS_MAX;
+        }
         else if (strcmp(key, "LOW_PRIORITY") == 0) cpu_priority  = atoi(val);
         else if (strcmp(key, "CPU_LIMIT")    == 0) { cpu_limit = atoi(val); if (cpu_limit < 1) cpu_limit = 1; if (cpu_limit > 100) cpu_limit = 100; }
         else if (strcmp(key, "GPU_THROTTLE") == 0) { gpu_throttle = atoi(val); if (gpu_throttle < 1) gpu_throttle = 1; if (gpu_throttle > 100) gpu_throttle = 100; }
@@ -4756,6 +4769,7 @@ static int dagtech_save_config(const char *path) {
     fprintf(f, "PASSWORD=%s\n",      password);
     fprintf(f, "SUBMIT_MARGIN=%.3f\n", submit_margin);
     fprintf(f, "AUTO_THRESHOLD=%d\n",  auto_threshold);
+    fprintf(f, "SUBMIT_MIN_INTERVAL_MS=%d\n", submit_min_interval_ms);
     fprintf(f, "LOW_PRIORITY=%d\n",  cpu_priority);
     fprintf(f, "CPU_LIMIT=%d\n",     cpu_limit);
     fprintf(f, "GPU_THROTTLE=%d\n",  gpu_throttle);
@@ -5092,6 +5106,9 @@ int main(int argc, char **argv) {
     printf("[DagCore] Pool:    %s:%d\n", pool_host, pool_port);
     printf("[DagCore] Threads: %d (CPU)\n", num_threads);
     printf("[DagCore] Worker:  %s\n", worker_name);
+    if (submit_min_interval_ms != SUBMIT_MIN_INTERVAL_MS_DEFAULT)
+        printf("[DagCore] Share submit gap: %d ms%s\n", submit_min_interval_ms,
+               submit_min_interval_ms == 0 ? " (no limit)" : "");
 
 #ifdef DAGTECH_GPU
     /* List and initialize GPU */

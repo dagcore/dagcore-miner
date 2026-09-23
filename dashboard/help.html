@@ -147,14 +147,15 @@ hashes it takes on average to find a share at its difficulty. The percentage
 compares the two over the same ten minutes. On the RTX 3080 it sits around
 90–95%. Over time it stays below 100%, and the gap has three causes:</p>
 <ul>
+<li><b>Rate limit</b> — the largest one on this rig. The miner leaves a
+minimum gap between two share submissions, 20 ms by default, to protect the
+pool from a runaway loop. A share found inside that gap is dropped, never
+sent. Shares come in bursts, so this is not rare: about 6% of the shares
+found here, twice the stale rate. The count is under
+<a href="#dropped">Advanced: Dropped shares</a>.</li>
 <li><b>Stale shares</b> — valid work that arrived after the pool had moved to
 a new job. It cost hashes and earns nothing. About 3% of shares on this
 rig.</li>
-<li><b>Rate limit</b> — the miner sends at most one share every 20 ms, to
-protect the pool from a runaway loop. A share found inside that gap is
-dropped, never sent. Shares come in bursts, so this is not rare: about 6% of
-the shares found on this rig. The dashboard does not show the count; it is
-the <code>dropped</code> field in <code>/metrics</code>.</li>
 <li><b>Wrong shares from an overclock</b> — a card pushed too far computes
 answers the pool refuses. The card still reports full hashrate, because it
 is still hashing; only effective drops. This is the case the figure is best
@@ -362,6 +363,22 @@ to what". Earlier versions of this page guessed by watching whether a clock
 held still; it was wrong in both directions on this very rig, once re-adding a
 lock that had just been removed. Guessing was removed. You know what you
 locked; the software cannot find out.</p>
+
+<h3 id="dropped">Advanced: Dropped shares</h3>
+<p><b>What it shows.</b> Shares the card found that the miner never sent to
+the pool, because they came less than the submit gap after the previous one.
+Next to the count: its share of everything found, and the gap in use.</p>
+<p><b>Why it is here and not on the front page.</b> It is not a fault. A
+dropped share is not a rejected one: the card did nothing wrong, and it says
+nothing about an overclock. It is the price of the limiter, and on its own it
+would look like an alarm.</p>
+<p><b>What to do with it.</b> Usually nothing. If it stays well above the
+stale rate — this rig drops about 6% with the 20 ms default, against 3%
+stale — you can lower the gap in the configuration file:
+<code>SUBMIT_MIN_INTERVAL_MS=10</code>, or <code>0</code> for no limit, then
+restart the miner. Fewer drops means more accepted work, as long as the pool
+tolerates the burst; if it starts refusing shares or disconnecting, go back
+up. It cannot be changed from this page.</p>
 <a class="up" href="#top">back to top</a>
 </section>
 

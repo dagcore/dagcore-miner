@@ -162,6 +162,7 @@ canvas{width:100%;height:100%;display:block}
 /* Rows with a single wide control (token, adopt) span the control columns. */
 .set-ctl{display:contents}
 .set-ctl.wide{display:flex;align-items:center;gap:10px;grid-column:2 / -1;min-width:0}
+.ro-val{color:var(--text-2);font-size:13px;font-variant-numeric:tabular-nums}
 .set-row input[type=range]{grid-column:2}
 .set-row input[type=number]{grid-column:3}
 .set-row .btn-main{grid-column:4}
@@ -517,6 +518,14 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       </span>
     </div>
 
+    <div class="set-row">
+      <span class="lab"><b>Dropped shares</b>
+        <small>Found by the card but never sent: they came too soon after the
+        previous share. Not an error. Set by SUBMIT_MIN_INTERVAL_MS in the
+        configuration file. <a href="help#dropped">What to do with it</a></small></span>
+      <span class="set-ctl wide"><span class="ro-val" id="droppedVal">&mdash;</span></span>
+    </div>
+
     </details>
 
     <div class="warn-row" id="staleWarn" hidden><i></i><span></span></div>
@@ -693,6 +702,15 @@ function render(d){
   txt("hrEffSub", !win ? "\u00a0"
     : (d.effective_raw_hashrate > 0 ? d.effective_pct.toFixed(1) + "% of raw" : "no work yet")
       + " \u00b7 " + (win >= 600 ? "last 10 min" : "first " + Math.max(1, Math.round(win / 60)) + " min"));
+
+  /* Advanced: shares dropped by the submit gap, against everything found. */
+  if (typeof d.dropped === "number"){
+    var found = (d.submitted || 0) + d.dropped;
+    var gap = typeof d.submit_min_interval_ms === "number"
+      ? (d.submit_min_interval_ms ? d.submit_min_interval_ms + " ms gap" : "no limit") : "";
+    txt("droppedVal", num(d.dropped) + (found ? " \u00b7 " + pct(d.dropped, found) + " of found" : "")
+      + (gap ? " \u00b7 " + gap : ""));
+  }
 
   var tot = d.hashrate || 0;
   txt("hrTotalSub", num(d.total_hashes) + " hashes this session");
