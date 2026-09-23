@@ -525,8 +525,8 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 "use strict";
 
 var POLL_MS   = 5000;
-var WINDOW_MS = 30 * 60 * 1000;   /* chart keeps ~30 minutes in page memory */
-var history   = [];               /* [{t, total}] - never persisted */
+var WINDOW_MS = 30 * 60 * 1000;   /* chart shows the last 30 minutes */
+var history   = [];               /* [{t, v}] - seeded from /history, then fed by poll() */
 var last      = null;             /* last good payload, kept for offline display */
 var online    = null;
 
@@ -825,6 +825,31 @@ function poll(){
   };
   xhr.onerror = function(){ if (!done){ done = true; fail("connection refused"); } };
   try { xhr.send(); } catch (e){ if (!done){ done = true; fail("send failed"); } }
+}
+
+/* The miner keeps the last 30 minutes (/history), so a reload redraws the
+ * whole chart instead of starting empty. Sample times are the miner's clock;
+ * "now" maps them onto ours, in case the two disagree. Only samples older than
+ * the first one poll() has already added are taken, so nothing is doubled. */
+function loadHistory(){
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "history?t=" + Date.now(), true);
+  xhr.timeout = 4000;
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4 || xhr.status !== 200) return;
+    var d;
+    try { d = JSON.parse(xhr.responseText); } catch (e){ return; }
+    if (!d || !d.samples || typeof d.now !== "number") return;
+    var now = Date.now(), before = [], i;
+    var limit = history.length ? history[0].t - (d.interval_s || 5) * 500 : Infinity;
+    for (i = 0; i < d.samples.length; i++){
+      var t = now - (d.now - d.samples[i].t) * 1000;
+      if (t < limit && t >= now - WINDOW_MS) before.push({ t: t, v: d.samples[i].hashrate || 0 });
+    }
+    history = before.concat(history);
+    drawChart();
+  };
+  try { xhr.send(); } catch (e){}
 }
 
 /* ---- settings ---------------------------------------------------- */
@@ -1396,6 +1421,7 @@ window.addEventListener("resize", function(){
 });
 
 drawChart();
+loadHistory();
 poll();
 setInterval(poll, POLL_MS);
 })();

@@ -332,6 +332,18 @@ static double   cpu_hashrate     = 0.0;
 static double   gpu_hashrate     = 0.0;
 static time_t   start_time;
 
+/* Hashrate history for the dashboard chart, served at /history. The page used
+ * to keep these samples itself and lost them on every reload. One sample every
+ * 5s for 30 minutes: 360 x 32 bytes = 11.5 KB, fixed, in .bss. Memory only -
+ * a miner restart starts an empty chart, which is the intent. */
+#define HIST_INTERVAL_S 5
+#define HIST_LEN        360
+typedef struct { int64_t t; double total, gpu, cpu; } hist_sample_t;
+static hist_sample_t   hist_buf[HIST_LEN];
+static int             hist_head  = 0;   /* next slot to write */
+static int             hist_count = 0;
+static pthread_mutex_t hist_mtx   = PTHREAD_MUTEX_INITIALIZER;
+
 /* Per-session hash counters for hashrate tracking */
 static uint64_t cpu_hashes_session = 0;
 static uint64_t gpu_hashes_session = 0;
@@ -3896,6 +3908,55 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
     http_send_err(cfd, 404, "Not Found", "unknown endpoint");
 }
 
+/* Records the hashrates /metrics is showing, every HIST_INTERVAL_S. Its own
+ * thread rather than the stats loop, because that loop only runs while the
+ * pool is connected - the page sampled through disconnects too, and so does
+ * this. The rates are read unlocked: the same benign race /metrics has. */
+static void *dagtech_history_thread(void *arg) {
+    (void)arg;
+    while (keep_alive) {
+        sleep(HIST_INTERVAL_S);
+        pthread_mutex_lock(&hist_mtx);
+        hist_sample_t *s = &hist_buf[hist_head];
+        s->t     = (int64_t)time(NULL);
+        s->total = current_hashrate;
+        s->gpu   = gpu_hashrate;
+        s->cpu   = cpu_hashrate;
+        hist_head = (hist_head + 1) % HIST_LEN;
+        if (hist_count < HIST_LEN) hist_count++;
+        pthread_mutex_unlock(&hist_mtx);
+    }
+    return NULL;
+}
+
+/* GET /history: the buffer oldest first, plus the miner's clock ("now"), so
+ * the page can place the samples even when its own clock disagrees. */
+static void serve_history(int cfd) {
+    /* ~85 bytes per sample in practice; 128 leaves room for huge values. */
+    size_t cap = 128 + (size_t)HIST_LEN * 128;
+    char *out = malloc(cap);
+    if (!out) {
+        http_send_err(cfd, 500, "Internal Server Error", "out of memory");
+        return;
+    }
+    size_t n = (size_t)snprintf(out, cap, "{\"interval_s\":%d,\"now\":%lld,\"samples\":[",
+                                HIST_INTERVAL_S, (long long)time(NULL));
+    pthread_mutex_lock(&hist_mtx);
+    int first = (hist_head - hist_count + HIST_LEN) % HIST_LEN;
+    for (int i = 0; i < hist_count; i++) {
+        const hist_sample_t *s = &hist_buf[(first + i) % HIST_LEN];
+        int w = snprintf(out + n, cap - n,
+                         "%s{\"t\":%lld,\"hashrate\":%.2f,\"gpu_hashrate\":%.2f,\"cpu_hashrate\":%.2f}",
+                         i ? "," : "", (long long)s->t, s->total, s->gpu, s->cpu);
+        if (w < 0 || (size_t)w >= cap - n - 2) break;   /* keep room for "]}" */
+        n += (size_t)w;
+    }
+    pthread_mutex_unlock(&hist_mtx);
+    snprintf(out + n, cap - n, "]}");
+    http_send_json(cfd, 200, "OK", out);
+    free(out);
+}
+
 /* =========================================================================
  * Built-in Metrics Server (for Dashboard)
  * ========================================================================= */
@@ -3982,6 +4043,16 @@ static void *dagtech_metrics_thread(void *arg) {
             dagtech_handle_control(cfd, reqbuf, body);
             close(cfd);
             continue;
+        }
+
+        if (strncmp(reqbuf, "GET ", 4) == 0) {
+            char path[256];
+            http_path(reqbuf, path, sizeof(path));
+            if (strcmp(path, "/history") == 0) {
+                serve_history(cfd);
+                close(cfd);
+                continue;
+            }
         }
 
         /* Dashboard files. Anything that is not /metrics falls back to the
@@ -5087,6 +5158,8 @@ int main(int argc, char **argv) {
     /* Start metrics server thread */
     pthread_t metrics_tid;
     pthread_create(&metrics_tid, NULL, dagtech_metrics_thread, NULL);
+    pthread_t history_tid;
+    pthread_create(&history_tid, NULL, dagtech_history_thread, NULL);
 
     /* Reconnection loop */
     while (keep_alive) {
