@@ -16,7 +16,7 @@
  *
  * Author:  Dawie Nel <dawie@dagtech.network>
  * Project: DagTech Mining Suite
- * Version: DagCore 1.2.0 (derived from DagTech GPU-2026.0628.1)
+ * Version: DagCore 1.2.1 (derived from DagTech GPU-2026.0628.1)
  */
 
 #ifdef _WIN32
@@ -100,7 +100,7 @@
  * DagTech GPU Miner Configuration
  * ========================================================================= */
 /* DagCore versioning restarts at 1.0.0; derived from DagTech GPU-2026.0628.1. */
-#define DAGCORE_VERSION       "1.2.0"
+#define DAGCORE_VERSION       "1.2.1"
 #define DAGCORE_BANNER        "DagCore Miner v" DAGCORE_VERSION " - dagcore.net"
 #define DAGTECH_AUTHOR        "Dawie Nel / DagTech Ltd"
 #define DAGTECH_DEFAULT_POOL  "stratum.dagcore.net"

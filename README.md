@@ -64,7 +64,7 @@ make && sudo make install && sudo systemctl restart dagcore-miner
 Check the files before running them:
 
 ```sh
-V=1.2.0
+V=1.2.1
 base=https://github.com/dagcore/dagcore-miner/releases/download/v$V
 for f in dagcore-miner dagcore-miner-cpu dagcore_gpu.cl SHA256SUMS; do
     curl -fLO "$base/$f"

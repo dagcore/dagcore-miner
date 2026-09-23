@@ -6,6 +6,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-23
+
 ### Changed
 - **`make install` installs into `/opt/dagcore-miner` by default**, where
   `install.sh` puts the miner and where its service looks, instead of
