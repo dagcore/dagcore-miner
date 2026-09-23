@@ -9,6 +9,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 ## [1.2.0] - 2026-09-23
 
 ### Added
+- Prebuilt Linux x86-64 binaries attached to the release, with the GPU kernel
+  and `SHA256SUMS`; the README says how to check them.
 - **The GPU reports every share of a batch, not just one.** The kernel kept a
   single nonce per batch (about 10 ms of work on an RTX 3080), so while the
   pool's difficulty is low — the first minutes of every connection — all but

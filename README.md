@@ -41,6 +41,34 @@ sudo ./install.sh --wallet 0xYOURADDRESS --yes
 
 [Full installation guide →](docs/INSTALL.md)
 
+### Prebuilt binaries
+
+From 1.2.0 on, each [release](https://github.com/dagcore/dagcore-miner/releases)
+also carries Linux x86-64 binaries: `dagcore-miner` (GPU and CPU),
+`dagcore-miner-cpu` (CPU only), the GPU kernel `dagcore_gpu.cl`, and
+`SHA256SUMS`. They need glibc 2.34 or newer (Ubuntu 22.04, Debian 12 or later)
+and, for the GPU build, the NVIDIA driver's OpenCL (`libOpenCL.so.1`). Keep
+`dagcore_gpu.cl` in the same directory as `dagcore-miner`: the miner loads it
+from there. The installer above is still what sets up the service and the
+dashboard.
+
+Check the files before running them:
+
+```sh
+V=1.2.0
+base=https://github.com/dagcore/dagcore-miner/releases/download/v$V
+for f in dagcore-miner dagcore-miner-cpu dagcore_gpu.cl SHA256SUMS; do
+    curl -fLO "$base/$f"
+done
+sha256sum -c SHA256SUMS
+chmod +x dagcore-miner dagcore-miner-cpu
+```
+
+Every line must end in `OK`. `FAILED` means the file is damaged or not the one
+released: delete it and download it again. The sums come from the same place as
+the files, so they catch a broken or incomplete download, not a compromised
+account; they are not a signature.
+
 ## The dashboard
 
 Once the miner runs, open **http://localhost:8881/** — hashrate, temperatures,
