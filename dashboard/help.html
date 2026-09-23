@@ -299,7 +299,10 @@ pool, before anything is sent.</p>
 <p><b>Saving restarts the miner</b>, as a change of intensity does, and the page
 reconnects by itself. The file is rewritten in place: every other line and
 comment is kept, and the previous version is saved next to it as
-<code>config.env.bak</code>.</p>
+<code>config.env.bak</code>. Which file that is shows under the block's
+title: on Linux usually <code>/etc/dagcore-miner/config.env</code>; on Windows
+the <code>config.env</code> in the miner's own folder, next to the
+<code>.exe</code> — created there by the first save if it did not exist.</p>
 <p><b>Locked fields.</b> A setting given on the miner's command line wins over
 <code>config.env</code> on every start, so changing it here would change
 nothing. Such fields are shown but locked, marked <i>set on the command

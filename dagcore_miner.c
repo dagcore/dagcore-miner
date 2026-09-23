@@ -267,19 +267,71 @@ static char dashboard_dir[512] = "";
  * Both paths, and the token file, can be redirected with environment
  * variables - needed to test without root, useful for containers.
  *
- * On Windows all three live in %ProgramData%\DAGCore\ (config.env,
- * overrides.env, api-token): machine-wide, like /etc and /var/lib, and
- * writable without administrator rights for the account that creates it. */
+ * On Windows the miner is a folder someone unzips, and everything lives in
+ * it, next to the .exe: config.env, overrides.env, api-token, dashboard\ and
+ * dagcore_gpu.cl (the "portable" layout, DT_PORTABLE_LAYOUT). The first
+ * Windows test builds kept the first three in %ProgramData%\DAGCore\; a file that exists
+ * there and not next to the .exe is still used, so an existing setup keeps
+ * working. A new file is always created next to the .exe - which therefore
+ * has to be a folder the user can write to, not Program Files.
+ *
+ * The layout can be switched on in a Linux build too (-DDT_PORTABLE_LAYOUT),
+ * which is how it is tested; %ProgramData% is then an environment variable
+ * like any other. */
 #define DT_TOKEN_PATH_DEFAULT     "/etc/dagcore-miner/api-token"
 #define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
+#if defined(_WIN32) && !defined(DT_PORTABLE_LAYOUT)
+  #define DT_PORTABLE_LAYOUT 1
+#endif
 #ifdef _WIN32
+  #define DT_SEP_STR "\\"
+#else
+  #define DT_SEP_STR "/"
+#endif
+
+/* Directory of the running executable, with its trailing separator, or ""
+ * when unknown. Set once at the start of main. On Windows it comes from
+ * GetModuleFileName: argv[0] is just "dagcore-miner.exe" when the program is
+ * started from its own folder or from PATH. */
+static char g_exe_dir[1024] = "";
+static void dt_init_exe_dir(const char *argv0) {
+    char buf[1024] = "";
+#ifdef _WIN32
+    DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) buf[0] = '\0';
+#endif
+    if (!buf[0] && argv0) snprintf(buf, sizeof(buf), "%s", argv0);
+    char *sep = strrchr(buf, '/');
+#ifdef _WIN32
+    { char *sep2 = strrchr(buf, '\\'); if (sep2 > sep) sep = sep2; }
+#endif
+    if (sep) { *(sep + 1) = '\0'; snprintf(g_exe_dir, sizeof(g_exe_dir), "%s", buf); }
+    else g_exe_dir[0] = '\0';
+}
+
+#ifdef DT_PORTABLE_LAYOUT
+/* %ProgramData%\DAGCore: where the first Windows test builds kept their files. */
 static const char *dt_win_datadir(void) {
     static char dir[512];
     if (!dir[0]) {
         const char *pd = getenv("ProgramData");
-        snprintf(dir, sizeof(dir), "%s\\DAGCore", (pd && pd[0]) ? pd : "C:\\ProgramData");
+        snprintf(dir, sizeof(dir), "%s" DT_SEP_STR "DAGCore",
+                 (pd && pd[0]) ? pd : "C:\\ProgramData");
     }
     return dir;
+}
+
+/* <exe dir>/name if it exists; else %ProgramData%\DAGCore\name if that
+ * exists (an older setup); else <exe dir>/name, where a new one is made. */
+static const char *dt_portable_path(char *out, size_t n, const char *name) {
+    FILE *f;
+    snprintf(out, n, "%s%s", g_exe_dir, name);
+    if ((f = fopen(out, "r")) != NULL) { fclose(f); return out; }
+    char old[700];
+    snprintf(old, sizeof(old), "%s" DT_SEP_STR "%s", dt_win_datadir(), name);
+    if ((f = fopen(old, "r")) != NULL) { fclose(f); snprintf(out, n, "%s", old); return out; }
+    snprintf(out, n, "%s%s", g_exe_dir, name);
+    return out;
 }
 #endif
 
@@ -322,9 +374,9 @@ static double g_pl_min = -1, g_pl_max = -1, g_pl_default = -1, g_pl_current = -1
 static const char *dt_token_path(void) {
     const char *e = getenv("DAGCORE_TOKEN_FILE");
     if (e && e[0]) return e;
-#ifdef _WIN32
-    static char p[600];
-    snprintf(p, sizeof(p), "%s\\api-token", dt_win_datadir());
+#ifdef DT_PORTABLE_LAYOUT
+    static char p[1100];
+    if (!p[0]) dt_portable_path(p, sizeof(p), "api-token");
     return p;
 #else
     return DT_TOKEN_PATH_DEFAULT;
@@ -333,9 +385,9 @@ static const char *dt_token_path(void) {
 static const char *dt_overrides_path(void) {
     const char *e = getenv("DAGCORE_OVERRIDES_FILE");
     if (e && e[0]) return e;
-#ifdef _WIN32
-    static char p[600];
-    snprintf(p, sizeof(p), "%s\\overrides.env", dt_win_datadir());
+#ifdef DT_PORTABLE_LAYOUT
+    static char p[1100];
+    if (!p[0]) dt_portable_path(p, sizeof(p), "overrides.env");
     return p;
 #else
     return DT_OVERRIDES_PATH_DEFAULT;
@@ -915,28 +967,12 @@ static size_t gpu_fit_global_size(cl_device_id dev, size_t desired, int gpu_inde
     return fitted;
 }
 
-/* Load the kernel source from the same directory as argv[0] */
-static char *gpu_load_kernel_source(const char *exe_path, size_t *src_len) {
-    char cl_path[1024];
-
-    /* Build path: replace binary name with dagcore_gpu.cl */
-    strncpy(cl_path, exe_path, sizeof(cl_path) - 1);
-    cl_path[sizeof(cl_path) - 1] = '\0';
-
-    /* Find last path separator */
-    char *sep = strrchr(cl_path, '/');
-#ifdef _WIN32
-    {
-        char *sep2 = strrchr(cl_path, '\\');
-        if (sep2 > sep) sep = sep2;
-    }
-#endif
-    if (sep) {
-        *(sep + 1) = '\0';
-        strncat(cl_path, "dagcore_gpu.cl", sizeof(cl_path) - strlen(cl_path) - 1);
-    } else {
-        strncpy(cl_path, "dagcore_gpu.cl", sizeof(cl_path) - 1);
-    }
+/* Load the kernel source from the executable's directory (g_exe_dir: on
+ * Windows the .exe's real folder, not argv[0], which may carry no directory at
+ * all); the current directory when that is unknown. */
+static char *gpu_load_kernel_source(size_t *src_len) {
+    char cl_path[1100];
+    snprintf(cl_path, sizeof(cl_path), "%sdagcore_gpu.cl", g_exe_dir);
 
     FILE *f = fopen(cl_path, "rb");
     if (!f) {
@@ -1221,10 +1257,10 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
 }
 
 /* Discover and initialise all requested GPUs on gpu_platform */
-static int gpu_init_all(const char *exe_path) {
+static int gpu_init_all(void) {
     /* Load kernel source once — reused for every GPU's compile */
     size_t src_len = 0;
-    char *src = gpu_load_kernel_source(exe_path, &src_len);
+    char *src = gpu_load_kernel_source(&src_len);
     if (!src) return -1;
 
     /* Select platform */
@@ -3601,7 +3637,7 @@ static int overrides_set(const char *key, const char *value) {
     const char *path = dt_overrides_path();
     dagtech_mkdir_parents(path);
 
-    char tmp[1100];
+    char tmp[1200];
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *out = fopen(tmp, "w");
     if (!out) return -1;
@@ -4006,7 +4042,7 @@ static int cfg_parse_gpu_sel(const char *v, char *norm, size_t n, char *err, siz
  * password and is 0640, and a fresh file would get the umask's 0644. */
 static int config_write_keys(const char *path, const char *const *keys, const char *const *vals,
                              int n, char *err, size_t en) {
-    char tmp[1100], bak[1100];
+    char tmp[1200], bak[1200];
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     snprintf(bak, sizeof(bak), "%s.bak", path);
     int done[16] = {0};
@@ -5406,71 +5442,55 @@ static int dagtech_file_exists(const char *p) {
 
 /* Resolve the config.env path. Search order (first existing file wins):
  *   1. <exedir>/config.env          - next to the binary (e.g. install\bin\)
- *   2. <exedir>/../config.env       - install root, where the installer writes it
- *   3. ./config.env                 - current working directory
- *   4. Windows only: %ProgramData%\DAGCore\config.env - the Windows home of
- *      the configuration, next to overrides.env and the token
+ *   2. Portable layout (Windows) only: %ProgramData%\DAGCore\config.env,
+ *      where the first Windows test builds kept it
+ *   3. <exedir>/../config.env       - install root, where the installer writes it
+ *   4. ./config.env                 - current working directory
  *   5. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
- * If none exist, returns (4) on Windows and (5) elsewhere, so a "not found"
- * message - and --save-config - point somewhere sane.
- * exe_path is typically argv[0]; pass NULL to skip the exe-relative candidates. */
-static const char *dagtech_default_config_path(const char *exe_path) {
-    static char path[1024];
+ * If none exist, returns <exedir>/config.env in the portable layout - so the
+ * dashboard's first save creates it next to the .exe - and (5) elsewhere, so a
+ * "not found" message and --save-config point somewhere sane.
+ * Uses g_exe_dir; dt_init_exe_dir() must have run. */
+static const char *dagtech_default_config_path(void) {
+    static char path[1100];
     if (path[0]) return path;
 
-    /* Derive the executable's directory (with trailing separator) from exe_path. */
-    char dir[1024];
-    char ps = '/';
-    dir[0] = '\0';
-    if (exe_path && exe_path[0]) {
-        strncpy(dir, exe_path, sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = '\0';
-        char *sep = strrchr(dir, '/');
-#ifdef _WIN32
-        { char *sep2 = strrchr(dir, '\\'); if (sep2 > sep) sep = sep2; }
-#endif
-        if (sep) { ps = *sep; *(sep + 1) = '\0'; }  /* keep trailing separator */
-        else dir[0] = '\0';
-    }
-
-    char cand[1024];
+    const char *dir = g_exe_dir;
+    char ps = dir[0] ? dir[strlen(dir) - 1] : '/';
+    char cand[1100];
 
     /* 1. <exedir>/config.env */
     if (dir[0]) {
         snprintf(cand, sizeof(cand), "%sconfig.env", dir);
         if (dagtech_file_exists(cand)) {
-            strncpy(path, cand, sizeof(path) - 1);
-            path[sizeof(path) - 1] = '\0';
+            snprintf(path, sizeof(path), "%s", cand);
             return path;
         }
     }
 
-    /* 2. <exedir>/../config.env  (install root, e.g. C:\dagtech-gpu-miner\config.env) */
-    if (dir[0]) {
-        snprintf(cand, sizeof(cand), "%s..%cconfig.env", dir, ps);
-        if (dagtech_file_exists(cand)) {
-            strncpy(path, cand, sizeof(path) - 1);
-            path[sizeof(path) - 1] = '\0';
-            return path;
-        }
-    }
-
-    /* 3. ./config.env */
-    if (dagtech_file_exists("config.env")) {
-        strncpy(path, "config.env", sizeof(path) - 1);
-        return path;
-    }
-
-#ifdef _WIN32
-    /* 4. %ProgramData%\DAGCore\config.env */
-    char win_cfg[600];
-    snprintf(win_cfg, sizeof(win_cfg), "%s\\config.env", dt_win_datadir());
-    if (dagtech_file_exists(win_cfg)) {
-        strncpy(path, win_cfg, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
+#ifdef DT_PORTABLE_LAYOUT
+    /* 2. %ProgramData%\DAGCore\config.env */
+    snprintf(cand, sizeof(cand), "%s" DT_SEP_STR "config.env", dt_win_datadir());
+    if (dagtech_file_exists(cand)) {
+        snprintf(path, sizeof(path), "%s", cand);
         return path;
     }
 #endif
+
+    /* 3. <exedir>/../config.env  (install root, e.g. C:\dagtech-gpu-miner\config.env) */
+    if (dir[0]) {
+        snprintf(cand, sizeof(cand), "%s..%cconfig.env", dir, ps);
+        if (dagtech_file_exists(cand)) {
+            snprintf(path, sizeof(path), "%s", cand);
+            return path;
+        }
+    }
+
+    /* 4. ./config.env */
+    if (dagtech_file_exists("config.env")) {
+        snprintf(path, sizeof(path), "config.env");
+        return path;
+    }
 
     /* 5. legacy $USERPROFILE/dagtech-gpu-miner/config.env */
     const char *home = NULL;
@@ -5485,12 +5505,10 @@ static const char *dagtech_default_config_path(const char *exe_path) {
     else
         snprintf(path, sizeof(path), "dagtech-gpu-miner/config.env");
 
-#ifdef _WIN32
-    /* Nothing found: the legacy file is used only if it exists. */
-    if (!dagtech_file_exists(path)) {
-        strncpy(path, win_cfg, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
-    }
+#ifdef DT_PORTABLE_LAYOUT
+    /* Nothing found: the legacy file only if it exists, else next to the .exe. */
+    if (!dagtech_file_exists(path))
+        snprintf(path, sizeof(path), "%sconfig.env", dir);
 #endif
     return path;
 }
@@ -5544,15 +5562,22 @@ static void dagtech_mkdir_parents(const char *filepath) {
 }
 
 /* Default autotune cache location.
- *   Windows: unchanged - the path the installer provisions.
+ *   Portable layout (Windows): autotune.json next to the .exe, like every
+ *            other file of the miner; C:\dagtech-gpu-miner\autotune.json,
+ *            the old default, if one exists there and not next to the .exe.
  *   POSIX:   XDG basedir spec, $XDG_CACHE_HOME/dagcore-miner/autotune.json,
  *            falling back to $HOME/.cache/dagcore-miner/autotune.json. Without
  *            a usable HOME we land in the working directory so a service
  *            account with no home still starts instead of failing to write.
  * AUTOTUNE_CACHE (env var or config.env) overrides this; see main(). */
 static void dagtech_default_autotune_cache(char *out, size_t out_size) {
-#ifdef _WIN32
-    snprintf(out, out_size, "C:\\dagtech-gpu-miner\\autotune.json");
+#ifdef DT_PORTABLE_LAYOUT
+    const char *old = "C:\\dagtech-gpu-miner\\autotune.json";
+    char here[1100];
+    snprintf(here, sizeof(here), "%sautotune.json", g_exe_dir);
+    const char *pick = (!dagtech_file_exists(here) && dagtech_file_exists(old)) ? old : here;
+    if (strlen(pick) < out_size) memcpy(out, pick, strlen(pick) + 1);
+    else snprintf(out, out_size, "autotune.json");
 #else
     const char *xdg  = getenv("XDG_CACHE_HOME");
     const char *home = getenv("HOME");
@@ -5831,6 +5856,39 @@ static int dagtech_detect_threads(void) {
 /* =========================================================================
  * Main Entry Point - DagTech GPU Miner
  * ========================================================================= */
+#ifdef DT_PORTABLE_LAYOUT
+static int dt_dir_has_index(const char *d) {
+    char p[1200];
+    snprintf(p, sizeof(p), "%s" DT_SEP_STR "index.html", d);
+    return dagtech_file_exists(p);
+}
+
+/* The dashboard folder ships next to the .exe. A configured directory that
+ * holds index.html is used as given. A relative one that does not is looked
+ * for next to the .exe, so double-clicking the .exe and starting it from
+ * another folder serve the same page. Anything else - nothing configured, or
+ * a path that does not exist here, like the /opt one in config.env.example -
+ * falls back to the dashboard folder next to the .exe, if it is there. */
+static void dt_portable_dashboard_dir(void) {
+    char cand[sizeof(dashboard_dir)];
+    if (dashboard_dir[0] && dt_dir_has_index(dashboard_dir)) return;
+    int absolute = dashboard_dir[0] == '/' || dashboard_dir[0] == '\\' ||
+                   (dashboard_dir[0] && dashboard_dir[1] == ':');
+    if (dashboard_dir[0] && !absolute) {
+        snprintf(cand, sizeof(cand), "%s%s", g_exe_dir, dashboard_dir);
+        if (dt_dir_has_index(cand)) {
+            snprintf(dashboard_dir, sizeof(dashboard_dir), "%s", cand);
+            return;
+        }
+    }
+    snprintf(cand, sizeof(cand), "%sdashboard", g_exe_dir);
+    if (!dt_dir_has_index(cand)) return;
+    if (dashboard_dir[0])
+        printf("[DagCore] Dashboard: %s has no index.html; using %s\n", dashboard_dir, cand);
+    snprintf(dashboard_dir, sizeof(dashboard_dir), "%s", cand);
+}
+#endif
+
 int main(int argc, char **argv) {
     /* Flush log lines immediately — prevents output appearing in bursts when
        stdout is not a terminal (e.g. running as a background service). */
@@ -5854,7 +5912,8 @@ int main(int argc, char **argv) {
 #endif
 
     /* ---- Pass 1: look for --config <path> before loading defaults ---- */
-    const char *config_path = dagtech_default_config_path(argv[0]);
+    dt_init_exe_dir(argv[0]);
+    const char *config_path = dagtech_default_config_path();
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             config_path = argv[++i];
@@ -6034,6 +6093,10 @@ int main(int argc, char **argv) {
     printf("  %s\n", DAGTECH_AUTHOR);
     printf("  ============================================\n\n");
 
+#ifdef DT_PORTABLE_LAYOUT
+    dt_portable_dashboard_dir();
+#endif
+
     /* Validate wallet */
     if (wallet[0] == 0) {
         fprintf(stderr, "[DagCore] ERROR: Wallet address is required!\n");
@@ -6119,7 +6182,7 @@ int main(int argc, char **argv) {
     }
 
     if (use_gpu) {
-        if (gpu_init_all(argv[0]) == 0) {
+        if (gpu_init_all() == 0) {
             gpu_enabled = 1;
             printf("[DagCore GPU] Intensity: %d | Platform: %d | GPUs active: %d\n",
                    gpu_intensity, gpu_platform, g_num_gpus);

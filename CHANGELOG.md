@@ -15,8 +15,15 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     `/dev/urandom`); without it the control API was always disabled.
   - Windows: `overrides.env` is replaced with `MoveFileEx`; `rename()` fails
     there when the file exists, so only the first dashboard change was kept.
-  - Windows: `config.env`, `overrides.env` and the token live in
-    `%ProgramData%\DAGCore\` instead of `/etc` and `/var/lib`.
+  - Windows: everything is in the miner's own folder, next to the `.exe` -
+    `config.env` (which a dashboard save creates if missing),
+    `overrides.env`, the token, `autotune.json`, `dashboard\` and
+    `dagcore_gpu.cl` - found from the `.exe`'s real path whatever the
+    current directory, instead of `/etc`, `/var/lib` and
+    `C:\dagtech-gpu-miner\`. Files the first test builds put in
+    `%ProgramData%\DAGCore\` are still used while there is none next to the
+    `.exe`. A `DASHBOARD_DIR` that does not exist falls back to the bundled
+    `dashboard` folder.
   - Windows: the dashboard server gives up on a silent client after 2 seconds,
     as on Linux, instead of hanging for every other client.
   - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no

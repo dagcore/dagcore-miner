@@ -92,23 +92,26 @@ NVIDIA card.
 make windows    # -> dagcore-miner-cpu.exe and dagcore-miner.exe
 ```
 
-**Copy to the Windows machine**, all into one folder, for example
-`C:\DAGCore`:
+**Copy to the Windows machine**, all into one folder you can write to — for
+example `C:\DAGCore`, not `Program Files`:
 
 - `dagcore-miner-cpu.exe`
 - the `dashboard` folder, whole
+- `config.env.example`, saved as `config.env`, with your `WALLET=` filled in
+  (optional: `--wallet` on the command line does the same)
 
 Nothing else is needed: the `.exe` has no DLLs of its own to bring along.
-(`dagcore-miner.exe` is the GPU build; it also needs `dagcore_gpu.cl` next to it
-and an OpenCL driver, and is not covered here.)
+(`dagcore-miner.exe` is the GPU build; it also needs `dagcore_gpu.cl` in the same
+folder and an OpenCL driver, and is not covered here.)
 
-**Run it** from a Command Prompt or PowerShell opened in that folder:
+**Run it** by double-clicking `dagcore-miner-cpu.exe` when `config.env` has the
+wallet, or from a Command Prompt or PowerShell:
 
 ```bat
-cd C:\DAGCore
-dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1 --dashboard-dir dashboard
+C:\DAGCore\dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1
 ```
 
+It finds everything in its own folder, whichever folder it is started from.
 `--threads -1` uses half the logical cores; a number sets them exactly. Left
 out, the CPU build warns that its default, `0` (GPU only), would mine nothing
 and uses `-1` instead. Windows may ask whether to allow network access the
@@ -117,12 +120,16 @@ first time.
 Open **http://localhost:8881/** for the dashboard. Stop the miner with Ctrl+C
 or by closing the window; either way it shuts down cleanly.
 
-**Files it creates** in `%ProgramData%\DAGCore\` (usually
-`C:\ProgramData\DAGCore\`): `api-token`, and `overrides.env` once a setting
-is changed from the dashboard. Settings can also go in a `config.env` there, in
-the same format as [config.env.example](config.env.example) — with it, the
-command line shrinks to `dagcore-miner-cpu.exe`. A `config.env` in the folder
-you run it from is found too, and takes precedence.
+**Everything stays in that folder.** The miner reads `config.env`,
+`dashboard\` and `dagcore_gpu.cl` from next to the `.exe`, and writes there
+too: `api-token` on the first start, `config.env` when Mining configuration is
+saved from the dashboard (created if it was not there), `overrides.env` once a
+tuning setting is changed, and `autotune.json` for the GPU build. A
+`DASHBOARD_DIR` that does not exist on this machine — the `/opt/...` one in
+`config.env.example`, say — falls back to the `dashboard` folder next to the
+`.exe`. The first test builds kept `config.env`, `overrides.env` and
+`api-token` in `%ProgramData%\DAGCore\`; files still there are used as long as
+there is none next to the `.exe`.
 
 **Limits of this build.** On a CPU-only machine the power, clock and intensity
 controls say they are unavailable, which is correct. The token file is not

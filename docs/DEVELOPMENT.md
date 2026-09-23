@@ -237,13 +237,24 @@ multi-card rig.
 
 **Windows.** The `#ifdef _WIN32` paths are inherited. They compile and link
 (`make windows`) and can be run by hand (README, "Windows (experimental)"),
-with the token from `BCryptGenRandom`, files in `%ProgramData%\DAGCore\`,
+with the token from `BCryptGenRandom`, every file next to the `.exe` (the
+portable layout below),
 `overrides.env` replaced with `MoveFileEx`, the metrics receive timeout,
 `2>NUL` for `nvidia-smi`, and a clean stop on console close. Still missing:
 NVML (stubbed, so no offsets or clock locks), a Windows service and
-installer, an ACL on the token file (other local accounts can read it), and
-the autotune cache, which still defaults to `C:\dagtech-gpu-miner\`. None of
-it has run on Windows yet; treat the build as unverified.
+installer, and an ACL on the token file (other local accounts can read it).
+None of it has run on Windows yet; treat the build as unverified.
+
+**Portable layout (`DT_PORTABLE_LAYOUT`).** On for Windows builds, off for
+Linux. The miner is a folder someone unzips: `config.env`, `overrides.env`,
+`api-token`, `autotune.json`, `dashboard\` and `dagcore_gpu.cl` are all read
+from, and created in, the directory of the running `.exe` (from
+`GetModuleFileName`, not `argv[0]`). Files an earlier test build left in
+`%ProgramData%\DAGCore\` (and an autotune cache in `C:\dagtech-gpu-miner\`)
+are used while there is none next to the `.exe`. A `DASHBOARD_DIR` without
+an `index.html` falls back to the `dashboard` folder next to the `.exe`. To
+test it on Linux, build with `-DDT_PORTABLE_LAYOUT` and set `ProgramData` in
+the environment to stand in for the Windows one.
 
 **Memory junction temperature.** Not exposed by the Linux driver to any tool, so
 the dashboard cannot show the one temperature that matters most when tuning
