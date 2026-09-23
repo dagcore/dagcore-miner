@@ -120,8 +120,15 @@ a.helplink:hover{background:rgba(77,157,255,.16)}
 
 /* ---------- chart ---------- */
 .chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
-.chart-legend{display:flex;gap:18px;color:var(--label);font-size:11px;letter-spacing:.06em}
+.chart-legend{display:flex;flex-wrap:wrap;gap:6px 22px;color:var(--label);font-size:11px;letter-spacing:.06em}
 .chart-legend b{color:var(--text-2);font-weight:600}
+.chart-legend .lg-more{margin-left:10px}
+.chart-legend .lg-more b{margin-right:8px}
+.chart-legend .lg-more b:last-child{margin-right:0}
+/* Swatches match the plot: raw is an area with its line, effective a line. */
+.chart-legend .sw{display:inline-block;width:12px;margin-right:6px;vertical-align:middle}
+.chart-legend .sw-raw{height:9px;border-top:2px solid var(--mine);background:rgba(255,171,46,.28)}
+.chart-legend .sw-eff{height:0;border-top:2px solid var(--verify)}
 .canvas-box{position:relative;width:100%;height:215px;margin-top:14px}
 canvas{width:100%;height:100%;display:block}
 #chartEmpty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted-2);font-size:12px}
@@ -330,9 +337,9 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
     <div class="chart-head">
       <h2 style="margin:0">Hashrate &mdash; last 30 minutes</h2>
       <div class="chart-legend">
-        <span>now <b id="cNow">&mdash;</b></span>
-        <span>avg <b id="cAvg">&mdash;</b></span>
-        <span>peak <b id="cMax">&mdash;</b></span>
+        <span class="lg"><i class="sw sw-raw"></i>raw now <b id="cNow">&mdash;</b>
+          <span class="lg-more">avg <b id="cAvg">&mdash;</b> peak <b id="cMax">&mdash;</b></span></span>
+        <span class="lg"><i class="sw sw-eff"></i>effective now <b id="cEff">&mdash;</b></span>
       </div>
     </div>
     <div class="canvas-box">
@@ -552,7 +559,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
 var POLL_MS   = 5000;
 var WINDOW_MS = 30 * 60 * 1000;   /* chart shows the last 30 minutes */
-var history   = [];               /* [{t, v}] - seeded from /history, then fed by poll() */
+var history   = [];               /* [{t, v raw, e effective|null}] - seeded from /history, then fed by poll() */
 var last      = null;             /* last good payload, kept for offline display */
 var online    = null;
 
@@ -609,33 +616,61 @@ function sizeCanvas(){
   return { w: r.width, h: r.height };
 }
 
+/* Linear y axis with a round step (1, 2, 2.5 or 5 x 10^n) and every label in
+ * the unit of the top value. Formatting each label on its own mixed kH/s and
+ * MH/s on one axis, and the unrounded top gave uneven-looking ticks. */
+function yScale(max){
+  var target = (max > 0 ? max : 1) * 1.08;          /* headroom over the peak */
+  /* The smallest round step that covers the target in at most 5 intervals. */
+  var mag = Math.pow(10, Math.floor(Math.log(target / 5) / Math.LN10));
+  var mults = [1, 2, 2.5, 5, 10, 20], step = 0, k;
+  for (k = 0; k < mults.length; k++){
+    step = mults[k] * mag;
+    if (Math.ceil(target / step - 1e-9) <= 5) break;
+  }
+  var ticks = Math.ceil(target / step - 1e-9);
+  var top = ticks * step;
+  var div = 1, unit = "H/s";
+  if (top >= 1e9){ div = 1e9; unit = "GH/s"; }
+  else if (top >= 1e6){ div = 1e6; unit = "MH/s"; }
+  else if (top >= 1e3){ div = 1e3; unit = "kH/s"; }
+  var dec = 0;                                        /* enough for the step */
+  while (dec < 3 && Math.abs(Math.round(step / div * Math.pow(10, dec)) - step / div * Math.pow(10, dec)) > 1e-6) dec++;
+  return { top: top, step: step, ticks: ticks,
+           label: function(v){ return (v / div).toFixed(dec) + " " + unit; } };
+}
+
 function drawChart(){
   var s = sizeCanvas(), w = s.w, h = s.h;
   ctx.clearRect(0, 0, w, h);
   if (history.length < 2){ $("chartEmpty").hidden = false; return; }
   $("chartEmpty").hidden = true;
 
-  var padL = 54, padR = 8, padT = 10, padB = 20;
+  var padL = 62, padR = 8, padT = 10, padB = 20;
   var cw = Math.max(1, w - padL - padR), ch = Math.max(1, h - padT - padB);
 
-  var max = 0, sum = 0, i;
+  var max = 0, rawMax = 0, sum = 0, i;
   for (i = 0; i < history.length; i++){
-    if (history[i].v > max) max = history[i].v;
+    if (history[i].v > rawMax) rawMax = history[i].v;
+    if (history[i].e != null && history[i].e > max) max = history[i].e;
     sum += history[i].v;
   }
-  var top = max > 0 ? max * 1.18 : 1;
+  if (rawMax > max) max = rawMax;
+  var sc = yScale(max), top = sc.top;
 
   var css = getComputedStyle(document.documentElement);
-  var accent = css.getPropertyValue("--mine").trim() || "#ffab2e";
+  var accent = css.getPropertyValue("--mine").trim()   || "#ffab2e";
+  var effCol = css.getPropertyValue("--verify").trim() || "#3fe08a";
   var line   = css.getPropertyValue("--line").trim()   || "rgba(110,155,220,.28)";
   var dim    = css.getPropertyValue("--label").trim()  || "#8aa0bc";
 
-  /* grid + y labels */
+  /* grid + y labels, bottom (0) to top */
   ctx.font = "10px -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif";
   ctx.textBaseline = "middle";
   ctx.textAlign = "right";
-  for (i = 0; i <= 4; i++){
-    var y = padT + ch * (i / 4);
+  for (i = 0; i <= sc.ticks; i++){
+    var v = sc.step * i;
+    var y = padT + ch * (1 - v / top);
     ctx.strokeStyle = line;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -643,7 +678,7 @@ function drawChart(){
     ctx.lineTo(padL + cw, Math.round(y) + 0.5);
     ctx.stroke();
     ctx.fillStyle = dim;
-    ctx.fillText(hashStr(top * (1 - i / 4)), padL - 8, y);
+    ctx.fillText(sc.label(v), padL - 8, y);
   }
 
   /* x axis: oldest sample .. now, fixed 30 min span */
@@ -659,7 +694,10 @@ function drawChart(){
     ctx.fillText(mins === 0 ? "now" : "-" + mins + "m", px(tm), h - padB / 2 + 2);
   }
 
-  /* area fill */
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  /* raw: area fill */
   ctx.beginPath();
   ctx.moveTo(px(history[0].t), padT + ch);
   for (i = 0; i < history.length; i++) ctx.lineTo(px(history[i].t), py(history[i].v));
@@ -671,7 +709,7 @@ function drawChart(){
   ctx.fillStyle = g;
   ctx.fill();
 
-  /* line */
+  /* raw: line */
   ctx.beginPath();
   for (i = 0; i < history.length; i++){
     var x = px(history[i].t), y2 = py(history[i].v);
@@ -679,20 +717,39 @@ function drawChart(){
   }
   ctx.strokeStyle = accent;
   ctx.lineWidth = 2;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
   ctx.stroke();
 
-  /* head dot */
+  /* effective: line only, on top; gaps where it was not available yet */
+  var lastEff = null, pen = false;
+  ctx.beginPath();
+  for (i = 0; i < history.length; i++){
+    var e = history[i].e;
+    if (e == null){ pen = false; continue; }
+    if (pen) ctx.lineTo(px(history[i].t), py(e));
+    else { ctx.moveTo(px(history[i].t), py(e)); pen = true; }
+    lastEff = history[i];
+  }
+  ctx.strokeStyle = effCol;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  /* head dots */
   var lastPt = history[history.length - 1];
   ctx.beginPath();
   ctx.arc(px(lastPt.t), py(lastPt.v), 3.5, 0, Math.PI * 2);
   ctx.fillStyle = accent;
   ctx.fill();
+  if (lastEff && lastEff === lastPt){
+    ctx.beginPath();
+    ctx.arc(px(lastPt.t), py(lastPt.e), 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = effCol;
+    ctx.fill();
+  }
 
   txt("cNow", hashStr(lastPt.v));
+  txt("cEff", lastPt.e != null ? hashStr(lastPt.e) : "after 10 min");
   txt("cAvg", hashStr(sum / history.length));
-  txt("cMax", hashStr(max));
+  txt("cMax", hashStr(rawMax));
 }
 
 /* ---- rendering --------------------------------------------------- */
@@ -709,7 +766,7 @@ function render(d){
   var win = d.effective_window_s || 0;
   txt("hrEffSub", !win ? "\u00a0"
     : (d.effective_raw_hashrate > 0 ? d.effective_pct.toFixed(1) + "% of raw" : "no work yet")
-      + " \u00b7 " + (win >= 600 ? "last 10 min" : "first " + Math.max(1, Math.round(win / 60)) + " min"));
+      + " \u00b7 " + (d.effective_window_full ? "last 10 min" : "first " + Math.max(1, Math.round(win / 60)) + " min"));
 
   /* Advanced: shares dropped by the submit gap, against everything found. */
   if (typeof d.dropped === "number"){
@@ -718,7 +775,7 @@ function render(d){
     var parts = [];
     /* The window is the effective hashrate's: 10 minutes, shorter just
      * after a start - and then it is the same as the total, so say it once. */
-    if (typeof d.dropped_window === "number" && (d.effective_window_s || 0) >= 600){
+    if (typeof d.dropped_window === "number" && d.effective_window_full){
       var wf = (d.submitted_window || 0) + d.dropped_window;
       parts.push(num(d.dropped_window) + " in the last 10 min"
         + (wf ? " (" + pct(d.dropped_window, wf) + " of found)" : ""));
@@ -874,7 +931,10 @@ function poll(){
     render(d);
     syncSettings(d);
     var now = Date.now();
-    history.push({ t: now, v: d.hashrate || 0 });
+    /* Effective only once its 10-minute window is full, as in /history. The
+     * miner says so with a flag; the span itself is 595-600s when full. */
+    history.push({ t: now, v: d.hashrate || 0,
+                   e: d.effective_window_full ? (d.effective_hashrate || 0) : null });
     while (history.length && history[0].t < now - WINDOW_MS) history.shift();
     drawChart();
     txt("lastUpdate", new Date().toLocaleTimeString());
@@ -900,7 +960,9 @@ function loadHistory(){
     var limit = history.length ? history[0].t - (d.interval_s || 5) * 500 : Infinity;
     for (i = 0; i < d.samples.length; i++){
       var t = now - (d.now - d.samples[i].t) * 1000;
-      if (t < limit && t >= now - WINDOW_MS) before.push({ t: t, v: d.samples[i].hashrate || 0 });
+      if (t < limit && t >= now - WINDOW_MS) before.push({ t: t, v: d.samples[i].hashrate || 0,
+                                                       e: typeof d.samples[i].effective_hashrate === "number"
+                                                          ? d.samples[i].effective_hashrate : null });
     }
     history = before.concat(history);
     drawChart();

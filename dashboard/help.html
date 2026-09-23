@@ -174,7 +174,10 @@ the number to watch when tuning the power limit: raw hashrate almost always
 goes up with more watts, efficiency usually does not.</p>
 
 <h3>The 30-minute chart</h3>
-<p>Total hashrate over the last half hour. The miner keeps the samples, in
+<p>The last half hour of two figures: the <b>raw</b> total hashrate, as the
+orange area, and the <b>effective</b> hashrate, as the green line on top of
+it (see <a href="#effective">Effective hashrate</a>). The green line starts
+ten minutes after the miner does, once its window is full. The miner keeps the samples, in
 memory, so reloading the tab or opening the dashboard on a second device
 shows the whole half hour. Nothing is written to disk: when the miner
 restarts, the chart starts empty. It is there to show shape:

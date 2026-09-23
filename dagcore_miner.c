@@ -341,6 +341,7 @@ static time_t   start_time;
 typedef struct {
     int64_t  t;
     double   total, gpu, cpu;      /* served at /history */
+    double   effective;            /* ditto; < 0 = window not full yet */
     uint64_t hashes;               /* counters then - not served; they */
     double   accepted_work;        /* feed the 10-minute window below */
     uint64_t submitted, dropped;
@@ -366,6 +367,7 @@ static double accepted_work = 0.0;         /* cumulative, under stats_mtx */
 typedef struct {
     double   eff, raw;             /* H/s */
     long     span_s;
+    int      full;                 /* the whole window is past start_time */
     uint64_t submitted, dropped;
 } window_stats_t;
 
@@ -3950,6 +3952,7 @@ static void dagtech_handle_control(int cfd, const char *req, const char *body) {
  * thread rather than the stats loop, because that loop only runs while the
  * pool is connected - the page sampled through disconnects too, and so does
  * this. The rates are read unlocked: the same benign race /metrics has. */
+static window_stats_t stats_window(void);
 static void *dagtech_history_thread(void *arg) {
     (void)arg;
     while (keep_alive) {
@@ -3962,12 +3965,19 @@ static void *dagtech_history_thread(void *arg) {
         pthread_mutex_lock(&submit_rate_mtx);
         uint64_t dropped = rate_limited_shares;
         pthread_mutex_unlock(&submit_rate_mtx);
+        /* The effective hashrate the dashboard showed at this moment, so a
+         * reload redraws its line too. Only once the window is full: a
+         * shorter one right after a start swings too much to plot. Taken
+         * before hist_mtx, which stats_window() locks itself. */
+        window_stats_t win = stats_window();
+        double effective = win.full ? win.eff : -1.0;
         pthread_mutex_lock(&hist_mtx);
         hist_sample_t *s = &hist_buf[hist_head];
         s->t     = (int64_t)time(NULL);
         s->total = current_hashrate;
         s->gpu   = gpu_hashrate;
         s->cpu   = cpu_hashrate;
+        s->effective     = effective;
         s->hashes        = hashes;
         s->accepted_work = work;
         s->submitted     = submitted;
@@ -4001,7 +4011,11 @@ static window_stats_t stats_window(void) {
     int64_t  t0 = (int64_t)start_time;
     uint64_t h0 = 0, s0 = 0, d0 = 0;
     double   w0 = 0.0;
-    if ((int64_t)now - t0 > EFFECTIVE_WINDOW_S) {
+    /* Full = the window no longer reaches back to the start. Say so as a flag:
+     * span_s cannot tell, because a full window begins at the oldest 5s
+     * sample inside it and so spans 595-600s, seldom exactly 600. */
+    int full = (int64_t)now - t0 > EFFECTIVE_WINDOW_S;
+    if (full) {
         pthread_mutex_lock(&hist_mtx);
         int first = (hist_head - hist_count + HIST_LEN) % HIST_LEN;
         for (int i = 0; i < hist_count; i++) {
@@ -4017,6 +4031,7 @@ static window_stats_t stats_window(void) {
 
     window_stats_t w;
     w.span_s    = (long)((int64_t)now - t0);
+    w.full      = full;
     w.eff       = w.span_s > 0 ? (work - w0) / w.span_s : 0.0;
     w.raw       = w.span_s > 0 ? (double)(hashes - h0) / w.span_s : 0.0;
     w.submitted = submitted - s0;
@@ -4027,8 +4042,8 @@ static window_stats_t stats_window(void) {
 /* GET /history: the buffer oldest first, plus the miner's clock ("now"), so
  * the page can place the samples even when its own clock disagrees. */
 static void serve_history(int cfd) {
-    /* ~85 bytes per sample in practice; 128 leaves room for huge values. */
-    size_t cap = 128 + (size_t)HIST_LEN * 128;
+    /* ~115 bytes per sample in practice; 192 leaves room for huge values. */
+    size_t cap = 128 + (size_t)HIST_LEN * 192;
     char *out = malloc(cap);
     if (!out) {
         http_send_err(cfd, 500, "Internal Server Error", "out of memory");
@@ -4040,9 +4055,13 @@ static void serve_history(int cfd) {
     int first = (hist_head - hist_count + HIST_LEN) % HIST_LEN;
     for (int i = 0; i < hist_count; i++) {
         const hist_sample_t *s = &hist_buf[(first + i) % HIST_LEN];
+        char eff[32];
+        if (s->effective < 0) snprintf(eff, sizeof(eff), "null");
+        else                  snprintf(eff, sizeof(eff), "%.2f", s->effective);
         int w = snprintf(out + n, cap - n,
-                         "%s{\"t\":%lld,\"hashrate\":%.2f,\"gpu_hashrate\":%.2f,\"cpu_hashrate\":%.2f}",
-                         i ? "," : "", (long long)s->t, s->total, s->gpu, s->cpu);
+                         "%s{\"t\":%lld,\"hashrate\":%.2f,\"gpu_hashrate\":%.2f,\"cpu_hashrate\":%.2f,"
+                         "\"effective_hashrate\":%s}",
+                         i ? "," : "", (long long)s->t, s->total, s->gpu, s->cpu, eff);
         if (w < 0 || (size_t)w >= cap - n - 2) break;   /* keep room for "]}" */
         n += (size_t)w;
     }
@@ -4342,7 +4361,8 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"effective_window_s\":%ld,"
             "\"submit_min_interval_ms\":%d,"
             "\"dropped_window\":%" DT_PRIu64 ","
-            "\"submitted_window\":%" DT_PRIu64
+            "\"submitted_window\":%" DT_PRIu64 ","
+            "\"effective_window_full\":%s"
             "}",
             DAGTECH_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -4391,7 +4411,8 @@ static void *dagtech_metrics_thread(void *arg) {
             win.eff, win.raw, win.raw > 0 ? 100.0 * win.eff / win.raw : 0.0, win.span_s,
             submit_min_interval_ms,
             (unsigned long long)win.dropped,
-            (unsigned long long)win.submitted);
+            (unsigned long long)win.submitted,
+            win.full ? "true" : "false");
         pthread_mutex_unlock(&stats_mtx);
 
         char response[4096];
