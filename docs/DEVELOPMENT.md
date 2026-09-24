@@ -49,7 +49,8 @@ NVML paths are tested without a card.
 make            # GPU build -> dagcore-miner
 make cpu        # CPU-only  -> dagcore-miner-cpu
 make check      # builds every variant, from scratch (Windows too, if MinGW is there)
-make windows    # cross-compiled .exe pair, needs MinGW-w64
+make windows    # .exe pair in build/win, needs MinGW-w64
+make windows-package  # dist/windows: the kit to copy to a Windows machine
 make warn       # -Wall -Wextra -Wshadow, syntax only
 make install    # into /opt/dagcore-miner, as the installer does
 ```
@@ -61,22 +62,42 @@ happened. The same goes for `#ifndef _WIN32`, which is why `make check` also
 builds the Windows pair; without MinGW-w64 it says `SKIPPED` rather than
 failing.
 
-**Windows cross-build.** `make windows` builds `dagcore-miner.exe` and
-`dagcore-miner-cpu.exe` with MinGW-w64 (`apt install mingw-w64`). It reuses
-the OpenCL headers of the Linux build (`OPENCL_HEADERS`, default
+**Windows build.** `make windows` builds `build/win/dagcore-miner.exe` and
+`build/win/dagcore-miner-cpu.exe` with MinGW-w64 (`apt install mingw-w64`). It
+reuses the OpenCL headers of the Linux build (`OPENCL_HEADERS`, default
 `/usr/include/CL`) and generates an import library for `OpenCL.dll` from
 `win/OpenCL.def`; a new `cl*` call has to be added there. Everything else is
 linked statically, so the GPU `.exe` needs only system DLLs and `OpenCL.dll`,
-which the NVIDIA driver installs. Nothing here can run it: there is no Wine
-and no Windows machine on the build rig.
+which the NVIDIA driver installs. Nothing on the Linux build rig can run it:
+there is no Wine there.
+
+It also builds natively on Windows, without administrator rights, from Git
+Bash:
+
+```sh
+winget install --id BrechtSanders.WinLibs.POSIX.UCRT --scope user
+git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers ~/opencl-headers
+mingw32-make windows-package SHELL=sh MINGW_DLLTOOL=dlltool \
+    OPENCL_HEADERS=~/opencl-headers/CL
+```
+
+WinLibs (GCC 16) brings `mingw32-make` and an unprefixed `dlltool`; Git Bash
+brings the `sh`, `sed` and `sha256sum` the rules use. The `mingw32-make` there
+is itself a MinGW program, so `make check` on Windows builds only the `.exe`
+pair: the Linux side of `#ifndef _WIN32` still needs a Linux machine.
 
 `make windows` also writes `build/win/config.env.example`, made from the Linux
 `config.env.example` by `win/config.env.sed`: the same keys and text, with the
 Linux paths (`/etc`, `/var/lib`, the XDG cache, the `/opt` `DASHBOARD_DIR`)
 replaced by what the portable layout does. If a Linux path survives - someone
 reworded a line the sed script matches - the build stops and names the line;
-fix the script, not the output. `make windows-package` puts everything a user
-unzips in `build/win/DAGCore/`.
+fix the script, not the output.
+
+`make windows-package` assembles `dist/windows/`, exactly what is unzipped on
+a new machine and nothing else: both `.exe` files, `dagcore_gpu.cl`,
+`dashboard/`, `config.env.example`, `readme.html`, and `SHA256SUMS` over all
+of them, with paths relative to the folder. It is rebuilt from scratch each
+time, and `make clean` removes it along with `build/win`.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
@@ -244,15 +265,33 @@ are held back. This is the main thing standing between the dashboard and a
 multi-card rig.
 
 **Windows.** The `#ifdef _WIN32` paths are inherited. They compile and link
-(`make windows`) and can be run by hand (README, "Windows (experimental)"),
-with the token from `BCryptGenRandom`, every file next to the `.exe` (the
-portable layout below),
-`overrides.env` replaced with `MoveFileEx`, the metrics receive timeout,
-`2>NUL` for `nvidia-smi`, a clean stop on console close, and the GPU
-readings from `nvml.dll` (below). Still missing: NVML writes (offsets and
-clock locks are stubbed; the power limit goes through `nvidia-smi` and has not
-been tried), the CPU temperature, a Windows service and installer, and an ACL
-on the token file (other local accounts can read it).
+(`make windows`) and run by hand (README, "Windows (experimental)"), with the
+token from `BCryptGenRandom`, every file next to the `.exe` (the portable
+layout below), `overrides.env` and `config.env` replaced with `MoveFileEx`,
+the metrics receive timeout, `2>NUL` for `nvidia-smi`, a clean stop on Ctrl+C,
+Ctrl+Break and console close, and the GPU readings from `nvml.dll` (below).
+Checked on Windows 11 with an RTX 3080 (driver 617.14) against the public
+pool, 1.43-1.53 MH/s at stock settings. Still missing: NVML writes (offsets
+and clock locks are stubbed; the power limit goes through `nvidia-smi` and has
+not been tried), the CPU temperature, a Windows service and installer, and an
+ACL on the token file (other local accounts can read it).
+
+**The GPU thread keeps a CPU core busy while it waits.** Each batch ends in
+`clWaitForEvents`, and NVIDIA's OpenCL driver waits for the kernel by spinning,
+not by sleeping. Measured on Windows (i5-7400, 4 cores, RTX 3080): the GPU
+thread uses 95% of one core, about 25% of the whole CPU, for as long as the
+card mines; every other thread together uses 0.1%, and a paused miner 0.1%.
+Linux has not been measured, but it is the same driver design and likely does
+the same. The usual cure: `clFlush` after the kernels, then sleep for most
+(say 90%) of the previous batch's measured duration, and only then call
+`clWaitForEvents`, which has little left to spin on. What it takes: each batch
+is already timed (`gpu_elapsed` in `dagtech_gpu_thread`, the same figure
+`GPU_THROTTLE` uses), but in whole milliseconds, coarse for a batch of about
+10 ms on an RTX 3080, so it would need a finer clock. The sleep must end
+before the kernel does, or the card idles between batches and hashrate drops.
+So it has to be measured on the production rig, hashrate and effective
+hashrate before and after, and probably kept as a setting that can be turned
+off. On a rig with several cards the saving is a core per card.
 
 **NVML on both systems.** The library is loaded at run time - `dlopen` of
 `libnvidia-ml.so.1` on Linux, `LoadLibraryEx` of `nvml.dll` on Windows, from
@@ -264,8 +303,11 @@ load, memory used (`nvmlDeviceGetMemoryInfo_v2`, as `nvidia-smi` counts it),
 power and clocks. Windows reads through it first, `nvidia-smi` second; Linux
 still reads through `nvidia-smi`. `nvml_load()` adds the clock-control entry
 points on top, on Linux only. `DAGCORE_NVML_LIB` points either at another
-library, which is how it is tested.
-None of it has run on Windows yet; treat the build as unverified.
+library, which is how it is tested. On Windows with an RTX 3080 every reading
+matched `nvidia-smi`, with `nvidia-smi` taken off the miner's `PATH` so that
+only NVML could answer; with neither the miner mined on and left the readings
+out; and an `nvml.dll` planted next to the `.exe` was not loaded, while the
+same file named in `DAGCORE_NVML_LIB` was.
 
 **Portable layout (`DT_PORTABLE_LAYOUT`).** On for Windows builds, off for
 Linux. The miner is a folder someone unzips: `config.env`, `overrides.env`,

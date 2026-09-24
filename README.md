@@ -81,44 +81,75 @@ account; they are not a signature.
 
 ## Windows (experimental)
 
-The Windows build is for testing only. It is cross-compiled on Linux, has not
-been through a real test yet, and has no service, no installer and no GPU
-tuning. The steps below run it by hand, CPU-only, on a machine without an
-NVIDIA card.
+The Windows build is for testing. It has run by hand on Windows 11 with an
+RTX 3080, GPU and CPU, against the public pool, but it has no service, no
+installer, and no GPU tuning beyond the power limit and intensity. Do not
+leave a rig on it unattended yet.
 
-**Build it** on a Linux machine with MinGW-w64 (`sudo apt install mingw-w64`):
+**Build the kit** on Linux with MinGW-w64 (`sudo apt install mingw-w64`):
 
 ```sh
-make windows-package    # -> build/win/DAGCore/
+make windows-package    # -> dist/windows/
 ```
 
-**Copy the `DAGCore` folder to the Windows machine**, somewhere you can write
-to — for example `C:\DAGCore`, not `Program Files`. It holds both `.exe` files,
-`dagcore_gpu.cl`, the `dashboard` folder, `readme.html` — a step-by-step
-getting-started page that opens with a double-click, offline, styled like the
-dashboard — and a `config.env.example` written for Windows: rename it to `config.env` and fill in `WALLET=` (or give `--wallet` on
-the command line instead). It needs no `DASHBOARD_DIR`; the line is there,
-commented out, only for serving a copy kept elsewhere.
+It also builds on Windows itself, without administrator rights — see
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#building).
 
-Nothing else is needed: the `.exe` has no DLLs of its own to bring along.
-(`dagcore-miner.exe` is the GPU build; it also needs `dagcore_gpu.cl` in the same
-folder and an OpenCL driver, and is not covered here.)
+**`dist/windows` is the whole kit.** Copy that folder to the Windows machine,
+somewhere you can write to — for example `C:\DAGCore`, not `Program Files`.
+It holds:
 
-**Run it** by double-clicking `dagcore-miner-cpu.exe` when `config.env` has the
-wallet, or from a Command Prompt or PowerShell:
+| File | What |
+|------|------|
+| `dagcore-miner.exe` | GPU build (and CPU); needs an NVIDIA driver, which brings OpenCL |
+| `dagcore-miner-cpu.exe` | CPU only, for a machine without an NVIDIA card |
+| `dagcore_gpu.cl` | The GPU kernel, read at every start |
+| `dashboard\` | The dashboard's pages |
+| `config.env.example` | Settings, written for Windows |
+| `readme.html` | A getting-started page; opens with a double-click, offline |
+| `SHA256SUMS` | Checksums of all of the above |
+
+Nothing else is needed: the `.exe` files have no DLLs of their own to bring
+along.
+
+**Check the files** after copying, from PowerShell in that folder. Every line
+must say `True`:
+
+```powershell
+Get-Content SHA256SUMS | ForEach-Object {
+    $hash, $file = $_ -split '\s+\*?', 2
+    '{0,-5} {1}' -f ((Get-FileHash $file -Algorithm SHA256).Hash -eq $hash), $file
+}
+```
+
+`False` means the file is damaged or incomplete: copy it again. As with the
+Linux binaries, the sums catch a broken copy, not a tampered kit.
+
+**Set the wallet.** Rename `config.env.example` to `config.env` and fill in
+`WALLET=`, or give `--wallet` on the command line instead. It needs no
+`DASHBOARD_DIR`; the line is there, commented out, only for serving a copy
+kept elsewhere.
+
+**Run it** by double-clicking `dagcore-miner.exe` (or `dagcore-miner-cpu.exe`)
+when `config.env` has the wallet, or from a Command Prompt or PowerShell:
 
 ```bat
+C:\DAGCore\dagcore-miner.exe --wallet 0xYOURADDRESS
 C:\DAGCore\dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1
 ```
 
 It finds everything in its own folder, whichever folder it is started from.
-`--threads -1` uses half the logical cores; a number sets them exactly. Left
-out, the CPU build warns that its default, `0` (GPU only), would mine nothing
-and uses `-1` instead. Windows may ask whether to allow network access the
-first time.
+The GPU build mines on the card only (`THREADS=0`); for the CPU build,
+`--threads -1` uses half the logical cores and a number sets them exactly.
+Left out, the CPU build warns that its default, `0` (GPU only), would mine
+nothing and uses `-1` instead. Windows may ask whether to allow network
+access the first time.
 
-Open **http://localhost:8881/** for the dashboard. Stop the miner with Ctrl+C
-or by closing the window; either way it shuts down cleanly.
+Open **http://localhost:8881/** for the dashboard. To reach it from another
+computer, set `METRICS_BIND=0.0.0.0` and allow TCP 8881 in Windows Firewall
+for the local network only; read the [security notes](docs/INSTALL.md#security)
+first. Stop the miner with Ctrl+C or by closing the window; either way it
+shuts down cleanly.
 
 **Everything stays in that folder.** The miner reads `config.env`,
 `dashboard\` and `dagcore_gpu.cl` from next to the `.exe`, and writes there
@@ -126,18 +157,21 @@ too: `api-token` on the first start, `config.env` when Mining configuration is
 saved from the dashboard (created if it was not there), `overrides.env` once a
 tuning setting is changed, and `autotune.json` for the GPU build. A
 `DASHBOARD_DIR` that does not exist on this machine — the `/opt/...` one in
-`config.env.example`, say — falls back to the `dashboard` folder next to the
-`.exe`. The first test builds kept `config.env`, `overrides.env` and
-`api-token` in `%ProgramData%\DAGCore\`; a file found only there is copied
+the Linux `config.env.example`, say — falls back to the `dashboard` folder
+next to the `.exe`. The first test builds kept `config.env`, `overrides.env`
+and `api-token` in `%ProgramData%\DAGCore\`; a file found only there is copied
 next to the `.exe` at the next start, and the console says so. The token stays
 the same, so a browser that has it keeps working, and that old folder can be
 deleted. Every start prints which token file is in use (`Control API token:`).
 
-**Limits of this build.** On a CPU-only machine the power, clock and intensity
-controls say they are unavailable, which is correct. The token file is not
-protected from other accounts on the same computer yet — do not test on a
-shared machine. What else is missing is listed in
-[DEVELOPMENT.md](docs/DEVELOPMENT.md#not-done-yet).
+**Limits of this build.** Temperature, load, power, memory and clocks are
+read from the NVIDIA driver; clock locks, offsets and Adopt are not offered,
+and the power limit has not been tried. A saved setting needs a restart by
+hand: there is no service to restart the miner. The GPU build keeps one CPU
+core busy while it mines — the NVIDIA driver waits for the card by spinning
+(see [DEVELOPMENT.md](docs/DEVELOPMENT.md#not-done-yet)). The token file is
+not protected from other accounts on the same computer yet — do not test on
+a shared machine.
 
 ## The dashboard
 
