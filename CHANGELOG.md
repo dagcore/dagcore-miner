@@ -103,6 +103,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   its closing `"}`, so the page got invalid JSON instead of the error. The
   reply now has room for the longest message `/api/config` can give (300).
   Found by GCC 16's `-Wformat-truncation`.
+- The GPU temperature, GPU load and CPU temperature bars on the GPU &
+  thermals card were never drawn, on any system: their fill was an inline
+  `<span>`, which ignores width and height. The values next to them were
+  right all along.
 - **A miner with nothing to mine stops and says why.** When the GPU failed to
   start - `dagcore_gpu.cl` missing next to the `.exe`, say - or was disabled,
   and `THREADS` was 0, the GPU build connected anyway and reported "mining"
