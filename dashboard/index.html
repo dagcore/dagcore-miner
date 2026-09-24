@@ -1226,7 +1226,8 @@ function syncSettings(d){
   syncOffset(d, "coreoff", "gpu_core_offset", "trial_coreoff");
   syncOffset(d, "memoff",  "gpu_mem_offset",  "trial_memoff");
 
-  /* A build that cannot touch clocks at all (Windows: no NVML) shows none of
+  /* A build that cannot touch clocks at all (the first Windows builds, without
+   * NVML control) shows none of
    * what goes with them either - not the adopt row, not the text about clock
    * tests. Only the older miner, which lacks the field, keeps them. */
   var clk = d.clock_controls_supported !== false;

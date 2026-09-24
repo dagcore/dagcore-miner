@@ -172,8 +172,14 @@ the same, so a browser that has it keeps working, and that old folder can be
 deleted. Every start prints which token file is in use (`Control API token:`).
 
 **Limits of this build.** Temperature, load, power, memory and clocks are
-read from the NVIDIA driver; clock locks, offsets and Adopt are not offered.
-The power limit works only when the miner runs as administrator
+read from the NVIDIA driver. Clock locks work, through NVML as on Linux, but
+clock offsets do not: the Windows GeForce driver answers them "Not
+Supported", so the offset rows stay hidden with that reason. Without an
+offset the memory cannot go above what the driver allows while computing
+(9251 MHz on an RTX 3080, where Linux ran it at 10276 with +2050); a tool
+that uses NVIDIA's own interface, such as MSI Afterburner, can still apply
+one next to the miner. The power limit and the clock controls work only when
+the miner runs as administrator
 (`start.bat`, or right-click `dagcore-miner.exe` → Run as administrator); otherwise the
 dashboard says so and leaves it unavailable. There is no service: Save & restart
 works because the miner starts itself again, in the same window, but nothing

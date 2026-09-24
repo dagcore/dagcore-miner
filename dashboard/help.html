@@ -342,9 +342,12 @@ it.</p>
 <p>This is the one setting that stays usable while a clock test is running,
 and it takes effect immediately with no test of its own.</p>
 
-<p class="note warn">On Windows the clock controls — memory and core offset, the
-clock locks and Adopt — are not shown: that build cannot set them yet (it has
-no NVML). The power limit and GPU intensity are there as on Linux.</p>
+<p class="note warn">On Windows the memory and core offsets are not shown: the
+Windows driver refuses them ("Not Supported"). The clock locks, the power limit
+and GPU intensity are there as on Linux, but a memory lock cannot go above the
+clock the driver allows while computing (9251 MHz on an RTX 3080), so the
+memory cannot be raised from here. The locks and the power limit need the
+miner started as administrator (<code>start.bat</code>).</p>
 
 <h3>Memory offset — the main tuning knob</h3>
 <p><b>Why this one.</b> The algorithm this miner runs is scrypt with N=1024,

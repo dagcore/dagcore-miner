@@ -179,9 +179,11 @@ that, this page is all you need.</p>
   service. <b>Windows 10 (1803 or later)</b> works for testing.</li>
 </ul>
 <div class="note warn"><b>Windows is experimental.</b> The Windows build runs
-by hand and has no installer or service. Clock locks and offsets are Linux-only
-for now (the Windows build has no NVML). The power limit goes through
-<code>nvidia-smi</code> as on Linux, and on Windows only works with the miner
+by hand and has no installer or service. Clock locks work as on Linux; clock
+offsets do not — the Windows driver refuses them ("Not Supported"), so the
+memory cannot be raised from the dashboard there (MSI Afterburner can do it
+next to the miner). The power limit goes through
+<code>nvidia-smi</code> as on Linux; it and the clock locks only work with the miner
 started as administrator (<code>start.bat</code>, or right-click → Run as
 administrator); otherwise the
 dashboard shows it as unavailable and says why. Mining itself works the
@@ -397,10 +399,12 @@ shares start being rejected, there is no telling which one did it.</p>
   <tr><td>Advanced: core clock, memory clock, core offset</td><td>For experienced
       users.</td><td>Apply — then a 10-minute test</td></tr>
 </table></div>
-<p><b>On Windows</b> only the power limit and GPU intensity appear: the clock
-and offset controls need NVML, which the Windows build does not have yet, so
-the dashboard leaves them out rather than show controls that cannot work. The
-power limit also needs the miner started as administrator; intensity does
+<p><b>On Windows</b> the offset rows do not appear: the driver there refuses
+clock offsets, and the dashboard says so instead of showing controls that
+cannot work. The clock locks, the power limit and GPU intensity are there as
+on Linux, but a memory lock cannot go above the 9251 MHz the driver allows
+while computing. The locks and the power limit need the miner started as
+administrator; intensity does
 not.</p>
 <p><b>The 10-minute test</b> starts by itself for clock changes. A banner shows
 the countdown and the rejected shares. If any appear, the old value comes back

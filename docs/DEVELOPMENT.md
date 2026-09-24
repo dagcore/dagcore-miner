@@ -276,9 +276,17 @@ pool, 1.43-1.53 MH/s at stock settings. The power limit goes through
 the token: `control_init` checks it (`CheckTokenMembership`, which also says
 no for `runas /trustlevel:0x20000`, the way to test a non-admin start from an
 elevated shell) and otherwise makes the controls unavailable with the reason.
-Still missing: NVML writes (offsets and clock locks are stubbed), the CPU
-temperature, a Windows service and installer, and an ACL on the token file
-(other local accounts can read it).
+Clock control goes through the same NVML code as on Linux. Measured on the
+RTX 3080, driver 617.14: the locks are accepted, but every VF offset call
+(`nvmlDevice{Get,Set}{Gpc,Mem}ClkVfOffset` and their MinMax) answers
+`NVML_ERROR_NOT_SUPPORTED` - they are exported, but the GeForce driver on
+Windows leaves overclocking to NVAPI. And a memory lock does not lift the
+clock above the P2 cap the driver sets for compute: locked at 9501 the card
+stayed at 9251 MHz, with no hashrate gain. On Linux the same card ran 10276
+MHz with a +2050 offset. Memory overclocking on Windows would mean NVAPI
+(`NvAPI_GPU_SetPstates20`, not in the public SDK) - not attempted.
+Still missing: the CPU temperature, a Windows service and installer, and an
+ACL on the token file (other local accounts can read it).
 
 **The GPU thread keeps a CPU core busy while it waits.** Each batch ends in
 `clWaitForEvents`, and NVIDIA's OpenCL driver waits for the kernel by spinning,
@@ -306,7 +314,7 @@ and takes the mining card's handle; `nvml_read_stats()` reads temperature,
 load, memory used (`nvmlDeviceGetMemoryInfo_v2`, as `nvidia-smi` counts it),
 power and clocks. Windows reads through it first, `nvidia-smi` second; Linux
 still reads through `nvidia-smi`. `nvml_load()` adds the clock-control entry
-points on top, on Linux only. `DAGCORE_NVML_LIB` points either at another
+points on top, on both systems. `DAGCORE_NVML_LIB` points either at another
 library, which is how it is tested. On Windows with an RTX 3080 every reading
 matched `nvidia-smi`, with `nvidia-smi` taken off the miner's `PATH` so that
 only NVML could answer; with neither the miner mined on and left the readings

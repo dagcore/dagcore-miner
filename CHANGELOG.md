@@ -60,17 +60,23 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     troubleshooting - Linux and Windows side by side where they differ. It
     opens from the folder with a double-click, offline, before the miner
     has run.
-  - Windows: the dashboard leaves out what that build cannot do - the clock
-    lock and offset rows, Adopt, and the text about clock tests - instead of
-    an error note about offsets; `/metrics` gains `clock_controls_supported`,
-    `false` there. The miner no longer warns at every start that NVML gave no
-    clock range, which it cannot there.
+  - `/metrics` gains `clock_controls_supported`: whether the build can lock
+    clocks and set offsets at all. With `false` the dashboard leaves every
+    clock control out - lock and offset rows, Adopt, the text about clock
+    tests. The first Windows builds sent `false`; both systems now send
+    `true`.
+  - Windows: clock locks go through NVML, the same code as on Linux, with
+    the same 10-minute test and administrator rights (`start.bat`). Clock
+    offsets do not: the Windows GeForce driver answers them "Not Supported"
+    (driver 617.14), so the offset rows stay hidden and `offset_reason` says
+    so. A memory lock cannot lift the clock above the driver's compute cap
+    (9251 MHz on an RTX 3080): the memory cannot be overclocked from the
+    dashboard on Windows.
   - Windows: GPU temperature, load, memory used, power and clocks are read
     from `nvml.dll`, which every NVIDIA driver installs, loaded at run time
     from System32 or the NVSMI folder only; `nvidia-smi` is the fallback.
     Without either the miner runs normally and the dashboard leaves those
-    readings out. Writes (power limit, offsets, clock locks) are not done
-    through it yet. On an RTX 3080 the readings match `nvidia-smi` exactly,
+    readings out. On an RTX 3080 the readings match `nvidia-smi` exactly,
     and an `nvml.dll` dropped next to the `.exe` is not loaded.
   - README: how to build, check and run the Windows kit by hand.
 - Every start names the control API token file in use, not only the start
@@ -102,7 +108,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   included - stopped behind it: no hashing, no shares, no dashboard, while
   the process stayed up. Seen on Windows (the pool then lowered the
   difficulty to 0.003 and closed the connection); the code is the same on
-  Linux.
+  Linux. `offset_reason` also gives the real reason offsets cannot be read
+  instead of "ok".
 - **GPU intensity can be changed wherever a card is mining.** It was held
   back with the tuning controls, which need `nvidia-smi` and a single card,
   so a rig with several cards, or without `nvidia-smi` (a container, Windows),

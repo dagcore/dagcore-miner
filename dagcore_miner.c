@@ -3274,7 +3274,7 @@ static struct {
     nvml_meminfo2_fn   meminfo2;
     nvml_power_fn      power;
     nvml_clkinfo_fn    cur_clk;
-    /* Clock control on top of that (Linux only for now). */
+    /* Clock control on top of that. */
     int   tried;          /* 0 = not attempted yet */
     int   ok;             /* 1 = clock control usable */
     nvml_get_off_fn    get_core, get_mem;
@@ -3286,6 +3286,7 @@ static struct {
     nvml_supmem_fn     sup_mem;
     nvml_pstate_fn     pstate;
     char  why[160];       /* why it is unusable, for the dashboard */
+    char  off_why[160];   /* why the offsets cannot be read, when the rest can */
 } g_nvml;
 static pthread_mutex_t nvml_mtx = PTHREAD_MUTEX_INITIALIZER;
 
@@ -3378,9 +3379,11 @@ static int nvml_read_stats(double *temp, double *usage, double *memory, double *
     return any ? 0 : -1;
 }
 
-#ifndef _WIN32
 /* Clock control: the base, plus every clock entry point resolved up front -
- * a half-loaded NVML is worse than none. */
+ * a half-loaded NVML is worse than none. The same code on both systems:
+ * nvml.dll exports every one of these (checked with driver 617.14), and on
+ * Windows, as on Linux, they need administrator rights - control_init
+ * already holds the controls back without them. */
 static int nvml_load(void) {
     if (g_nvml.tried) return g_nvml.ok;
     g_nvml.tried = 1;
@@ -3413,11 +3416,26 @@ static int nvml_load(void) {
     return 1;
 }
 
+/* The offsets, or -1 with the reason in g_nvml.off_why. Clock locks can work
+ * where offsets do not: on Windows the GeForce driver answers the offset
+ * calls "Not Supported" (driver 617.14, RTX 3080) - they exist in nvml.dll,
+ * but overclocking there goes through NVAPI - while locks are accepted. */
 static int nvml_read_offsets(int *core, int *mem) {
-    if (!nvml_load()) return -1;
-    int c = 0, m = 0;
-    if (g_nvml.get_core(g_nvml.dev, &c) != 0) return -1;
-    if (g_nvml.get_mem(g_nvml.dev, &m) != 0) return -1;
+    if (!nvml_load()) {
+        snprintf(g_nvml.off_why, sizeof(g_nvml.off_why), "%s", g_nvml.why);
+        return -1;
+    }
+    int c = 0, m = 0, rc;
+    if ((rc = g_nvml.get_core(g_nvml.dev, &c)) != 0 ||
+        (rc = g_nvml.get_mem(g_nvml.dev, &m)) != 0) {
+        const char *where = "";
+#ifdef _WIN32
+        if (rc == 3) where = " by the Windows driver";    /* NVML_ERROR_NOT_SUPPORTED */
+#endif
+        snprintf(g_nvml.off_why, sizeof(g_nvml.off_why), "clock offsets: %s%s",
+                 nvml_err(rc), where);
+        return -1;
+    }
     if (core) *core = c;
     if (mem) *mem = m;
     return 0;
@@ -3560,7 +3578,7 @@ static int nvml_unlock_clock(int is_mem, char *err, size_t err_size) {
  * matches the table after an offset change. */
 static int nvml_current_clock(int is_mem, int *mhz) {
     if (!nvml_load()) return -1;
-    nvml_clkinfo_fn f = (nvml_clkinfo_fn)dlsym(g_nvml.lib, "nvmlDeviceGetClockInfo");
+    nvml_clkinfo_fn f = g_nvml.cur_clk;
     if (!f) return -1;
     unsigned int v = 0;
     if (f(g_nvml.dev, is_mem ? NVML_CLK_MEM : NVML_CLK_GRAPHICS, &v) != 0) return -1;
@@ -3568,27 +3586,6 @@ static int nvml_current_clock(int is_mem, int *mhz) {
     return 0;
 }
 
-#else
-/* No NVML on Windows yet: offsets and locks report "not wired up", and the
- * clock helpers the rest of the file uses see no shift and no table. */
-static int nvml_read_offsets(int *c, int *m) { (void)c; (void)m; return -1; }
-static int nvml_write_offset(int a, int b, char *e, size_t n) {
-    (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
-}
-static int nvml_offset_bounds(int a, int *l, int *h) { (void)a; (void)l; (void)h; return -1; }
-static int nvml_clock_bounds(int a, int *l, int *h)  { (void)a; (void)l; (void)h; return -1; }
-static int nvml_mem_shift(void) { return 0; }
-static int nvml_lock_clock(int a, int b, char *e, size_t n) {
-    (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
-}
-static int nvml_unlock_clock(int a, char *e, size_t n) {
-    (void)a; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
-}
-static int nvml_current_clock(int a, int *m) { (void)a; (void)m; return -1; }
-static int clk_shift(int is_mem) { (void)is_mem; return 0; }
-static int clk_effective(int is_mem, int base) { (void)is_mem; return base > 0 ? base : 0; }
-static int clk_snap_base(int is_mem, int want) { (void)is_mem; return want > 0 ? want : 0; }
-#endif
 
 /* Apply a power limit. Needs root (the service runs as root); nvidia-smi
  * prints the reason on failure, so it is captured and logged rather than
@@ -3971,19 +3968,11 @@ static void control_init(void) {
     /* Clock envelope now comes from NVML, and is re-read per request rather
      * than cached: an offset change moves the whole table. A failure here does
      * not disable the controls - the power limit still works and the page
-     * hides the clock rows when the range is unknown. On Windows there is no
-     * clock control at all (clock_controls_supported is false), so no range is
-     * expected and nothing is said at every start. */
-    int core_rc = nvml_clock_bounds(0, &g_core_lo, &g_core_hi);
-    int mem_rc  = nvml_clock_bounds(1, &g_mem_lo, &g_mem_hi);
-#ifndef _WIN32
-    if (core_rc != 0)
+     * hides the clock rows when the range is unknown. */
+    if (nvml_clock_bounds(0, &g_core_lo, &g_core_hi) != 0)
         fprintf(stderr, "[DagCore] WARNING: no core clock range from NVML\n");
-    if (mem_rc != 0)
+    if (nvml_clock_bounds(1, &g_mem_lo, &g_mem_hi) != 0)
         fprintf(stderr, "[DagCore] WARNING: no memory clock range from NVML\n");
-#else
-    (void)core_rc; (void)mem_rc;
-#endif
     g_core_boost = g_core_hi;
     g_mem_boost  = g_mem_hi;
 
@@ -5286,11 +5275,7 @@ static void *dagtech_metrics_thread(void *arg) {
         const char *off_why = "not queried";
         if (g_control_ok) {
             off_ok = (nvml_read_offsets(&off_core, &off_mem) == 0);
-#ifndef _WIN32
-            off_why = g_nvml.why;
-#else
-            off_why = "not supported on Windows";
-#endif
+            off_why = off_ok ? "ok" : g_nvml.off_why;
         } else {
             off_why = g_control_reason;
         }
@@ -5551,14 +5536,12 @@ static void *dagtech_metrics_thread(void *arg) {
             (unsigned long long)q_over, (unsigned long long)q_full,
             (unsigned long long)q_expired, q_depth, inflight,
             submit_burst_max, submit_burst_gap_us, submit_max_inflight,
-            /* Whether this build can lock clocks and set offsets at all. The
-             * Windows build has no NVML: the page then leaves every clock
-             * control out instead of showing ones that can never work. */
-#ifdef _WIN32
-            "false"
-#else
+            /* Whether this build can lock clocks and set offsets at all - both
+             * can since the Windows build drives NVML too. Kept for the page,
+             * which leaves every clock control out when it reads false (the
+             * Windows builds before that); whether NVML answers right now is
+             * offset_available. */
             "true"
-#endif
             );
         pthread_mutex_unlock(&stats_mtx);
 
