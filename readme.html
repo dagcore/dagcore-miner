@@ -180,10 +180,11 @@ that, this page is all you need.</p>
 </ul>
 <div class="note warn"><b>Windows is experimental.</b> The Windows build runs
 by hand and has no installer or service. Clock locks and offsets are Linux-only
-for now (the Windows build has no NVML); the power limit goes through
-<code>nvidia-smi</code> as on Linux but has not been tried on Windows, where
-changing it may need the miner started as administrator. Mining itself works
-the same.</div>
+for now (the Windows build has no NVML). The power limit goes through
+<code>nvidia-smi</code> as on Linux, and on Windows only works with the miner
+started as administrator (right-click → Run as administrator); otherwise the
+dashboard shows it as unavailable and says why. Mining itself works the
+same.</div>
 <a class="up" href="#top">back to top</a>
 </section>
 
@@ -394,7 +395,9 @@ shares start being rejected, there is no telling which one did it.</p>
 </table></div>
 <p><b>On Windows</b> only the power limit and GPU intensity appear: the clock
 and offset controls need NVML, which the Windows build does not have yet, so
-the dashboard leaves them out rather than show controls that cannot work.</p>
+the dashboard leaves them out rather than show controls that cannot work. The
+power limit also needs the miner started as administrator; intensity does
+not.</p>
 <p><b>The 10-minute test</b> starts by itself for clock changes. A banner shows
 the countdown and the rejected shares. If any appear, the old value comes back
 on its own and nothing is saved; after ten clean minutes the new one is kept for

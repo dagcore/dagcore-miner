@@ -271,10 +271,14 @@ layout below), `overrides.env` and `config.env` replaced with `MoveFileEx`,
 the metrics receive timeout, `2>NUL` for `nvidia-smi`, a clean stop on Ctrl+C,
 Ctrl+Break and console close, and the GPU readings from `nvml.dll` (below).
 Checked on Windows 11 with an RTX 3080 (driver 617.14) against the public
-pool, 1.43-1.53 MH/s at stock settings. Still missing: NVML writes (offsets
-and clock locks are stubbed; the power limit goes through `nvidia-smi` and has
-not been tried), the CPU temperature, a Windows service and installer, and an
-ACL on the token file (other local accounts can read it).
+pool, 1.43-1.53 MH/s at stock settings. The power limit goes through
+`nvidia-smi -pl`, which on Windows needs the Administrators group enabled in
+the token: `control_init` checks it (`CheckTokenMembership`, which also says
+no for `runas /trustlevel:0x20000`, the way to test a non-admin start from an
+elevated shell) and otherwise makes the controls unavailable with the reason.
+Still missing: NVML writes (offsets and clock locks are stubbed), the CPU
+temperature, a Windows service and installer, and an ACL on the token file
+(other local accounts can read it).
 
 **The GPU thread keeps a CPU core busy while it waits.** Each batch ends in
 `clWaitForEvents`, and NVIDIA's OpenCL driver waits for the kernel by spinning,

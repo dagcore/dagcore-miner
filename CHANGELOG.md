@@ -127,6 +127,13 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   `.exe` again - same command line, same console window - which waits for
   the old process to exit before taking the port and the card. Linux without
   systemd is unchanged.
+- Windows: the power limit needs the miner run as administrator, and
+  without it every Apply failed with "nvidia-smi: Terminating early due to
+  previous errors". The controls now show as unavailable from the start,
+  with the reason and "start the miner with Run as administrator"; run
+  that way, the power limit applies. A failed `nvidia-smi -pl` - on any
+  system - now reports its first line, the cause ("Insufficient
+  Permissions"), instead of that last one.
 - `make windows` on Windows itself (Git Bash) created `include/CL/CL` on
   every forced rebuild, since `ln -s` copies there; the link is now replaced.
 

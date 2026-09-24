@@ -165,8 +165,10 @@ the same, so a browser that has it keeps working, and that old folder can be
 deleted. Every start prints which token file is in use (`Control API token:`).
 
 **Limits of this build.** Temperature, load, power, memory and clocks are
-read from the NVIDIA driver; clock locks, offsets and Adopt are not offered,
-and the power limit has not been tried. There is no service: Save & restart
+read from the NVIDIA driver; clock locks, offsets and Adopt are not offered.
+The power limit works only when the miner runs as administrator
+(right-click `dagcore-miner.exe` → Run as administrator); otherwise the
+dashboard says so and leaves it unavailable. There is no service: Save & restart
 works because the miner starts itself again, in the same window, but nothing
 brings it back after a crash or a reboot. The GPU build keeps one CPU
 core busy while it mines — the NVIDIA driver waits for the card by spinning

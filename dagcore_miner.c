@@ -3601,15 +3601,17 @@ static int nvsmi_set_power_limit(int idx, int watts, char *err, size_t err_size)
         snprintf(err, err_size, "cannot run nvidia-smi");
         return -1;
     }
-    char line[256], last[256] = "";
+    /* The first line is the cause ("... Insufficient Permissions"); the last
+     * is only nvidia-smi's "Terminating early due to previous errors." */
+    char line[256], first[256] = "";
     while (fgets(line, sizeof(line), fp)) {
         size_t l = strlen(line);
         while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
-        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
+        if (l && !first[0]) { strncpy(first, line, sizeof(first) - 1); first[sizeof(first) - 1] = '\0'; }
     }
     int rc = pclose(fp);
     if (rc != 0) {
-        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
+        snprintf(err, err_size, "%s", first[0] ? first : "nvidia-smi failed");
         return -1;
     }
     return 0;
@@ -3912,6 +3914,23 @@ static int token_equal(const char *a, const char *b) {
     return diff == 0;
 }
 
+#ifdef _WIN32
+/* Whether this process has administrator rights: the Administrators group
+ * enabled in its token. A double-click under UAC, or a token restricted with
+ * runas /trustlevel, carries the group as deny-only and answers no. */
+static int dt_is_elevated(void) {
+    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+    PSID admins = NULL;
+    BOOL member = FALSE;
+    if (!AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                  DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins))
+        return 0;
+    if (!CheckTokenMembership(NULL, admins, &member)) member = FALSE;
+    FreeSid(admins);
+    return member ? 1 : 0;
+}
+#endif
+
 /* Decide once at startup whether the controls can work at all, and say why
  * not - the dashboard shows the reason instead of dead buttons. */
 static void control_init(void) {
@@ -3937,6 +3956,17 @@ static void control_init(void) {
         snprintf(g_control_reason, sizeof(g_control_reason), "nvidia-smi not available");
         return;
     }
+#ifdef _WIN32
+    /* nvidia-smi -pl needs an elevated process on Windows; without one every
+     * Apply failed with "Insufficient Permissions". Say so up front - the
+     * power range above is still read, so the page can show it. */
+    if (!dt_is_elevated()) {
+        snprintf(g_control_reason, sizeof(g_control_reason),
+                 "the power limit needs administrator rights on Windows - "
+                 "start the miner with Run as administrator");
+        return;
+    }
+#endif
     /* Clock envelope now comes from NVML, and is re-read per request rather
      * than cached: an offset change moves the whole table. A failure here does
      * not disable the controls - the power limit still works and the page
