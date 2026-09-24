@@ -70,6 +70,14 @@ linked statically, so the GPU `.exe` needs only system DLLs and `OpenCL.dll`,
 which the NVIDIA driver installs. Nothing here can run it: there is no Wine
 and no Windows machine on the build rig.
 
+`make windows` also writes `build/win/config.env.example`, made from the Linux
+`config.env.example` by `win/config.env.sed`: the same keys and text, with the
+Linux paths (`/etc`, `/var/lib`, the XDG cache, the `/opt` `DASHBOARD_DIR`)
+replaced by what the portable layout does. If a Linux path survives - someone
+reworded a line the sed script matches - the build stops and names the line;
+fix the script, not the output. `make windows-package` puts everything a user
+unzips in `build/win/DAGCore/`.
+
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `NATIVE` | `0` | `1` adds `-march=native`. Only for a binary that stays on the machine that built it. |

@@ -89,16 +89,15 @@ NVIDIA card.
 **Build it** on a Linux machine with MinGW-w64 (`sudo apt install mingw-w64`):
 
 ```sh
-make windows    # -> dagcore-miner-cpu.exe and dagcore-miner.exe
+make windows-package    # -> build/win/DAGCore/
 ```
 
-**Copy to the Windows machine**, all into one folder you can write to — for
-example `C:\DAGCore`, not `Program Files`:
-
-- `dagcore-miner-cpu.exe`
-- the `dashboard` folder, whole
-- `config.env.example`, saved as `config.env`, with your `WALLET=` filled in
-  (optional: `--wallet` on the command line does the same)
+**Copy the `DAGCore` folder to the Windows machine**, somewhere you can write
+to — for example `C:\DAGCore`, not `Program Files`. It holds both `.exe` files,
+`dagcore_gpu.cl`, the `dashboard` folder and a `config.env.example` written for
+Windows: rename it to `config.env` and fill in `WALLET=` (or give `--wallet` on
+the command line instead). It needs no `DASHBOARD_DIR`; the line is there,
+commented out, only for serving a copy kept elsewhere.
 
 Nothing else is needed: the `.exe` has no DLLs of its own to bring along.
 (`dagcore-miner.exe` is the GPU build; it also needs `dagcore_gpu.cl` in the same

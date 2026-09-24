@@ -3,7 +3,9 @@
 #   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
 #   make cpu            -> dagcore-miner-cpu  (without OpenCL)
 #   make windows        -> dagcore-miner.exe + dagcore-miner-cpu.exe, cross-compiled
-#                          with MinGW-w64 (apt install mingw-w64)
+#                          with MinGW-w64 (apt install mingw-w64), and the
+#                          Windows config.env.example in build/win
+#   make windows-package -> build/win/DAGCore: the folder to copy to Windows
 #   make warn           -> syntax check with -Wall -Wextra
 #   make install        -> binary + kernel in $(PREFIX)/bin, the dashboard in
 #                          $(PREFIX)/share/dagcore-miner, config.env.example
@@ -71,6 +73,12 @@ WIN_LDFLAGS    := -static
 WIN_LDLIBS     := -lws2_32 -lbcrypt -lpthread -lm
 BIN_GPU_WIN    := dagcore-miner.exe
 BIN_CPU_WIN    := dagcore-miner-cpu.exe
+# The example config for Windows is made from the Linux one: same keys, same
+# text, with the Linux paths replaced by win/config.env.sed. A Linux path that
+# survives fails the build rather than ship a config pointing into /opt.
+WIN_CONFIG_EX  := $(WIN_BUILD)/config.env.example
+WIN_CONFIG_SED := win/config.env.sed
+WIN_PKG        := $(WIN_BUILD)/DAGCore
 
 # The installer's location, so that a hand "make install" over an installed rig
 # replaces what its service runs. Until 1.2.1 it was /usr/local, which nothing
@@ -82,7 +90,7 @@ SHAREDIR := $(PREFIX)/share/dagcore-miner
 # install payload. Overridable for packagers who want it elsewhere.
 SYSCONFDIR ?= /etc/dagcore-miner
 
-.PHONY: all cpu windows check check-windows warn install uninstall clean help
+.PHONY: all cpu windows windows-package check check-windows warn install uninstall clean help
 all: $(BIN_GPU)
 
 # $(KERNEL) is a prerequisite only for consistency: it is not compiled, it is read
@@ -94,7 +102,25 @@ cpu: $(BIN_CPU)
 $(BIN_CPU): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-windows: $(BIN_GPU_WIN) $(BIN_CPU_WIN)
+windows: $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(WIN_CONFIG_EX)
+
+$(WIN_CONFIG_EX): $(CONFIG_EX) $(WIN_CONFIG_SED)
+	@mkdir -p $(WIN_BUILD)
+	sed -f $(WIN_CONFIG_SED) $< > $@.tmp
+	@if grep -nE '/etc/|/var/lib|/opt/|/usr/|XDG_|\$$HOME|\.cache/' $@.tmp; then \
+	    echo "$@: Linux paths left (above) - update $(WIN_CONFIG_SED)"; \
+	    rm -f $@.tmp; exit 1; \
+	fi
+	mv $@.tmp $@
+
+# Everything a Windows user unzips, in one folder: the miner looks for all of
+# it next to the .exe.
+windows-package: windows
+	rm -rf $(WIN_PKG)
+	mkdir -p $(WIN_PKG)/dashboard
+	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(WIN_PKG)/
+	cp $(DASHBOARD) $(DASH_OFL) $(WIN_PKG)/dashboard/
+	@echo "windows-package: $(WIN_PKG) - copy that folder to the Windows machine"
 
 $(WIN_BUILD)/include/CL:
 	@mkdir -p $(WIN_BUILD)/include
@@ -124,7 +150,7 @@ check:
 
 check-windows:
 	@if command -v $(MINGW_CC) >/dev/null 2>&1; then \
-	    $(MAKE) --no-print-directory -B $(BIN_GPU_WIN) $(BIN_CPU_WIN) && \
+	    $(MAKE) --no-print-directory -B $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(WIN_CONFIG_EX) && \
 	    echo "check: both Windows variants (GPU + CPU) compile and link"; \
 	else \
 	    echo "check: SKIPPED Windows variants - $(MINGW_CC) not found (apt install mingw-w64)"; \
@@ -174,6 +200,6 @@ clean:
 	$(RM) -r $(WIN_BUILD)
 
 help:
-	@printf '%s\n' 'targets: all cpu windows check warn install uninstall clean' \
+	@printf '%s\n' 'targets: all cpu windows windows-package check warn install uninstall clean' \
 	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...' \
 	                '       MINGW_CC=... OPENCL_HEADERS=... (windows)'

@@ -34,6 +34,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   - Windows: waits under 2 ms use a high-resolution waitable timer. `usleep()`
     there was `Sleep(x/1000)`, so the submit queue's 500 µs gap became
     `Sleep(0)` and spun a core, and `Sleep(1)` can last a 15.6 ms timer tick.
+  - `make windows-package` puts the folder to copy in `build/win/DAGCore/`,
+    with a `config.env.example` made for Windows from the Linux one: no
+    `/etc`, `/var/lib` or XDG paths, and no `DASHBOARD_DIR` (commented out),
+    so the miner no longer starts by saying the `/opt` dashboard is missing.
   - README: how to run the Windows build by hand, CPU-only, for testing.
 
 ### Changed
