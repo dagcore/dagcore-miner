@@ -9,6 +9,7 @@ Every setting, option, endpoint and metrics field.
 - [Control API](#control-api)
 - [/metrics fields](#metrics-fields)
 - [/history](#history)
+- [/log](#log)
 
 ## Where settings come from
 
@@ -291,7 +292,10 @@ clocks and set offsets at all: `true` now on both systems; `false` came from
 the first Windows builds, without NVML control, and the dashboard then leaves
 every clock control out - the lock and offset rows, Adopt, and the text about
 clock tests. On Windows `offset_available` is `false` with `offset_reason`
-"clock offsets: Not Supported by the Windows driver".
+"clock offsets: Not Supported by the Windows driver", and the offset fields
+are 0 even when MSI Afterburner has applied one: the miner cannot read it.
+`gpu_mem_clock` and `gpu_core_clock` still report the clock that results;
+`_max`, `_boost` and `_shift` do not include it.
 
 ### Trials
 For each of `trial_core`, `trial_mem`, `trial_coreoff`, `trial_memoff`:
@@ -343,3 +347,19 @@ restart and never written to disk. No authentication.
 Samples are oldest first. `t` and `now` are Unix seconds on the miner's clock;
 a client should place samples by `now - t` rather than trust its own clock.
 `effective_hashrate` is `null` until the effective window is full.
+
+## /log
+
+`GET /log` returns the status lines the console printed, the last ten
+minutes of them: one every 10 seconds, at most 60, in memory only like
+`/history`. The text is exactly what the console shows, without the newline.
+No authentication.
+
+```json
+{"now":1790281829,"lines":[
+  {"t":1790281805,"text":"[DagCore] 1610100.36 H/s | CPU: 0.00 H/s | GPU: 1610100.36 H/s | Shares: 2262/2179/0/83 (sub/acc/rej/stale) | Uptime: 0h12m"}, ...]}
+```
+
+Lines are oldest first; `t` and `now` are Unix seconds on the miner's clock,
+as in `/history`. The dashboard shows them under the chart, with the time and
+the hashrates converted to MH/s (or kH/s, GH/s).

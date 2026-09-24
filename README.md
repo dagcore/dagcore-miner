@@ -172,13 +172,36 @@ the same, so a browser that has it keeps working, and that old folder can be
 deleted. Every start prints which token file is in use (`Control API token:`).
 
 **Limits of this build.** Temperature, load, power, memory and clocks are
-read from the NVIDIA driver. Clock locks work, through NVML as on Linux, but
-clock offsets do not: the Windows GeForce driver answers them "Not
-Supported", so the offset rows stay hidden with that reason. Without an
-offset the memory cannot go above what the driver allows while computing
-(9251 MHz on an RTX 3080, where Linux ran it at 10276 with +2050); a tool
-that uses NVIDIA's own interface, such as MSI Afterburner, can still apply
-one next to the miner. The power limit and the clock controls work only when
+read from the NVIDIA driver. Clock locks work, through NVML as on Linux.
+
+**Clock offsets cannot be set from the miner on Windows.** The Windows
+GeForce driver refuses them through NVML ("Not Supported"), so the dashboard
+hides the offset rows and shows that reason. Tuning on Windows is yours to do
+with **MSI Afterburner**, running next to the miner. The miner reads the
+clocks that result and shows them as they are: with the memory raised in
+Afterburner to 10277 MHz, the dashboard and `nvidia-smi` both showed 10277.
+Two things it cannot know about. The lock range (`gpu_mem_clock_max`) stays at
+the card's stock table (9501 MHz on an RTX 3080), so leave the memory lock
+off while Afterburner raises the memory; the two were not tested together.
+And the offset belongs to Afterburner: it holds until Reset or a reboot, and
+comes back after a reboot only if Afterburner applies it at startup.
+
+**Expect less hashrate on Windows without tuning.** This algorithm is
+memory-bound, and without an offset the driver keeps the memory at its
+compute clock, 9251 MHz on an RTX 3080. Measured on the same RTX 3080 at 300 W:
+
+| | Memory clock | Hashrate |
+|---|---|---|
+| Windows, no tuning | 9251 MHz | 1.43–1.53 MH/s |
+| Windows, memory raised in Afterburner | 10277 MHz | 1.63 MH/s |
+| Linux, memory offset +1200 set from the miner | 9851 MHz | 1.61 MH/s |
+
+The numbers do not mean the same thing in both tools. Afterburner's memory
+offset moves the clock one to one (+355 raised it from 9251 to 9605 MHz); the
+miner's offset on Linux moves it by half (+1200 gives +600). So +1200 on Linux
+is about +600 in Afterburner.
+
+The power limit and the clock controls work only when
 the miner runs as administrator
 (`start.bat`, or right-click `dagcore-miner.exe` → Run as administrator); otherwise the
 dashboard says so and leaves it unavailable. There is no service: Save & restart

@@ -148,6 +148,14 @@ button.pausebtn{width:auto;min-height:34px;padding:6px 14px;font-size:12.5px}
 canvas{width:100%;height:100%;display:block}
 #chartEmpty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted-2);font-size:12px}
 
+/* ---------- log ---------- */
+/* About seven lines tall; longer lines scroll inside the box, not the page. */
+.logbox{height:136px;margin-top:12px;padding:8px 10px;overflow:auto;
+  background:rgba(0,0,0,.35);border:1px solid var(--line-soft);border-radius:8px;
+  font-size:12px;line-height:1.55;color:var(--text-2);white-space:pre}
+.logbox .log-t{color:var(--label);margin-right:10px}
+.logbox .log-empty{color:var(--muted-2)}
+
 /* ---------- rows / bars ---------- */
 .row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0}
 .row + .row{border-top:1px solid var(--line-soft)}
@@ -405,6 +413,11 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <canvas id="chart"></canvas>
       <div id="chartEmpty">collecting samples&hellip;</div>
     </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <h2 style="margin:0">Log &mdash; last 10 minutes</h2>
+    <div class="logbox" id="logBox"><span class="log-empty">waiting for the first status line&hellip;</span></div>
   </section>
 
   <section class="grid cols">
@@ -1125,6 +1138,50 @@ function loadHistory(){
     }
     history = before.concat(history);
     drawChart();
+  };
+  try { xhr.send(); } catch (e){}
+}
+
+/* ---- log --------------------------------------------------------- */
+/* The console's status lines, kept by the miner (/log). Shown with the time
+ * they were printed, without the "[DagCore]" prefix, and with every "H/s"
+ * figure in the page's units (1610100.36 H/s -> 1.61 MH/s); the console keeps
+ * the raw numbers. Times are the miner's clock mapped onto ours, as in
+ * loadHistory. */
+var LOG_MS = 10000, logLast = null;
+function logText(s){
+  return s.replace(/^\[DagCore\]\s*/, "")
+          .replace(/(\d+(?:\.\d+)?) H\/s/g, function(m, v){ return hashStr(parseFloat(v)); });
+}
+function loadLog(){
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "log?t=" + Date.now(), true);
+  xhr.timeout = 4000;
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4 || xhr.status !== 200) return;
+    var d;
+    try { d = JSON.parse(xhr.responseText); } catch (e){ return; }
+    if (!d || !d.lines || typeof d.now !== "number" || !d.lines.length) return;
+    var tail = d.lines[d.lines.length - 1];
+    var key = d.lines.length + ":" + tail.t + ":" + tail.text;
+    if (key === logLast) return;
+    logLast = key;
+    var box = $("logBox");
+    var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+    var now = Date.now(), frag = document.createDocumentFragment();
+    for (var i = 0; i < d.lines.length; i++){
+      var ln = d.lines[i], row = document.createElement("div"), t = document.createElement("span");
+      t.className = "log-t";
+      t.textContent = new Date(now - (d.now - ln.t) * 1000).toLocaleTimeString();
+      row.appendChild(t);
+      row.appendChild(document.createTextNode(logText(ln.text)));
+      frag.appendChild(row);
+    }
+    box.textContent = "";
+    box.appendChild(frag);
+    /* Follow new lines unless the reader has scrolled up to look back. */
+    if (atEnd || box.getAttribute("data-filled") !== "1") box.scrollTop = box.scrollHeight;
+    box.setAttribute("data-filled", "1");
   };
   try { xhr.send(); } catch (e){}
 }
@@ -2047,6 +2104,8 @@ drawChart();
 loadHistory();
 poll();
 setInterval(poll, POLL_MS);
+loadLog();
+setInterval(loadLog, LOG_MS);
 })();
 </script>
 </body>

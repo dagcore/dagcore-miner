@@ -283,8 +283,33 @@ RTX 3080, driver 617.14: the locks are accepted, but every VF offset call
 Windows leaves overclocking to NVAPI. And a memory lock does not lift the
 clock above the P2 cap the driver sets for compute: locked at 9501 the card
 stayed at 9251 MHz, with no hashrate gain. On Linux the same card ran 10276
-MHz with a +2050 offset. Memory overclocking on Windows would mean NVAPI
-(`NvAPI_GPU_SetPstates20`, not in the public SDK) - not attempted.
+MHz with a +2050 offset. Tuning on Windows is left to MSI Afterburner; the
+miner reads the result through NVML (`gpu_mem_clock` 10277 with Afterburner's
+offset applied, the same as `nvidia-smi`, 1.63 MH/s at 300 W against 1.43-1.53
+stock), but not the offset itself, so the lock range stays at the stock table.
+
+**NVAPI was investigated and not used.** Afterburner sets offsets through
+NVAPI, not NVML. `nvapi64.dll` is in System32 and exports only
+`nvapi_QueryInterface` (and `nvapi_Direct_GetMethod`); every function is
+fetched by a 32-bit ID. Everything needed to read is public (the NVAPI SDK is
+MIT): `NvAPI_Initialize`, `EnumPhysicalGPUs`, `GPU_GetBusId` to match the NVML
+card, and `GPU_GetPstates20`. The write, `NvAPI_GPU_SetPstates20` (ID
+`0x0F4DAE6B`), is only in the NDA SDK, though it takes the public struct.
+A read-only probe on the RTX 3080 (driver 617.14), a separate program that
+never looked up the write: `NV_GPU_PERF_PSTATES20_INFO` VER3 (0x31CF8) accepted
+as laid out in the public header; frequencies in kHz on `nvidia-smi`'s scale
+(P2 memory 10277000 kHz while `nvidia-smi` said 10277 MHz); only P0 editable,
+delta ranges graphics -1000..+1000 MHz and memory -1000..+3000 MHz (the NVML
++6000 halved), P2 not editable but shifted by the same +1026 MHz as P0. With
+Afterburner's offset applied, `freqDelta_kHz` still read 0 - so Afterburner
+on Ampere probably writes through another undocumented interface, and whether
+`SetPstates20` on P0 would move the clock was left unproven. Reasons to stop
+there: the write is undocumented and could change with any driver; it most
+likely needs administrator rights; it would add a second unit scale (1:1,
+where NVML on Linux is 2:1) to reconcile in the dashboard; it would fight
+Afterburner, where the last writer wins; and Afterburner already does the job
+well. About 250-350 lines of Windows-only code would have bought what one
+existing tool gives.
 Still missing: the CPU temperature, a Windows service and installer, and an
 ACL on the token file (other local accounts can read it).
 

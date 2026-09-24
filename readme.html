@@ -180,9 +180,10 @@ that, this page is all you need.</p>
 </ul>
 <div class="note warn"><b>Windows is experimental.</b> The Windows build runs
 by hand and has no installer or service. Clock locks work as on Linux; clock
-offsets do not — the Windows driver refuses them ("Not Supported"), so the
-memory cannot be raised from the dashboard there (MSI Afterburner can do it
-next to the miner). The power limit goes through
+offsets cannot be set from the miner — the Windows driver refuses them
+("Not Supported"). Tune the memory with MSI Afterburner instead; the miner
+shows the clocks that result. Without it, expect less hashrate than on Linux
+(see <a href="#tuning">Tune the card</a>). The power limit goes through
 <code>nvidia-smi</code> as on Linux; it and the clock locks only work with the miner
 started as administrator (<code>start.bat</code>, or right-click → Run as
 administrator); otherwise the
@@ -399,13 +400,25 @@ shares start being rejected, there is no telling which one did it.</p>
   <tr><td>Advanced: core clock, memory clock, core offset</td><td>For experienced
       users.</td><td>Apply — then a 10-minute test</td></tr>
 </table></div>
-<p><b>On Windows</b> the offset rows do not appear: the driver there refuses
-clock offsets, and the dashboard says so instead of showing controls that
-cannot work. The clock locks, the power limit and GPU intensity are there as
-on Linux, but a memory lock cannot go above the 9251 MHz the driver allows
-while computing. The locks and the power limit need the miner started as
-administrator; intensity does
-not.</p>
+<p><b>On Windows</b> clock offsets cannot be set from the miner: the driver
+refuses them, so the offset rows do not appear and the dashboard says why.
+The clock locks, the power limit and GPU intensity are there as on Linux, but
+a memory lock cannot go above the 9251 MHz the driver allows while computing.
+The locks and the power limit need the miner started as administrator;
+intensity does not.</p>
+<p><b>Raise the memory with MSI Afterburner</b>, running next to the miner.
+The dashboard shows the clock that results (Memory clock), the same figure
+<code>nvidia-smi</code> gives; its lock range does not know about
+Afterburner's offset, so leave the memory lock off. Afterburner's offset moves
+the clock one to one, the miner's Linux offset by half: +1200 on Linux is
+about +600 in Afterburner. The offset holds until Reset or a reboot.</p>
+<p>Without it, Windows mines slower than Linux. On an RTX 3080 at 300 W:</p>
+<div class="table-scroll"><table>
+  <tr><th></th><th>Memory clock</th><th>Hashrate</th></tr>
+  <tr><td>Windows, no tuning</td><td>9251 MHz</td><td>1.43–1.53 MH/s</td></tr>
+  <tr><td>Windows, memory raised in Afterburner</td><td>10277 MHz</td><td>1.63 MH/s</td></tr>
+  <tr><td>Linux, memory offset +1200 from the miner</td><td>9851 MHz</td><td>1.61 MH/s</td></tr>
+</table></div>
 <p><b>The 10-minute test</b> starts by itself for clock changes. A banner shows
 the countdown and the rejected shares. If any appear, the old value comes back
 on its own and nothing is saved; after ten clean minutes the new one is kept for

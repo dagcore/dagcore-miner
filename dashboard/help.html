@@ -188,6 +188,15 @@ restarts, the chart starts empty. It is there to show shape:
 a flat line is healthy, a sawtooth means something is throttling, a cliff
 means the miner reconnected or the card stopped.</p>
 
+<h3>Log</h3>
+<p>The status line the miner prints in its console every 10 seconds, the last
+ten minutes of it: hashrate (total, CPU, GPU or each card), shares as
+submitted/accepted/rejected/stale, and uptime. The dashboard shows the time
+each line was printed and the hashrates in the same units as the rest of the
+page (1.61 MH/s); the console keeps the raw figure (1610100.36 H/s). Like the
+chart, it is kept in memory and starts empty when the miner restarts. Scroll
+up to look back; it follows new lines only while you are at the bottom.</p>
+
 <h3>Session, rig</h3>
 <ul>
 <li><b>Difficulty</b> — the share difficulty the pool has set for you. It
@@ -342,12 +351,18 @@ it.</p>
 <p>This is the one setting that stays usable while a clock test is running,
 and it takes effect immediately with no test of its own.</p>
 
-<p class="note warn">On Windows the memory and core offsets are not shown: the
-Windows driver refuses them ("Not Supported"). The clock locks, the power limit
-and GPU intensity are there as on Linux, but a memory lock cannot go above the
-clock the driver allows while computing (9251 MHz on an RTX 3080), so the
-memory cannot be raised from here. The locks and the power limit need the
-miner started as administrator (<code>start.bat</code>).</p>
+<p class="note warn">On Windows clock offsets cannot be set from the miner: the
+Windows driver refuses them ("Not Supported"), so the memory and core offsets
+are not shown. The clock locks, the power limit and GPU intensity are there as
+on Linux, but a memory lock cannot go above the clock the driver allows while
+computing (9251 MHz on an RTX 3080). Raise the memory with MSI Afterburner
+instead: Memory clock here shows the clock that results, but the lock range
+does not know about Afterburner's offset, so leave the memory lock off.
+Afterburner's offset moves the clock one to one, the Linux offset below by
+half: +1200 here is about +600 there. Without it Windows mines slower — on an
+RTX 3080 at 300 W, 1.43–1.53 MH/s at 9251 MHz, against 1.63 MH/s at 10277 MHz
+raised in Afterburner and 1.61 MH/s on Linux with +1200. The locks and the
+power limit need the miner started as administrator (<code>start.bat</code>).</p>
 
 <h3>Memory offset — the main tuning knob</h3>
 <p><b>Why this one.</b> The algorithm this miner runs is scrypt with N=1024,

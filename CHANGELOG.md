@@ -7,6 +7,11 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- Dashboard: a log panel under the hashrate chart, about seven lines tall,
+  with the console's status line (hashrate, shares, uptime) for the last ten
+  minutes, each with its time and the hashrates in MH/s. The miner keeps the
+  lines (60, in memory) and serves them as `GET /log`; the console output is
+  unchanged.
 - `make windows` builds `dagcore-miner.exe` and `dagcore-miner-cpu.exe` with
   MinGW-w64 - cross-compiled on Linux, or natively on Windows with WinLibs -
   and `make check` builds them too. Run by hand on Windows 11 with an RTX 3080
@@ -71,7 +76,12 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     (driver 617.14), so the offset rows stay hidden and `offset_reason` says
     so. A memory lock cannot lift the clock above the driver's compute cap
     (9251 MHz on an RTX 3080): the memory cannot be overclocked from the
-    dashboard on Windows.
+    dashboard on Windows. Tuning there is left to MSI Afterburner; the
+    miner shows the clocks that result. README, `readme.html` and the help
+    page say so, with the hashrate that costs without tuning (1.43-1.53
+    MH/s stock on an RTX 3080 at 300 W, 1.63 with the memory raised in
+    Afterburner, 1.61 on Linux with +1200). NVAPI, which Afterburner uses,
+    was looked into and left out (DEVELOPMENT.md).
   - Windows: GPU temperature, load, memory used, power and clocks are read
     from `nvml.dll`, which every NVIDIA driver installs, loaded at run time
     from System32 or the NVSMI folder only; `nvidia-smi` is the fallback.

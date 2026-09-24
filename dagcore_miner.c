@@ -600,6 +600,28 @@ static int             hist_head  = 0;   /* next slot to write */
 static int             hist_count = 0;
 static pthread_mutex_t hist_mtx   = PTHREAD_MUTEX_INITIALIZER;
 
+/* The status lines the console prints every 10s, served at /log for the
+ * dashboard's log panel. The last 60 - ten minutes - at 768 bytes each (a
+ * multi-card line grows by ~25 bytes a card): 46 KB, fixed, in .bss. Memory
+ * only, like the history. */
+#define LOG_LEN      60
+#define LOG_LINE_MAX 768
+static struct { int64_t t; char text[LOG_LINE_MAX]; } log_buf[LOG_LEN];
+static int             log_head  = 0;
+static int             log_count = 0;
+static pthread_mutex_t log_mtx   = PTHREAD_MUTEX_INITIALIZER;
+
+/* Print a status line and keep it for /log. */
+static void status_line(const char *text) {
+    printf("%s\n", text);
+    pthread_mutex_lock(&log_mtx);
+    log_buf[log_head].t = (int64_t)time(NULL);
+    snprintf(log_buf[log_head].text, LOG_LINE_MAX, "%s", text);
+    log_head = (log_head + 1) % LOG_LEN;
+    if (log_count < LOG_LEN) log_count++;
+    pthread_mutex_unlock(&log_mtx);
+}
+
 /* Effective hashrate: the work the pool accepted, as hashes. A share passes
  * when the top 64 bits of its hash are <= 0xFFFF00000000 / difficulty (see
  * dagtech_check_target), so one share at difficulty 1 takes 2^64/0xFFFF00000000
@@ -5120,6 +5142,37 @@ static void serve_history(dt_sock_t cfd) {
     free(out);
 }
 
+/* GET /log: the kept status lines oldest first, plus the miner's clock, as
+ * /history does. */
+static void serve_log(dt_sock_t cfd) {
+    /* Escaping can grow a line; status lines are plain ASCII, so 1.1x is
+     * plenty, and a line that would not fit is left out, not cut. */
+    size_t cap = 64 + (size_t)LOG_LEN * (LOG_LINE_MAX + 128);
+    char *out = malloc(cap);
+    if (!out) {
+        http_send_err(cfd, 500, "Internal Server Error", "out of memory");
+        return;
+    }
+    size_t n = (size_t)snprintf(out, cap, "{\"now\":%lld,\"lines\":[", (long long)time(NULL));
+    char esc[LOG_LINE_MAX + 96];
+    int emitted = 0;
+    pthread_mutex_lock(&log_mtx);
+    int first = (log_head - log_count + LOG_LEN) % LOG_LEN;
+    for (int i = 0; i < log_count; i++) {
+        int k = (first + i) % LOG_LEN;
+        json_escape(log_buf[k].text, esc, sizeof(esc));
+        int w = snprintf(out + n, cap - n, "%s{\"t\":%lld,\"text\":\"%s\"}",
+                         emitted ? "," : "", (long long)log_buf[k].t, esc);
+        if (w < 0 || (size_t)w >= cap - n - 2) break;   /* keep room for "]}" */
+        n += (size_t)w;
+        emitted++;
+    }
+    pthread_mutex_unlock(&log_mtx);
+    snprintf(out + n, cap - n, "]}");
+    http_send_json(cfd, 200, "OK", out);
+    free(out);
+}
+
 /* =========================================================================
  * Built-in Metrics Server (for Dashboard)
  * ========================================================================= */
@@ -5215,6 +5268,11 @@ static void *dagtech_metrics_thread(void *arg) {
             http_path(reqbuf, path, sizeof(path));
             if (strcmp(path, "/history") == 0) {
                 serve_history(cfd);
+                dt_closesock(cfd);
+                continue;
+            }
+            if (strcmp(path, "/log") == 0) {
+                serve_log(cfd);
                 dt_closesock(cfd);
                 continue;
             }
@@ -6853,6 +6911,7 @@ int main(int argc, char **argv) {
                 int up_h = (int)(uptime / 3600);
                 int up_m = (int)((uptime % 3600) / 60);
 
+                char _line[LOG_LINE_MAX];
                 if (gpu_enabled == 1) {
 #ifdef DAGTECH_GPU
                     if (g_num_gpus > 1) {
@@ -6864,9 +6923,9 @@ int main(int argc, char **argv) {
                                      _gi, g_gpus[_gi].hashrate);
                             strncat(_gd, _t, sizeof(_gd) - strlen(_gd) - 1);
                         }
-                        printf("[DagCore] %.2f H/s | CPU: %.2f H/s%s | "
+                        snprintf(_line, sizeof(_line), "[DagCore] %.2f H/s | CPU: %.2f H/s%s | "
                                "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                               " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                               " (sub/acc/rej/stale) | Uptime: %dh%dm",
                                current_hashrate, cpu_hashrate, _gd,
                                (unsigned long long)total_submitted,
                                (unsigned long long)total_accepted,
@@ -6876,9 +6935,9 @@ int main(int argc, char **argv) {
                     } else
 #endif
                     {
-                    printf("[DagCore] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
+                    snprintf(_line, sizeof(_line), "[DagCore] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                           " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                           " (sub/acc/rej/stale) | Uptime: %dh%dm",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
                            (unsigned long long)total_submitted,
                            (unsigned long long)total_accepted,
@@ -6887,9 +6946,9 @@ int main(int argc, char **argv) {
                            up_h, up_m);
                     }
                 } else {
-                    printf("[DagCore] %.1f H/s | "
+                    snprintf(_line, sizeof(_line), "[DagCore] %.1f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                           " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                           " (sub/acc/rej/stale) | Uptime: %dh%dm",
                            current_hashrate,
                            (unsigned long long)total_submitted,
                            (unsigned long long)total_accepted,
@@ -6897,6 +6956,7 @@ int main(int argc, char **argv) {
                            (unsigned long long)total_stale,
                            up_h, up_m);
                 }
+                status_line(_line);
 
                 last_total = h;
                 last_cpu_h = ch;
