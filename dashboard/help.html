@@ -131,17 +131,21 @@ are from an RTX 3080 running this miner.</p>
 <h2>1. Reading the dashboard</h2>
 
 <h3>Hashrate</h3>
-<p>Three figures: <b>Total</b>, <b>GPU</b> and <b>CPU</b>. On a GPU rig the GPU
-number is essentially the total — on the RTX 3080 it is about 1.61 MH/s of
-1.62 MH/s, with the two CPU threads contributing roughly 7 kH/s, under half a
-percent. Units switch by themselves: H/s, kH/s, MH/s, GH/s.</p>
+<p>One figure for each part that mines: <b>GPU</b> for the card(s), <b>CPU</b>
+for the CPU threads, and <b>Total</b>, their sum, only when both mine. A GPU
+rig mines on the card alone by default (<code>THREADS=0</code>), so it shows
+the GPU figure and no CPU or Total card; a CPU-only machine shows only the CPU
+one. With CPU threads added, the GPU number is still essentially the total —
+on the RTX 3080 it is about 1.61 MH/s of 1.62 MH/s, with two CPU threads
+contributing roughly 7 kH/s, under half a percent. Units switch by themselves:
+H/s, kH/s, MH/s, GH/s.</p>
 <p>The figure is an average over the last ten seconds, not an instant reading,
 so it moves smoothly. A drop that lasts one ten-second tick is noise; a drop
 that stays is not.</p>
 
 <h3 id="effective">Effective hashrate</h3>
-<p>Next to the total there is a second figure. <b>Total</b> is the raw work of
-the card: every hash it computes. <b>Effective</b> is the work the pool
+<p>Next to the hashrate there is a second figure. The hashrate is the raw work
+of the card: every hash it computes. <b>Effective</b> is the work the pool
 accepted: the accepted shares of the last ten minutes, each counted as the
 hashes it takes on average to find a share at its difficulty. The percentage
 compares the two over the same ten minutes. On the RTX 3080 in normal

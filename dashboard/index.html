@@ -918,12 +918,21 @@ function render(d){
   }
 
   var tot = d.hashrate || 0;
-  txt("hrTotalSub", num(d.total_hashes) + " hashes this session");
+  var hashes = num(d.total_hashes) + " hashes this session";
+  txt("hrTotalSub", hashes);
   txt("hrGpuSub", tot ? pct(d.gpu_hashrate, tot) + " of total" : " ");
   txt("hrCpuSub", tot ? pct(d.cpu_hashrate, tot) + " of total" : " ");
-  /* No CPU threads (THREADS=0, GPU only): no CPU card, rather than a 0 that
-   * reads like a fault. An older miner without the field keeps it. */
-  $("hrCpu").closest(".card").hidden = d.threads === 0;
+  /* A card only for a part that mines. No CPU threads (THREADS=0, GPU only):
+   * no CPU card, rather than a 0 that reads like a fault; no card mining (the
+   * CPU build): no GPU card. Total is shown only when both mine - with one,
+   * it is that one's number again, and "100% of total" under it says nothing;
+   * the card left takes the session's hash count instead. An older miner
+   * without the fields keeps all three. */
+  var cpuOn = d.threads !== 0, gpuOn = d.gpu_enabled !== 0;
+  $("hrCpu").closest(".card").hidden = !cpuOn;
+  $("hrGpu").closest(".card").hidden = !gpuOn;
+  $("hrTotal").closest(".card").hidden = !(cpuOn && gpuOn);
+  if (!(cpuOn && gpuOn)) txt(gpuOn ? "hrGpuSub" : "hrCpuSub", hashes);
 
   /* efficiency: GPU kH per watt - only meaningful with a power reading */
   if (d.gpu_power > 0 && d.gpu_hashrate > 0){

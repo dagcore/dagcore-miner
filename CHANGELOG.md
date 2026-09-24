@@ -80,8 +80,11 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 - The dashboard leaves out a reading the machine cannot give - GPU
   temperature, load, power, memory, CPU temperature - instead of showing
   `n/a`, and the whole GPU & thermals card when there is none.
-- The CPU hashrate card is left out when no CPU thread mines (`THREADS=0`,
-  the default with a GPU), instead of showing 0 H/s.
+- The hashrate cards show only what mines: no CPU card when no CPU thread
+  mines (`THREADS=0`, the default with a GPU), no GPU card when no card does
+  (the CPU build), and the Total card only when both do - with one, it
+  repeated that one's figure over "100% of total". The card left takes the
+  session's hash count.
 - The CPU-only build (`make cpu`, `dagcore-miner-cpu.exe`) no longer accepts
   `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
   mined nothing and reported 0 H/s. It now warns at startup and uses
