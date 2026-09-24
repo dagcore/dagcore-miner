@@ -94,6 +94,15 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   where the licence puts them: `LICENSE`, the source headers and the README.
 
 ### Fixed
+- **A clock test no longer freezes the miner while the dashboard is open.**
+  Since 1.0.0, `/metrics` read each running test's rejected shares through
+  a function that took the statistics lock `/metrics` already held. The
+  first poll after a clock or offset change locked the web server against
+  itself, and every thread that touches the statistics - the GPU worker
+  included - stopped behind it: no hashing, no shares, no dashboard, while
+  the process stayed up. Seen on Windows (the pool then lowered the
+  difficulty to 0.003 and closed the connection); the code is the same on
+  Linux.
 - **GPU intensity can be changed wherever a card is mining.** It was held
   back with the tuning controls, which need `nvidia-smi` and a single card,
   so a rig with several cards, or without `nvidia-smi` (a container, Windows),

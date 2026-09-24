@@ -3688,12 +3688,13 @@ static void trial_start(int which, int value, int prev) {
 }
 
 /* Rejected shares seen since the trial began - live while it runs, frozen at
- * the verdict once it ends, so the dashboard can show why it failed. */
-static int trial_rejects(int which) {
+ * the verdict once it ends, so the dashboard can show why it failed.
+ * `rej` is total_rejected, read by the caller: /metrics calls this with
+ * stats_mtx already held, and taking it again here - as it once did - locked
+ * the thread against itself the first time the page was polled during a
+ * trial, and every other thread behind it: the miner stopped mining. */
+static int trial_rejects(int which, uint64_t rej) {
     if (!g_trial[which].active) return g_trial[which].rejected_seen;
-    pthread_mutex_lock(&stats_mtx);
-    uint64_t rej = total_rejected;
-    pthread_mutex_unlock(&stats_mtx);
     if (rej <= g_trial[which].rejected_at_start) return 0;
     return (int)(rej - g_trial[which].rejected_at_start);
 }
@@ -5503,16 +5504,16 @@ static void *dagtech_metrics_thread(void *arg) {
             gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,
             lock_mem_eff, gpu_mem_clock_base,
             g_trial[0].status, g_trial[0].value, trial_remaining_s(0),
-            g_trial[0].prev, trial_rejects(0),
+            g_trial[0].prev, trial_rejects(0, total_rejected),
             g_trial[1].status, g_trial[1].value, trial_remaining_s(1),
-            g_trial[1].prev, trial_rejects(1),
+            g_trial[1].prev, trial_rejects(1, total_rejected),
             off_core, off_core_lo, off_core_hi,
             off_mem, off_mem_lo, off_mem_hi,
             off_ok ? "true" : "false", off_why,
             g_trial[2].status, g_trial[2].value, trial_remaining_s(2),
-            g_trial[2].prev, trial_rejects(2),
+            g_trial[2].prev, trial_rejects(2, total_rejected),
             g_trial[3].status, g_trial[3].value, trial_remaining_s(3),
-            g_trial[3].prev, trial_rejects(3),
+            g_trial[3].prev, trial_rejects(3, total_rejected),
             mem_shift, core_shift, lock_stale ? "true" : "false",
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
