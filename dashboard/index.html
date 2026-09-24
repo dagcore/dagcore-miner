@@ -921,6 +921,9 @@ function render(d){
   txt("hrTotalSub", num(d.total_hashes) + " hashes this session");
   txt("hrGpuSub", tot ? pct(d.gpu_hashrate, tot) + " of total" : " ");
   txt("hrCpuSub", tot ? pct(d.cpu_hashrate, tot) + " of total" : " ");
+  /* No CPU threads (THREADS=0, GPU only): no CPU card, rather than a 0 that
+   * reads like a fault. An older miner without the field keeps it. */
+  $("hrCpu").closest(".card").hidden = d.threads === 0;
 
   /* efficiency: GPU kH per watt - only meaningful with a power reading */
   if (d.gpu_power > 0 && d.gpu_hashrate > 0){

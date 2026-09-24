@@ -3936,11 +3936,19 @@ static void control_init(void) {
     /* Clock envelope now comes from NVML, and is re-read per request rather
      * than cached: an offset change moves the whole table. A failure here does
      * not disable the controls - the power limit still works and the page
-     * hides the clock rows when the range is unknown. */
-    if (nvml_clock_bounds(0, &g_core_lo, &g_core_hi) != 0)
+     * hides the clock rows when the range is unknown. On Windows there is no
+     * clock control at all (clock_controls_supported is false), so no range is
+     * expected and nothing is said at every start. */
+    int core_rc = nvml_clock_bounds(0, &g_core_lo, &g_core_hi);
+    int mem_rc  = nvml_clock_bounds(1, &g_mem_lo, &g_mem_hi);
+#ifndef _WIN32
+    if (core_rc != 0)
         fprintf(stderr, "[DagCore] WARNING: no core clock range from NVML\n");
-    if (nvml_clock_bounds(1, &g_mem_lo, &g_mem_hi) != 0)
+    if (mem_rc != 0)
         fprintf(stderr, "[DagCore] WARNING: no memory clock range from NVML\n");
+#else
+    (void)core_rc; (void)mem_rc;
+#endif
     g_core_boost = g_core_hi;
     g_mem_boost  = g_mem_hi;
 
@@ -3986,7 +3994,10 @@ static void http_send_json(dt_sock_t fd, int status, const char *reason, const c
 }
 
 static void http_send_err(dt_sock_t fd, int status, const char *reason, const char *msg) {
-    char body[320];
+    /* Room for a 300-byte message (api_config's err) and the 24 bytes of JSON
+     * around it: at 320 a long one lost its closing "} and the page got
+     * invalid JSON instead of the error. */
+    char body[384];
     snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", msg);
     http_send_json(fd, status, reason, body);
 }

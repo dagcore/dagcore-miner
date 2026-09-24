@@ -7,16 +7,20 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
-- `make windows` cross-compiles `dagcore-miner.exe` and
-  `dagcore-miner-cpu.exe` with MinGW-w64, and `make check` builds them too.
-  The Windows build compiles and links but has not been run yet, and it has no
-  service, installer or GPU tuning (NVML); it is not ready for use.
+- `make windows` builds `dagcore-miner.exe` and `dagcore-miner-cpu.exe` with
+  MinGW-w64 - cross-compiled on Linux, or natively on Windows with WinLibs -
+  and `make check` builds them too. Run by hand on Windows 11 with an RTX 3080
+  (driver 617.14), against the public pool: NVML readings, the portable
+  layout, the dashboard over the LAN, CPU use and a clean stop all checked.
+  There is still no service, no installer and no GPU tuning beyond the power
+  limit and intensity; it is for testing, not for a rig left unattended.
   - Windows: the control API token comes from `BCryptGenRandom` (there is no
     `/dev/urandom`); without it the control API was always disabled.
   - Windows: `overrides.env` and `config.env` are replaced with `MoveFileEx`;
     `rename()` fails there when the file exists, so only the first dashboard
     change was kept - for `config.env`, every Mining configuration save after
-    the first answered "cannot replace config.env: File exists".
+    the first answered "cannot replace config.env: File exists". Five saves in
+    a row now each rewrite the file.
   - Windows: everything is in the miner's own folder, next to the `.exe` -
     `config.env` (which a dashboard save creates if missing),
     `overrides.env`, the token, `autotune.json`, `dashboard\` and
@@ -27,22 +31,28 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     the `.exe` at startup (same token, so the browser keeps working). A
     `DASHBOARD_DIR` that does not exist falls back to the bundled `dashboard`
     folder.
-- Every start names the control API token file in use, not only the start
-  that creates it.
   - Windows: the dashboard server gives up on a silent client after 2 seconds,
     as on Linux, instead of hanging for every other client.
   - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no
     `/dev/null`, so temperature, power and the power limit were never read.
   - Windows: closing the console window, logging off or shutting down stops
     the miner cleanly (`SetConsoleCtrlHandler`), and its waits of several
-    seconds end as soon as a stop is requested.
+    seconds end as soon as a stop is requested. Ctrl+C, Ctrl+Break and the
+    window's close button each end it in under a second, exit code 0, after
+    "Shutdown complete".
   - Windows: waits under 2 ms use a high-resolution waitable timer. `usleep()`
     there was `Sleep(x/1000)`, so the submit queue's 500 µs gap became
     `Sleep(0)` and spun a core, and `Sleep(1)` can last a 15.6 ms timer tick.
-  - `make windows-package` puts the folder to copy in `build/win/DAGCore/`,
-    with a `config.env.example` made for Windows from the Linux one: no
-    `/etc`, `/var/lib` or XDG paths, and no `DASHBOARD_DIR` (commented out),
-    so the miner no longer starts by saying the `/opt` dashboard is missing.
+    Measured: every thread but the GPU one together uses 0.1% of a core while
+    the queue sends shares.
+  - `make windows-package` puts the kit in `dist/windows/`: exactly the folder
+    to copy to a new machine - both `.exe` files, `dagcore_gpu.cl`,
+    `dashboard\`, `config.env.example`, `readme.html` and a `SHA256SUMS` for
+    them. The `.exe` files are built in `build/win/`, no longer in the
+    source tree. The `config.env.example` is made for Windows from the Linux
+    one: no `/etc`, `/var/lib` or XDG paths, and no `DASHBOARD_DIR`
+    (commented out), so the miner no longer starts by saying the `/opt`
+    dashboard is missing.
   - `readme.html`, a getting-started tutorial in the dashboard's style, sits
     next to the `.exe` in the Windows package: what you need, putting the
     miner in place, the wallet, starting, the dashboard, the control token,
@@ -53,19 +63,25 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   - Windows: the dashboard leaves out what that build cannot do - the clock
     lock and offset rows, Adopt, and the text about clock tests - instead of
     an error note about offsets; `/metrics` gains `clock_controls_supported`,
-    `false` there.
+    `false` there. The miner no longer warns at every start that NVML gave no
+    clock range, which it cannot there.
   - Windows: GPU temperature, load, memory used, power and clocks are read
     from `nvml.dll`, which every NVIDIA driver installs, loaded at run time
     from System32 or the NVSMI folder only; `nvidia-smi` is the fallback.
     Without either the miner runs normally and the dashboard leaves those
     readings out. Writes (power limit, offsets, clock locks) are not done
-    through it yet.
-  - README: how to run the Windows build by hand, CPU-only, for testing.
+    through it yet. On an RTX 3080 the readings match `nvidia-smi` exactly,
+    and an `nvml.dll` dropped next to the `.exe` is not loaded.
+  - README: how to build, check and run the Windows kit by hand.
+- Every start names the control API token file in use, not only the start
+  that creates it.
 
 ### Changed
 - The dashboard leaves out a reading the machine cannot give - GPU
   temperature, load, power, memory, CPU temperature - instead of showing
   `n/a`, and the whole GPU & thermals card when there is none.
+- The CPU hashrate card is left out when no CPU thread mines (`THREADS=0`,
+  the default with a GPU), instead of showing 0 H/s.
 - The CPU-only build (`make cpu`, `dagcore-miner-cpu.exe`) no longer accepts
   `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
   mined nothing and reported 0 H/s. It now warns at startup and uses
@@ -77,6 +93,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   so a rig with several cards, or without `nvidia-smi` (a container, Windows),
   could not change it from the dashboard although it is the miner's own
   setting. It now needs only the token and a mining card.
+- A control API error message longer than 296 characters was cut off before
+  its closing `"}`, so the page got invalid JSON instead of the error. The
+  reply now has room for the longest message `/api/config` can give (300).
+  Found by GCC 16's `-Wformat-truncation`.
 
 ## [1.2.1] - 2026-09-23
 

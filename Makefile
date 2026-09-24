@@ -2,10 +2,11 @@
 #
 #   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
 #   make cpu            -> dagcore-miner-cpu  (without OpenCL)
-#   make windows        -> dagcore-miner.exe + dagcore-miner-cpu.exe, cross-compiled
-#                          with MinGW-w64 (apt install mingw-w64), and the
-#                          Windows config.env.example in build/win
-#   make windows-package -> build/win/DAGCore: the folder to copy to Windows
+#   make windows        -> build/win: dagcore-miner.exe + dagcore-miner-cpu.exe,
+#                          cross-compiled with MinGW-w64 (apt install mingw-w64),
+#                          and the Windows config.env.example
+#   make windows-package -> dist/windows: the folder to copy to Windows, with
+#                          SHA256SUMS
 #   make warn           -> syntax check with -Wall -Wextra
 #   make install        -> binary + kernel in $(PREFIX)/bin, the dashboard in
 #                          $(PREFIX)/share/dagcore-miner, config.env.example
@@ -71,14 +72,16 @@ WIN_OPENCL_LIB := $(WIN_BUILD)/libOpenCL.a
 WIN_CFLAGS     := -std=gnu11 -pthread -O3 -funroll-loops -Wall
 WIN_LDFLAGS    := -static
 WIN_LDLIBS     := -lws2_32 -lbcrypt -lpthread -lm
-BIN_GPU_WIN    := dagcore-miner.exe
-BIN_CPU_WIN    := dagcore-miner-cpu.exe
+# Built into build/win, never into the source tree; only the package copies them.
+BIN_GPU_WIN    := $(WIN_BUILD)/dagcore-miner.exe
+BIN_CPU_WIN    := $(WIN_BUILD)/dagcore-miner-cpu.exe
 # The example config for Windows is made from the Linux one: same keys, same
 # text, with the Linux paths replaced by win/config.env.sed. A Linux path that
 # survives fails the build rather than ship a config pointing into /opt.
 WIN_CONFIG_EX  := $(WIN_BUILD)/config.env.example
 WIN_CONFIG_SED := win/config.env.sed
-WIN_PKG        := $(WIN_BUILD)/DAGCore
+# Exactly what is unzipped on a new machine, and nothing else.
+WIN_PKG        := dist/windows
 # The getting-started page sits next to the .exe, where a user who has just
 # unzipped the folder sees it first; it takes its style from dashboard/.
 README_HTML    := readme.html
@@ -117,12 +120,15 @@ $(WIN_CONFIG_EX): $(CONFIG_EX) $(WIN_CONFIG_SED)
 	mv $@.tmp $@
 
 # Everything a Windows user unzips, in one folder: the miner looks for all of
-# it next to the .exe.
+# it next to the .exe. SHA256SUMS covers every other file in it, with paths
+# relative to the folder, so "sha256sum -c SHA256SUMS" runs from inside it.
 windows-package: windows
 	rm -rf $(WIN_PKG)
 	mkdir -p $(WIN_PKG)/dashboard
 	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(README_HTML) $(WIN_PKG)/
 	cp $(DASHBOARD) $(DASH_OFL) $(WIN_PKG)/dashboard/
+	cd $(WIN_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
+	    xargs sha256sum > SHA256SUMS
 	@echo "windows-package: $(WIN_PKG) - copy that folder to the Windows machine"
 
 $(WIN_BUILD)/include/CL:
@@ -138,6 +144,7 @@ $(BIN_GPU_WIN): $(SRC) $(HDR) $(KERNEL) $(WIN_OPENCL_LIB) | $(WIN_BUILD)/include
 	    $(WIN_LDFLAGS) -L$(WIN_BUILD) -lOpenCL $(WIN_LDLIBS)
 
 $(BIN_CPU_WIN): $(SRC) $(HDR)
+	@mkdir -p $(WIN_BUILD)
 	$(MINGW_CC) $(WIN_CFLAGS) $(CPPFLAGS) $< -o $@ $(WIN_LDFLAGS) $(WIN_LDLIBS)
 
 # Builds every variant from scratch. Catches breakage that shows up on one path
@@ -199,8 +206,8 @@ uninstall:
 	    rmdir "$(DESTDIR)$(SYSCONFDIR)" 2>/dev/null || true
 
 clean:
-	$(RM) $(BIN_GPU) $(BIN_CPU) $(BIN_GPU_WIN) $(BIN_CPU_WIN)
-	$(RM) -r $(WIN_BUILD)
+	$(RM) $(BIN_GPU) $(BIN_CPU)
+	$(RM) -r $(WIN_BUILD) $(WIN_PKG)
 
 help:
 	@printf '%s\n' 'targets: all cpu windows windows-package check warn install uninstall clean' \

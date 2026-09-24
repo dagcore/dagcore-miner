@@ -3,6 +3,7 @@
 dagcore-miner
 dagcore-miner-cpu
 dagtech-gpu-miner
-dagcore-miner.exe
-dagcore-miner-cpu.exe
+*.exe
+# Build-ul Windows (build/win) si kitul de copiat pe Windows (dist/windows).
 build/
+dist/
