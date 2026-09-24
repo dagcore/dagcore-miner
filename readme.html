@@ -392,6 +392,9 @@ shares start being rejected, there is no telling which one did it.</p>
   <tr><td>Advanced: core clock, memory clock, core offset</td><td>For experienced
       users.</td><td>Apply — then a 10-minute test</td></tr>
 </table></div>
+<p><b>On Windows</b> only the power limit and GPU intensity appear: the clock
+and offset controls need NVML, which the Windows build does not have yet, so
+the dashboard leaves them out rather than show controls that cannot work.</p>
 <p><b>The 10-minute test</b> starts by itself for clock changes. A banner shows
 the countdown and the rejected shares. If any appear, the old value comes back
 on its own and nothing is saved; after ten clean minutes the new one is kept for

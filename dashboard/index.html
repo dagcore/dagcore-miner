@@ -487,9 +487,9 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <div class="sub" id="trialSub">&mdash;</div>
     </div>
 
-    <p class="set-help">Change one setting at a time. Clock changes are tested for
+    <p class="set-help">Change one setting at a time.<span id="clockHelp"> Clock changes are tested for
     10 minutes before being saved; if the card becomes unstable, the previous
-    value comes back automatically.</p>
+    value comes back automatically.</span></p>
 
     <div class="set-row">
       <span class="lab"><b>Control token</b><small id="tokState">required to enable the controls below</small></span>
@@ -580,7 +580,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <details class="adv">
       <summary>Advanced</summary>
-      <p class="adv-note">For experienced users. These change how the card
+      <p class="adv-note" id="advNote">For experienced users. These change how the card
       clocks itself; a wrong value can cost hashrate or stability. The power
       limit and memory offset above are enough for most tuning.</p>
 
@@ -620,7 +620,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       </span>
     </div>
 
-    <div class="set-row">
+    <div class="set-row" id="adoptRow">
       <span class="lab"><b>Adopt current state</b>
         <small>Save what the card is running now, without a trial. For a rig
         tuned outside this miner. Offsets are always adopted &mdash; they can be
@@ -1192,6 +1192,14 @@ function syncSettings(d){
   syncOffset(d, "coreoff", "gpu_core_offset", "trial_coreoff");
   syncOffset(d, "memoff",  "gpu_mem_offset",  "trial_memoff");
 
+  /* A build that cannot touch clocks at all (Windows: no NVML) shows none of
+   * what goes with them either - not the adopt row, not the text about clock
+   * tests. Only the older miner, which lacks the field, keeps them. */
+  var clk = d.clock_controls_supported !== false;
+  $("adoptRow").hidden = !clk;
+  $("advNote").hidden = !clk;
+  $("clockHelp").hidden = !clk;
+
   /* A new offset moves the table a lock was picked from, and the card does not
    * rescale the lock. Two numbers that quietly disagree are worse than a
    * warning that says which one to re-apply. */
@@ -1218,6 +1226,7 @@ var clkTouched = { core: false, mem: false, coreoff: false, memoff: false };
 function syncClock(d, id, base_, trialBase){
   var lo = d[base_ + "_min"], hi = d[base_ + "_max"];
   var row = $(id + "Row");
+  if (d.clock_controls_supported === false){ row.hidden = true; return; }
   if (typeof lo !== "number" || typeof hi !== "number" || lo < 0 || hi <= 0){
     row.hidden = true;
     return;
@@ -1288,6 +1297,7 @@ function syncClock(d, id, base_, trialBase){
  * is unavailable - with the reason shown once, on the core row. */
 function syncOffset(d, id, field, trialBase){
   var row = $(id + "Row");
+  if (d.clock_controls_supported === false){ row.hidden = true; return; }
   if (d.offset_available !== true){
     row.hidden = true;
     if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token)

@@ -333,6 +333,10 @@ it.</p>
 <p>This is the one setting that stays usable while a clock test is running,
 and it takes effect immediately with no test of its own.</p>
 
+<p class="note warn">On Windows the clock controls — memory and core offset, the
+clock locks and Adopt — are not shown: that build cannot set them yet (it has
+no NVML). The power limit and GPU intensity are there as on Linux.</p>
+
 <h3>Memory offset — the main tuning knob</h3>
 <p><b>Why this one.</b> The algorithm this miner runs is scrypt with N=1024,
 which needs a 128 KB scratchpad per work-item. It spends its time moving data

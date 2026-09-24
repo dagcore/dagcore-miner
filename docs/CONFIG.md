@@ -286,6 +286,10 @@ For each of `gpu_core_clock` and `gpu_mem_clock`:
 ### Offsets
 `gpu_core_offset`, `gpu_mem_offset`, each with `_min` and `_max` from the card.
 `offset_available` and `offset_reason` say whether NVML could be used.
+`clock_controls_supported` (appended last) says whether this build can lock
+clocks and set offsets at all: `false` on Windows, which has no NVML yet, and
+the dashboard then leaves every clock control out - the lock and offset rows,
+Adopt, and the text about clock tests.
 
 ### Trials
 For each of `trial_core`, `trial_mem`, `trial_coreoff`, `trial_memoff`:

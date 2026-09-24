@@ -48,6 +48,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     troubleshooting - Linux and Windows side by side where they differ. It
     opens from the folder with a double-click, offline, before the miner
     has run.
+  - Windows: the dashboard leaves out what that build cannot do - the clock
+    lock and offset rows, Adopt, and the text about clock tests - instead of
+    an error note about offsets; `/metrics` gains `clock_controls_supported`,
+    `false` there.
   - README: how to run the Windows build by hand, CPU-only, for testing.
 
 ### Changed

@@ -5269,7 +5269,8 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"submit_inflight\":%d,"
             "\"submit_burst_max\":%d,"
             "\"submit_burst_gap_us\":%d,"
-            "\"submit_max_inflight\":%d"
+            "\"submit_max_inflight\":%d,"
+            "\"clock_controls_supported\":%s"
             "}",
             DAGCORE_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -5330,7 +5331,16 @@ static void *dagtech_metrics_thread(void *arg) {
             (unsigned long long)q_queued, (unsigned long long)q_sent,
             (unsigned long long)q_over, (unsigned long long)q_full,
             (unsigned long long)q_expired, q_depth, inflight,
-            submit_burst_max, submit_burst_gap_us, submit_max_inflight);
+            submit_burst_max, submit_burst_gap_us, submit_max_inflight,
+            /* Whether this build can lock clocks and set offsets at all. The
+             * Windows build has no NVML: the page then leaves every clock
+             * control out instead of showing ones that can never work. */
+#ifdef _WIN32
+            "false"
+#else
+            "true"
+#endif
+            );
         pthread_mutex_unlock(&stats_mtx);
 
         /* Same headers as before; the body no longer has to fit a fixed
