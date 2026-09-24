@@ -86,6 +86,9 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
   mined nothing and reported 0 H/s. It now warns at startup and uses
   auto-detect (half the logical cores) instead.
+- The startup banner and `--help` show only the name and version, without
+  the original author's line. The DagTech copyright and attribution stay
+  where the licence puts them: `LICENSE`, the source headers and the README.
 
 ### Fixed
 - **GPU intensity can be changed wherever a card is mining.** It was held

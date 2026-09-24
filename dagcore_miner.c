@@ -173,7 +173,6 @@
 /* DagCore versioning restarts at 1.0.0; derived from DagTech GPU-2026.0628.1. */
 #define DAGCORE_VERSION       "1.2.1"
 #define DAGCORE_BANNER        "DagCore Miner v" DAGCORE_VERSION " - dagcore.net"
-#define DAGTECH_AUTHOR        "Dawie Nel / DagTech Ltd"
 #define DAGTECH_DEFAULT_POOL  "stratum.dagcore.net"
 #define DAGTECH_DEFAULT_PORT  3334
 
@@ -5599,8 +5598,7 @@ static void dagtech_reject_arg(const char *arg) {
 
 static void dagtech_usage(void) {
     printf("\n");
-    printf("  %s\n", DAGCORE_BANNER);
-    printf("  %s\n\n", DAGTECH_AUTHOR);
+    printf("  %s\n\n", DAGCORE_BANNER);
     printf("  Usage: dagcore-miner [options]\n\n");
     printf("  Options:\n");
     printf("    --wallet <addr>        Your wallet address (REQUIRED)\n");
@@ -6300,7 +6298,6 @@ int main(int argc, char **argv) {
     printf("\n");
     printf("  ============================================\n");
     printf("  %s\n", DAGCORE_BANNER);
-    printf("  %s\n", DAGTECH_AUTHOR);
     printf("  ============================================\n\n");
 
 #ifdef DT_PORTABLE_LAYOUT
