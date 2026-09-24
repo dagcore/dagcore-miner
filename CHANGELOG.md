@@ -13,8 +13,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   service, installer or GPU tuning (NVML); it is not ready for use.
   - Windows: the control API token comes from `BCryptGenRandom` (there is no
     `/dev/urandom`); without it the control API was always disabled.
-  - Windows: `overrides.env` is replaced with `MoveFileEx`; `rename()` fails
-    there when the file exists, so only the first dashboard change was kept.
+  - Windows: `overrides.env` and `config.env` are replaced with `MoveFileEx`;
+    `rename()` fails there when the file exists, so only the first dashboard
+    change was kept - for `config.env`, every Mining configuration save after
+    the first answered "cannot replace config.env: File exists".
   - Windows: everything is in the miner's own folder, next to the `.exe` -
     `config.env` (which a dashboard save creates if missing),
     `overrides.env`, the token, `autotune.json`, `dashboard\` and

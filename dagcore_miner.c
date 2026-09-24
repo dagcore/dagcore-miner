@@ -4274,9 +4274,18 @@ static int config_write_keys(const char *path, const char *const *keys, const ch
         remove(tmp);
         return -1;
     }
-    if (rename(tmp, path) != 0) {
-        fprintf(stderr, "[DagCore] config save: cannot replace %s: %s\n", path, strerror(errno));
-        snprintf(err, en, "cannot replace config.env: %s", strerror(errno));
+    /* dt_replace_file, not rename(): on Windows rename() refuses an existing
+     * target, so every save after the one that created config.env failed
+     * with "File exists". */
+    if (dt_replace_file(tmp, path) != 0) {
+        char why[96];
+#ifdef _WIN32
+        snprintf(why, sizeof(why), "Windows error %lu", (unsigned long)GetLastError());
+#else
+        snprintf(why, sizeof(why), "%s", strerror(errno));
+#endif
+        fprintf(stderr, "[DagCore] config save: cannot replace %s: %s\n", path, why);
+        snprintf(err, en, "cannot replace config.env: %s", why);
         remove(tmp);
         return -1;
     }
