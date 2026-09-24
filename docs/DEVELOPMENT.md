@@ -257,9 +257,14 @@ None of it has run on Windows yet; treat the build as unverified.
 Linux. The miner is a folder someone unzips: `config.env`, `overrides.env`,
 `api-token`, `autotune.json`, `dashboard\` and `dagcore_gpu.cl` are all read
 from, and created in, the directory of the running `.exe` (from
-`GetModuleFileName`, not `argv[0]`). Files an earlier test build left in
-`%ProgramData%\DAGCore\` (and an autotune cache in `C:\dagtech-gpu-miner\`)
-are used while there is none next to the `.exe`. A `DASHBOARD_DIR` without
+`GetModuleFileName`, not `argv[0]`). A `config.env`, `overrides.env` or
+`api-token` an earlier test build left only in `%ProgramData%\DAGCore\` is
+copied next to the `.exe` at startup and used from there; if the folder is not
+writable, the original is used and a warning says why. (An autotune cache in
+`C:\dagtech-gpu-miner\` is still just read from there.) Just using the old
+file in place was the first version, and it looked like the token was never
+created: `token_init` said nothing about a token it merely read. It now names
+the file on every start. A `DASHBOARD_DIR` without
 an `index.html` falls back to the `dashboard` folder next to the `.exe`. To
 test it on Linux, build with `-DDT_PORTABLE_LAYOUT` and set `ProgramData` in
 the environment to stand in for the Windows one.

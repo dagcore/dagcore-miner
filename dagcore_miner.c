@@ -321,16 +321,49 @@ static const char *dt_win_datadir(void) {
     return dir;
 }
 
-/* <exe dir>/name if it exists; else %ProgramData%\DAGCore\name if that
- * exists (an older setup); else <exe dir>/name, where a new one is made. */
+/* Copy src to dst byte for byte; 0 on success. dst is written in full or
+ * removed. */
+static int dt_copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[4096];
+    size_t got;
+    int bad = 0;
+    while ((got = fread(buf, 1, sizeof(buf), in)) > 0)
+        if (fwrite(buf, 1, got, out) != got) { bad = 1; break; }
+    if (ferror(in)) bad = 1;
+    fclose(in);
+    if (fclose(out) != 0) bad = 1;
+    if (bad) { remove(dst); return -1; }
+    return 0;
+}
+
+/* <exe dir>/name. A file the first Windows test builds left only in
+ * %ProgramData%\DAGCore is copied next to the .exe first, and the copy used -
+ * the same token, overrides and config, now where the user looks for them.
+ * The original stays; if the copy cannot be made (a folder the user cannot
+ * write to), the original is used where it is. */
 static const char *dt_portable_path(char *out, size_t n, const char *name) {
     FILE *f;
     snprintf(out, n, "%s%s", g_exe_dir, name);
     if ((f = fopen(out, "r")) != NULL) { fclose(f); return out; }
     char old[700];
     snprintf(old, sizeof(old), "%s" DT_SEP_STR "%s", dt_win_datadir(), name);
-    if ((f = fopen(old, "r")) != NULL) { fclose(f); snprintf(out, n, "%s", old); return out; }
-    snprintf(out, n, "%s%s", g_exe_dir, name);
+    if ((f = fopen(old, "r")) == NULL) return out;      /* new file, next to the .exe */
+    fclose(f);
+    if (dt_copy_file(old, out) == 0) {
+#ifndef _WIN32
+        if (strcmp(name, "api-token") == 0) chmod(out, 0600);
+#endif
+        printf("[DagCore] Copied %s to %s - the miner keeps its files next to the "
+               ".exe now; the old one can be deleted\n", old, out);
+        return out;
+    }
+    fprintf(stderr, "[DagCore] WARNING: cannot copy %s next to the .exe (%s): %s - "
+                    "using it where it is\n", old, out, strerror(errno));
+    snprintf(out, n, "%s", old);
     return out;
 }
 #endif
@@ -3686,7 +3719,10 @@ static void token_init(void) {
                              g_api_token[l-1] == ' ')) g_api_token[--l] = '\0';
         }
         fclose(f);
-        if (g_api_token[0]) return;
+        if (g_api_token[0]) {
+            printf("[DagCore] Control API token: %s\n", path);
+            return;
+        }
     }
 
     unsigned char raw[32];
@@ -5443,7 +5479,8 @@ static int dagtech_file_exists(const char *p) {
 /* Resolve the config.env path. Search order (first existing file wins):
  *   1. <exedir>/config.env          - next to the binary (e.g. install\bin\)
  *   2. Portable layout (Windows) only: %ProgramData%\DAGCore\config.env,
- *      where the first Windows test builds kept it
+ *      where the first Windows test builds kept it - copied next to the .exe
+ *      and used from there
  *   3. <exedir>/../config.env       - install root, where the installer writes it
  *   4. ./config.env                 - current working directory
  *   5. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
@@ -5469,10 +5506,10 @@ static const char *dagtech_default_config_path(void) {
     }
 
 #ifdef DT_PORTABLE_LAYOUT
-    /* 2. %ProgramData%\DAGCore\config.env */
+    /* 2. %ProgramData%\DAGCore\config.env, copied next to the .exe first */
     snprintf(cand, sizeof(cand), "%s" DT_SEP_STR "config.env", dt_win_datadir());
     if (dagtech_file_exists(cand)) {
-        snprintf(path, sizeof(path), "%s", cand);
+        dt_portable_path(path, sizeof(path), "config.env");
         return path;
     }
 #endif

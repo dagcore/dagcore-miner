@@ -20,10 +20,13 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     `overrides.env`, the token, `autotune.json`, `dashboard\` and
     `dagcore_gpu.cl` - found from the `.exe`'s real path whatever the
     current directory, instead of `/etc`, `/var/lib` and
-    `C:\dagtech-gpu-miner\`. Files the first test builds put in
-    `%ProgramData%\DAGCore\` are still used while there is none next to the
-    `.exe`. A `DASHBOARD_DIR` that does not exist falls back to the bundled
-    `dashboard` folder.
+    `C:\dagtech-gpu-miner\`. `config.env`, `overrides.env` or `api-token` left
+    by the first test builds in `%ProgramData%\DAGCore\` is copied next to
+    the `.exe` at startup (same token, so the browser keeps working). A
+    `DASHBOARD_DIR` that does not exist falls back to the bundled `dashboard`
+    folder.
+- Every start names the control API token file in use, not only the start
+  that creates it.
   - Windows: the dashboard server gives up on a silent client after 2 seconds,
     as on Linux, instead of hanging for every other client.
   - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no

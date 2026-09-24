@@ -127,8 +127,10 @@ tuning setting is changed, and `autotune.json` for the GPU build. A
 `DASHBOARD_DIR` that does not exist on this machine — the `/opt/...` one in
 `config.env.example`, say — falls back to the `dashboard` folder next to the
 `.exe`. The first test builds kept `config.env`, `overrides.env` and
-`api-token` in `%ProgramData%\DAGCore\`; files still there are used as long as
-there is none next to the `.exe`.
+`api-token` in `%ProgramData%\DAGCore\`; a file found only there is copied
+next to the `.exe` at the next start, and the console says so. The token stays
+the same, so a browser that has it keeps working, and that old folder can be
+deleted. Every start prints which token file is in use (`Control API token:`).
 
 **Limits of this build.** On a CPU-only machine the power, clock and intensity
 controls say they are unavailable, which is correct. The token file is not
