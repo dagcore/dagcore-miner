@@ -5560,6 +5560,22 @@ static BOOL WINAPI dt_console_ctrl(DWORD type) {
 }
 #endif
 
+/* Before a startup error ends the process: a miner double-clicked in Explorer
+ * has a console window of its own, which Windows closes the moment the process
+ * exits - taking the error with it, unread. Hold it open until Enter, but only
+ * then: a console shared with cmd or PowerShell stays open anyway, and with
+ * stdin redirected (a service, a script) there is nobody to press Enter. */
+static void dt_hold_console_on_error(void) {
+#ifdef _WIN32
+    DWORD procs[2], mode;
+    if (GetConsoleProcessList(procs, 2) == 1 &&
+        GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode)) {
+        fprintf(stderr, "\nPress Enter to close this window.\n");
+        (void)getchar();
+    }
+#endif
+}
+
 /* =========================================================================
  * Usage / Help
  * ========================================================================= */
@@ -6308,6 +6324,7 @@ int main(int argc, char **argv) {
     if (wallet[0] == 0) {
         fprintf(stderr, "[DagCore] ERROR: Wallet address is required!\n");
         dagtech_usage();
+        dt_hold_console_on_error();
         return 1;
     }
     if (strncmp(wallet, "0x", 2) != 0 || strlen(wallet) != 42) {
@@ -6372,11 +6389,11 @@ int main(int argc, char **argv) {
                "at most %d unanswered\n",
                submit_burst_max, submit_burst_gap_us, submit_max_inflight);
 
+    int use_gpu = 0;
 #ifdef DAGTECH_GPU
     /* List and initialize GPU */
     gpu_list_devices();
 
-    int use_gpu = 0;
     if (gpu_enabled == 1) {
         use_gpu = 1;
     } else if (gpu_enabled == 0) {
@@ -6394,7 +6411,8 @@ int main(int argc, char **argv) {
             printf("[DagCore GPU] Intensity: %d | Platform: %d | GPUs active: %d\n",
                    gpu_intensity, gpu_platform, g_num_gpus);
         } else {
-            fprintf(stderr, "[DagCore GPU] GPU init failed - running CPU only.\n");
+            fprintf(stderr, "[DagCore GPU] GPU init failed%s\n",
+                    num_threads > 0 ? " - running CPU only." : ".");
             gpu_enabled = 0;
         }
     }
@@ -6402,6 +6420,21 @@ int main(int argc, char **argv) {
     printf("[DagCore] Built without GPU support (no -DDAGTECH_GPU).\n");
     gpu_enabled = 0;
 #endif
+
+    /* No card and no CPU threads: nothing would be mined, yet the miner would
+     * connect, report "mining" and 0 H/s for as long as it ran - which is what
+     * a Windows folder without dagcore_gpu.cl did. Stop and say why instead;
+     * a GPU rig that cannot mine is a broken setup, not a CPU rig. */
+    if (gpu_enabled != 1 && num_threads == 0) {
+        fprintf(stderr, "[DagCore] ERROR: no GPU is mining (%s) and THREADS is 0, so there "
+                        "is nothing to mine.\n",
+                use_gpu ? "it failed to start - see the error above" : "disabled");
+        fprintf(stderr, "[DagCore]        %s, or mine on the CPU with --threads -1 "
+                        "(THREADS=-1 in config.env).\n",
+                use_gpu ? "Fix the GPU" : "Enable the GPU (GPU_ENABLED=1, no --no-gpu)");
+        dt_hold_console_on_error();
+        return 1;
+    }
 
     printf("\n");
 

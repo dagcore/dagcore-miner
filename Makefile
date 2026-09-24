@@ -131,9 +131,13 @@ windows-package: windows
 	    xargs sha256sum > SHA256SUMS
 	@echo "windows-package: $(WIN_PKG) - copy that folder to the Windows machine"
 
+# Removed first: where ln -s copies instead of linking (Git Bash on Windows
+# without symlink rights), a second run - make check forces one - would copy
+# the headers into the copy, as include/CL/CL. On Linux it removes the link only.
 $(WIN_BUILD)/include/CL:
 	@mkdir -p $(WIN_BUILD)/include
-	ln -sfn $(OPENCL_HEADERS) $@
+	rm -rf $@
+	ln -s $(OPENCL_HEADERS) $@
 
 $(WIN_OPENCL_LIB): $(WIN_OPENCL_DEF)
 	@mkdir -p $(WIN_BUILD)

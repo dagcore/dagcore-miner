@@ -100,6 +100,21 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   its closing `"}`, so the page got invalid JSON instead of the error. The
   reply now has room for the longest message `/api/config` can give (300).
   Found by GCC 16's `-Wformat-truncation`.
+- **A miner with nothing to mine stops and says why.** When the GPU failed to
+  start - `dagcore_gpu.cl` missing next to the `.exe`, say - or was disabled,
+  and `THREADS` was 0, the GPU build connected anyway and reported "mining"
+  at 0 H/s for as long as it ran, after a line claiming "running CPU only".
+  It now exits with code 1 and an error naming the cause and the two ways
+  out. A card that fails with CPU threads set still falls back to them, as
+  before. *Possible impact:* a service on such a rig now fails and is
+  restarted every 10 seconds, with the error in `journalctl`, instead of
+  running idle.
+- Windows: a startup error - that one, or a missing wallet - no longer
+  vanishes with the window when the miner was started by a double-click; it
+  waits for Enter. Started from cmd or PowerShell, or with input redirected,
+  it exits at once as before.
+- `make windows` on Windows itself (Git Bash) created `include/CL/CL` on
+  every forced rebuild, since `ln -s` copies there; the link is now replaced.
 
 ## [1.2.1] - 2026-09-23
 
