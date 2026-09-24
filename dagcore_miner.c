@@ -196,6 +196,11 @@ static int  cpu_limit          = 100; /* 1-100: % of CPU time to use per thread 
 static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle throttle) */
 static volatile int running    = 1;
 static volatile int keep_alive = 1;  /* 0 = clean program exit; stays 1 across reconnects */
+#ifdef _WIN32
+/* A dashboard save asked for a restart and nothing supervises the miner
+ * (Windows): once shut down, it starts a fresh copy of itself. */
+static volatile int g_self_restart = 0;
+#endif
 
 /* Pause from the dashboard (POST /api/pause): the session ends as it does on
  * a dropped pool connection - mining threads joined, pool socket closed - and
@@ -4321,6 +4326,29 @@ static int config_file_value(const char *path, const char *key, char *out, size_
     return found;
 }
 
+/* Whether a saved setting can be applied by a restart. Under systemd
+ * (INVOCATION_ID) the miner just exits and the service brings it back. On
+ * Windows nothing supervises it, so it restarts itself after the shutdown -
+ * see dt_self_restart. Linux run by hand is left alone: exiting would stop
+ * it for good, so the change waits for the next start. */
+static int dt_can_restart(void) {
+    if (getenv("INVOCATION_ID") != NULL) return 1;
+#ifdef _WIN32
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* Stop, to be started again - by systemd, or by ourselves on Windows. */
+static void dt_begin_restart(void) {
+#ifdef _WIN32
+    if (getenv("INVOCATION_ID") == NULL) g_self_restart = 1;
+#endif
+    keep_alive = 0;
+    running = 0;
+}
+
 static void api_config(dt_sock_t cfd, const char *body) {
     const char *keys[6];
     char vals[6][300];
@@ -4444,19 +4472,18 @@ static void api_config(dt_sock_t cfd, const char *body) {
         return;
     }
 
-    int supervised = (getenv("INVOCATION_ID") != NULL);
+    int restart = dt_can_restart();
     char resp[240];
     snprintf(resp, sizeof(resp),
              "{\"ok\":true,\"saved\":true,\"changed\":true,\"restarting\":%s%s}",
-             supervised ? "true" : "false",
-             supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+             restart ? "true" : "false",
+             restart ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
     http_send_json(cfd, 200, "OK", resp);
     printf("[DagCore] Configuration saved to %s (%d setting%s; previous version in %s.bak)\n",
            g_config_path, n, n == 1 ? "" : "s", g_config_path);
-    if (supervised) {
-        printf("[DagCore] Exiting for restart to apply it\n");
-        keep_alive = 0;
-        running = 0;
+    if (restart) {
+        printf("[DagCore] Restarting to apply it\n");
+        dt_begin_restart();
     } else {
         printf("[DagCore] Restart the miner to apply it (not supervised)\n");
     }
@@ -4535,20 +4562,19 @@ static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *b
             return;
         }
         /* Intensity is fixed when the GPU buffers are allocated, so it only
-         * takes effect on a restart. systemd sets INVOCATION_ID; without it
-         * nothing would bring the miner back, so we save and say so instead
-         * of exiting into nowhere. */
-        int supervised = (getenv("INVOCATION_ID") != NULL);
+         * takes effect on a restart - by systemd, or on Windows by the miner
+         * itself. Otherwise nothing would bring it back, so we save and say
+         * so instead of exiting into nowhere. */
+        int restart = dt_can_restart();
         char resp[240];
         snprintf(resp, sizeof(resp),
                  "{\"ok\":true,\"saved\":true,\"restarting\":%s%s}",
-                 supervised ? "true" : "false",
-                 supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+                 restart ? "true" : "false",
+                 restart ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
         http_send_json(cfd, 200, "OK", resp);
-        if (supervised) {
-            printf("[DagCore] Intensity set to %ld via control API - exiting for restart\n", v);
-            keep_alive = 0;
-            running = 0;
+        if (restart) {
+            printf("[DagCore] Intensity set to %ld via control API - restarting\n", v);
+            dt_begin_restart();
         } else {
             printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
         }
@@ -5576,6 +5602,107 @@ static void dt_hold_console_on_error(void) {
 #endif
 }
 
+#ifdef _WIN32
+/* Restarting without a supervisor. After a clean shutdown the miner starts
+ * its own .exe again with the same command line, in the same console window
+ * and current directory, and exits. The new process first waits for the old
+ * one to be gone (DAGCORE_RESTART_AFTER_PID), so port 8881 and the card's
+ * memory are free before it takes them. Only the standard handles are passed
+ * on: sockets are inheritable on Windows, and an inherited copy of the
+ * metrics socket would keep the port bound after the old process exits. */
+#define DT_RESTART_ENV "DAGCORE_RESTART_AFTER_PID"
+
+static int dt_self_restart(void) {
+    char exe[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    if (n == 0 || n >= sizeof(exe)) {
+        fprintf(stderr, "[DagCore] ERROR: cannot restart: own path unknown (error %lu)\n",
+                GetLastError());
+        return -1;
+    }
+    char pid[16];
+    snprintf(pid, sizeof(pid), "%lu", (unsigned long)GetCurrentProcessId());
+    SetEnvironmentVariableA(DT_RESTART_ENV, pid);
+
+    /* CreateProcess may write into the command line, so it gets a copy. */
+    const char *orig = GetCommandLineA();
+    size_t cl = strlen(orig) + 1;
+    char *cmd = malloc(cl);
+    if (!cmd) return -1;
+    memcpy(cmd, orig, cl);
+
+    STARTUPINFOEXA si;
+    memset(&si, 0, sizeof(si));
+    si.StartupInfo.cb = sizeof(si);
+    HANDLE std3[3] = { GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE),
+                       GetStdHandle(STD_ERROR_HANDLE) };
+    HANDLE list[3];
+    int nl = 0;
+    for (int i = 0; i < 3; i++) {
+        HANDLE h = std3[i];
+        int dup = 0;
+        if (!h || h == INVALID_HANDLE_VALUE) continue;
+        for (int j = 0; j < nl; j++) if (list[j] == h) dup = 1;
+        if (!dup && SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+            list[nl++] = h;
+    }
+    SIZE_T asz = 0;
+    DWORD flags = 0;
+    if (nl > 0) {
+        InitializeProcThreadAttributeList(NULL, 1, 0, &asz);
+        si.lpAttributeList = malloc(asz);
+        if (si.lpAttributeList &&
+            InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &asz) &&
+            UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                      list, nl * sizeof(HANDLE), NULL, NULL)) {
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.StartupInfo.hStdInput  = std3[0];
+            si.StartupInfo.hStdOutput = std3[1];
+            si.StartupInfo.hStdError  = std3[2];
+            flags = EXTENDED_STARTUPINFO_PRESENT;
+        } else {
+            free(si.lpAttributeList);
+            si.lpAttributeList = NULL;
+            nl = 0;
+        }
+    }
+
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(exe, cmd, NULL, NULL, nl > 0, flags, NULL, NULL,
+                             &si.StartupInfo, &pi);
+    DWORD cerr = ok ? 0 : GetLastError();
+    if (si.lpAttributeList) {
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        free(si.lpAttributeList);
+    }
+    free(cmd);
+    if (!ok) {
+        fprintf(stderr, "[DagCore] ERROR: cannot restart %s (error %lu) - start it again "
+                        "by hand\n", exe, cerr);
+        return -1;
+    }
+    printf("[DagCore] Restarting: new process %lu\n", (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+}
+
+/* In the new process: wait, before touching anything, for the one that
+ * started it to exit. 30 s at most - its shutdown takes well under one. */
+static void dt_wait_for_restart_parent(void) {
+    const char *s = getenv(DT_RESTART_ENV);
+    if (!s || !s[0]) return;
+    DWORD pid = (DWORD)strtoul(s, NULL, 10);
+    SetEnvironmentVariableA(DT_RESTART_ENV, NULL);
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!h) return;                         /* already gone */
+    if (WaitForSingleObject(h, 30000) == WAIT_TIMEOUT)
+        fprintf(stderr, "[DagCore] WARNING: previous process %lu still running after 30 s\n",
+                (unsigned long)pid);
+    CloseHandle(h);
+}
+#endif
+
 /* =========================================================================
  * Usage / Help
  * ========================================================================= */
@@ -6125,6 +6252,7 @@ int main(int argc, char **argv) {
     /* Registered after signal(), so it is called first and handles Ctrl+C
      * too; the window-close case is the one signal() cannot catch. */
     SetConsoleCtrlHandler(dt_console_ctrl, TRUE);
+    dt_wait_for_restart_parent();
 #endif
 #ifndef _WIN32
     /* A client that drops the connection mid-response (a closed browser tab,
@@ -6792,6 +6920,11 @@ int main(int argc, char **argv) {
     printf("[DagCore] Shutdown complete. Total hashes: %" DT_PRIu64 "\n",
            (unsigned long long)total_hashes);
 #ifdef _WIN32
+    if (g_self_restart && dt_self_restart() != 0) {
+        dt_hold_console_on_error();
+        g_main_done = 1;
+        return 1;
+    }
     g_main_done = 1;          /* releases a console handler waiting on a close */
 #endif
     return 0;

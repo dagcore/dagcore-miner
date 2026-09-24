@@ -376,8 +376,10 @@ the test exists and why it reverts by itself.</div>
 work-items keep the card busier between round trips.</p>
 <p><b>Why it needs a restart.</b> The scratchpad buffers are allocated once,
 when the GPU is initialised. Changing their size means allocating again, which
-means starting over. The dashboard saves the value and lets systemd restart the
-miner; it comes back in a few seconds and the page reconnects by itself.</p>
+means starting over. The dashboard saves the value and the miner restarts —
+systemd brings it back on Linux, and on Windows it starts itself again in the
+same window. It comes back in a few seconds and the page reconnects by
+itself.</p>
 <p><b>Why 100 is not a magic number.</b> The request is clamped to what VRAM
 can actually hold. Intensity 100 asks for 2<sup>20</sup> work-items, which at
 128 KB each would be 128 GB — far past any card. On the 3080 the limit works
@@ -562,7 +564,8 @@ already back on the card and nothing was saved. Try a smaller step.</div>
 <table>
 <tr><th>Message</th><th>Means</th><th>What to do</th></tr>
 <tr><td>Miner is restarting to apply the new intensity…</td>
-    <td>Expected. Intensity needs a restart; systemd brings the miner back.</td>
+    <td>Expected. Intensity needs a restart; systemd (or, on Windows, the
+    miner itself) brings the miner back.</td>
     <td>Wait. The page reconnects by itself, usually within 10–20 s.</td></tr>
 <tr><td>Miner restarted — running again</td>
     <td>It came back and the new value is live.</td>

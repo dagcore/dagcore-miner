@@ -120,6 +120,13 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   vanishes with the window when the miner was started by a double-click; it
   waits for Enter. Started from cmd or PowerShell, or with input redirected,
   it exits at once as before.
+- **Windows: Save & restart restarts.** With no systemd to bring the miner
+  back, a Mining configuration or intensity save was written but only
+  answered "miner is not supervised; restart it to apply", and the miner
+  went on with the old values. It now shuts down cleanly and starts its own
+  `.exe` again - same command line, same console window - which waits for
+  the old process to exit before taking the port and the card. Linux without
+  systemd is unchanged.
 - `make windows` on Windows itself (Git Bash) created `include/CL/CL` on
   every forced rebuild, since `ln -s` copies there; the link is now replaced.
 
