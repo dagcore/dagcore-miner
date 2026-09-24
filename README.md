@@ -94,8 +94,9 @@ make windows-package    # -> build/win/DAGCore/
 
 **Copy the `DAGCore` folder to the Windows machine**, somewhere you can write
 to — for example `C:\DAGCore`, not `Program Files`. It holds both `.exe` files,
-`dagcore_gpu.cl`, the `dashboard` folder and a `config.env.example` written for
-Windows: rename it to `config.env` and fill in `WALLET=` (or give `--wallet` on
+`dagcore_gpu.cl`, the `dashboard` folder, `readme.html` — a step-by-step
+getting-started page that opens with a double-click, offline, styled like the
+dashboard — and a `config.env.example` written for Windows: rename it to `config.env` and fill in `WALLET=` (or give `--wallet` on
 the command line instead). It needs no `DASHBOARD_DIR`; the line is there,
 commented out, only for serving a copy kept elsewhere.
 

@@ -79,6 +79,9 @@ BIN_CPU_WIN    := dagcore-miner-cpu.exe
 WIN_CONFIG_EX  := $(WIN_BUILD)/config.env.example
 WIN_CONFIG_SED := win/config.env.sed
 WIN_PKG        := $(WIN_BUILD)/DAGCore
+# The getting-started page sits next to the .exe, where a user who has just
+# unzipped the folder sees it first; it takes its style from dashboard/.
+README_HTML    := readme.html
 
 # The installer's location, so that a hand "make install" over an installed rig
 # replaces what its service runs. Until 1.2.1 it was /usr/local, which nothing
@@ -118,7 +121,7 @@ $(WIN_CONFIG_EX): $(CONFIG_EX) $(WIN_CONFIG_SED)
 windows-package: windows
 	rm -rf $(WIN_PKG)
 	mkdir -p $(WIN_PKG)/dashboard
-	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(WIN_PKG)/
+	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(README_HTML) $(WIN_PKG)/
 	cp $(DASHBOARD) $(DASH_OFL) $(WIN_PKG)/dashboard/
 	@echo "windows-package: $(WIN_PKG) - copy that folder to the Windows machine"
 

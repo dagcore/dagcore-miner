@@ -41,6 +41,13 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     with a `config.env.example` made for Windows from the Linux one: no
     `/etc`, `/var/lib` or XDG paths, and no `DASHBOARD_DIR` (commented out),
     so the miner no longer starts by saying the `/opt` dashboard is missing.
+  - `readme.html`, a getting-started tutorial in the dashboard's style, sits
+    next to the `.exe` in the Windows package: what you need, putting the
+    miner in place, the wallet, starting, the dashboard, the control token,
+    Mining configuration, tuning, checking that it works, upgrading and
+    troubleshooting - Linux and Windows side by side where they differ. It
+    opens from the folder with a double-click, offline, before the miner
+    has run.
   - README: how to run the Windows build by hand, CPU-only, for testing.
 
 ### Changed

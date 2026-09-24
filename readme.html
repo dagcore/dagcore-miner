@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>DAGCore Miner — Getting started</title>
+<!-- Opened straight from the folder (double-click), next to the miner and its
+     dashboard folder: the typeface and the logo come from there, so the page
+     works offline, before the miner has ever run. Without that folder the
+     fonts fall back to the system's monospace and the page still reads. -->
+<link rel="stylesheet" href="dashboard/fonts.css">
+<style>
+/* Same tokens, typeface and panels as the dashboard and its help page. */
+:root{
+  --bg:#060a12; --panel:#0f1c32;
+  --line:rgba(110,155,220,.28); --line-soft:rgba(90,130,190,.12);
+  --text:#e8eef7; --text-2:#cfe0f4; --muted:#a9bcd3; --muted-2:#8fa5bf; --label:#8aa0bc;
+  --blue:#4d9dff; --mine:#ffab2e; --mine-soft:#ffc878;
+  --ok:#3fe08a; --warn:#f2c66d; --bad:#f4a29c;
+  --radius:14px;
+  --pad-top:env(safe-area-inset-top,0px);
+  --pad-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:radial-gradient(1100px 700px at 50% 8%,#0d1728 0%,#070c15 55%,#05080e 100%) no-repeat,var(--bg);
+  background-size:100% 1600px,auto;
+  color:var(--text);
+  font:14px/1.75 "IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  padding:calc(var(--pad-top) + 20px) 16px calc(var(--pad-bottom) + 28px);
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto}
+img{max-width:100%}
+
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding-bottom:20px;margin-bottom:8px;border-bottom:1px solid var(--line-soft)}
+header img{height:30px;width:auto;align-self:center}
+header h1{margin:0;font-size:19px;font-weight:700;letter-spacing:-.03em;color:#fff}
+.links{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+a.btn{font-size:12.5px;font-weight:600;color:var(--blue);
+  text-decoration:none;border:1px solid rgba(77,157,255,.4);border-radius:9px;
+  padding:9px 14px;background:rgba(77,157,255,.08);white-space:nowrap}
+a.btn:hover{background:rgba(77,157,255,.16)}
+
+nav{background:linear-gradient(160deg,rgba(15,28,50,.92),rgba(10,14,22,.88) 70%);
+  border:1px solid var(--line-soft);border-radius:var(--radius);padding:18px 20px;margin:22px 0 30px}
+nav h2{margin:0 0 12px;font-size:12px;font-weight:600;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--label)}
+nav ol{margin:0;padding-left:20px;columns:3;column-gap:28px}
+nav li{margin:0 0 6px;break-inside:avoid}
+nav a{color:var(--text-2);text-decoration:none}
+nav a:hover{color:var(--blue);text-decoration:underline}
+
+section{margin:0 0 16px;scroll-margin-top:16px;
+  border:1px solid var(--line-soft);border-radius:var(--radius);padding:20px 22px;
+  background:linear-gradient(160deg,rgba(15,28,50,.92),rgba(10,14,22,.88) 70%);
+  box-shadow:0 12px 40px rgba(0,0,0,.45)}
+/* Each step opens with its number in the miner's accent colour. */
+.step{display:flex;align-items:center;gap:12px;margin:0 0 14px}
+.step .n{flex:0 0 auto;width:30px;height:30px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:700;color:#1b1204;background:var(--mine)}
+.step h2{margin:0}
+h2{font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--label);margin:0 0 16px}
+h3{font-size:14px;font-weight:600;color:var(--mine-soft);margin:18px 0 6px}
+p{margin:0 0 12px;color:var(--muted)}
+p.lead{color:var(--text-2)}
+ul,ol.body{margin:0 0 14px;padding-left:22px;color:var(--muted)}
+li{margin:0 0 7px}
+b,strong{color:var(--text);font-weight:600}
+code{background:rgba(0,0,0,.4);border:1px solid var(--line-soft);border-radius:5px;
+  padding:1px 5px;font-size:12.5px;color:var(--text-2)}
+pre{background:rgba(0,0,0,.4);border:1px solid var(--line-soft);border-radius:9px;
+  padding:13px 15px;overflow-x:auto;margin:0 0 14px;font-size:12.5px;color:var(--text-2)}
+pre code{background:none;border:0;padding:0}
+a{color:var(--blue)}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:0 0 16px}
+th{text-align:left;color:var(--label);font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;font-weight:600;padding:0 12px 9px 0;vertical-align:bottom}
+td{padding:9px 12px 9px 0;border-top:1px solid var(--line-soft);
+  color:var(--muted);vertical-align:top}
+td:first-child{color:var(--text)}
+.table-scroll{overflow-x:auto;margin-bottom:16px}
+.table-scroll table{margin:0}
+
+/* Linux and Windows side by side where a step differs between them. */
+.os{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:0 0 6px}
+.os > div{border:1px solid var(--line-soft);border-radius:11px;padding:14px 16px 4px;
+  background:rgba(0,0,0,.18);min-width:0}
+.os h3{margin-top:0}
+.tag{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.12em;
+  text-transform:uppercase;border-radius:6px;padding:1px 7px;margin-left:6px;
+  vertical-align:2px;color:var(--warn);border:1px solid rgba(242,198,109,.45)}
+
+.note{border-radius:9px;padding:12px 14px;margin:0 0 16px;font-size:13px;line-height:1.7}
+.note.warn{border:1px solid rgba(242,198,109,.4);background:rgba(242,198,109,.09);color:var(--warn)}
+.note.ok{border:1px solid rgba(63,224,138,.4);background:rgba(63,224,138,.09);color:var(--ok)}
+.note.info{border:1px solid rgba(77,157,255,.4);background:rgba(77,157,255,.08);color:var(--text-2)}
+.note b{color:inherit}
+/* The orange outline Mining configuration shows while a change is unsaved. */
+.mock{border:1px solid rgba(255,171,46,.75);border-radius:12px;padding:12px 16px;
+  background:rgba(0,0,0,.18);margin:0 0 14px;font-size:12.5px}
+.mock .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;
+  border-bottom:1px solid var(--line-soft);color:var(--muted)}
+.mock .row b{color:var(--text)}
+.mock .act{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:10px}
+.mock .pend{flex:1 1 200px;color:var(--mine-soft)}
+.mock .save{border-radius:9px;padding:7px 12px;font-weight:600;
+  background:var(--mine);color:#1b1204;white-space:nowrap}
+.up{display:inline-block;margin-top:2px;font-size:11.5px;color:var(--muted-2);text-decoration:none}
+.up:hover{color:var(--blue)}
+footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--line-soft);
+  text-align:center;color:var(--label);font-size:11.5px;letter-spacing:.06em;line-height:1.8}
+
+@media (max-width:900px){ nav ol{columns:2} }
+@media (max-width:760px){ .os{grid-template-columns:1fr} }
+@media (max-width:620px){ nav ol{columns:1} }
+@media (max-width:560px){
+  section{padding:18px 16px}
+  header{gap:12px}
+  .links{margin-left:0;width:100%}
+  a.btn{flex:1 1 auto;text-align:center}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header id="top">
+  <img src="dashboard/logo.webp" alt="DagCore" width="152" height="44">
+  <h1>Getting started</h1>
+  <span class="links">
+    <a class="btn" href="http://localhost:8881/">Open the dashboard</a>
+    <a class="btn" href="http://localhost:8881/help">Help</a>
+  </span>
+</header>
+
+<p class="lead">From an unpacked folder to a rig mining to your wallet and tuned
+from the browser, in nine steps. Each step says what to do, and how to tell it
+worked. Where Linux and Windows differ, both are shown side by side.</p>
+
+<p>The two links above work once the miner is running on this computer. Before
+that, this page is all you need.</p>
+
+<nav>
+  <h2>Steps</h2>
+  <ol>
+    <li><a href="#before">What you need</a></li>
+    <li><a href="#install">Put the miner in place</a></li>
+    <li><a href="#wallet">Set your wallet</a></li>
+    <li><a href="#start">Start mining</a></li>
+    <li><a href="#dashboard">Open the dashboard</a></li>
+    <li><a href="#token">Enter the control token</a></li>
+    <li><a href="#config">Mining configuration</a></li>
+    <li><a href="#tuning">Tune the card (optional)</a></li>
+    <li><a href="#check">Check that it works</a></li>
+    <li><a href="#upgrade">Upgrading</a></li>
+    <li><a href="#trouble">When something is wrong</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<section id="before">
+<div class="step"><span class="n">1</span><h2>What you need</h2></div>
+<ul>
+  <li><b>A BlockDAG wallet address</b> — <code>0x</code> followed by 40
+  hexadecimal characters. It is where the pool pays; there is no account to
+  create.</li>
+  <li><b>An NVIDIA graphics card</b> with the NVIDIA driver installed. The
+  miner talks to the card through the driver's OpenCL; nothing else has to be
+  installed for it. <code>nvidia-smi</code>, which comes with the driver, is
+  what the power and clock controls use.</li>
+  <li><b>Linux on x86-64</b> — the supported system, with an installer and a
+  service. <b>Windows 10 (1803 or later)</b> works for testing.</li>
+</ul>
+<div class="note warn"><b>Windows is experimental.</b> The Windows build runs
+by hand and has no installer or service. Clock locks and offsets are Linux-only
+for now (the Windows build has no NVML); the power limit goes through
+<code>nvidia-smi</code> as on Linux but has not been tried on Windows, where
+changing it may need the miner started as administrator. Mining itself works
+the same.</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 2 -->
+<section id="install">
+<div class="step"><span class="n">2</span><h2>Put the miner in place</h2></div>
+<div class="os">
+  <div>
+    <h3>Linux</h3>
+    <p>Get the source and run the installer. It checks the machine, offers to
+    install what it needs to build, compiles, and sets everything up:</p>
+<pre><code>git clone https://github.com/dagcore/dagcore-miner.git
+cd dagcore-miner
+sudo ./install.sh</code></pre>
+    <p>To see what it would do without touching anything:
+    <code>./install.sh --dry-run</code>.</p>
+    <p>The program goes to <code>/opt/dagcore-miner/</code>, the
+    configuration to <code>/etc/dagcore-miner/config.env</code>.</p>
+  </div>
+  <div>
+    <h3>Windows <span class="tag">test</span></h3>
+    <p>Copy the whole <code>DAGCore</code> folder somewhere you can write to,
+    for example <code>C:\DAGCore</code> — <b>not</b>
+    <code>Program Files</code>: the miner keeps its settings in that same
+    folder and has to be able to save them.</p>
+    <p>Inside it you have:</p>
+    <ul>
+      <li><code>dagcore-miner.exe</code> — graphics card (and CPU)</li>
+      <li><code>dagcore-miner-cpu.exe</code> — CPU only</li>
+      <li><code>dagcore_gpu.cl</code> — the card's program; keep it next to
+      the <code>.exe</code></li>
+      <li><code>dashboard\</code> — the web page</li>
+      <li><code>config.env.example</code></li>
+      <li>this page</li>
+    </ul>
+    <p>Nothing to install: the <code>.exe</code> brings no DLLs of its own.</p>
+  </div>
+</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 3 -->
+<section id="wallet">
+<div class="step"><span class="n">3</span><h2>Set your wallet</h2></div>
+<div class="os">
+  <div>
+    <h3>Linux</h3>
+    <p>The installer asks for it, and checks it: <code>0x</code> plus 40
+    hexadecimal characters. It then asks a few more things; the defaults are
+    right for most rigs:</p>
+    <div class="table-scroll"><table>
+      <tr><th>Question</th><th>Default</th></tr>
+      <tr><td>Pool and port</td><td><code>stratum.dagcore.net</code>, <code>3334</code></td></tr>
+      <tr><td>CPU mining threads</td><td><code>0</code> — card only; the CPU adds under 1%</td></tr>
+      <tr><td>Which cards</td><td>all of them (asked only with more than one)</td></tr>
+      <tr><td>Dashboard from this machine only</td><td>yes</td></tr>
+      <tr><td>Create a service, start now</td><td>yes, yes</td></tr>
+    </table></div>
+    <p>For many machines at once:
+    <code>sudo ./install.sh --wallet 0xYOURADDRESS --yes</code>.</p>
+  </div>
+  <div>
+    <h3>Windows</h3>
+    <p>Rename <code>config.env.example</code> to <code>config.env</code>, open
+    it in Notepad and replace the placeholder on the <code>WALLET=</code>
+    line:</p>
+<pre><code>WALLET=0xYOURADDRESS</code></pre>
+    <p>That is the only line you must change. Everything else in the file is
+    explained where it stands, and can wait for the dashboard.</p>
+    <p>For the CPU-only <code>.exe</code>, also set <code>THREADS=-1</code>
+    (half the cores); left at <code>0</code> it warns and does that anyway.</p>
+  </div>
+</div>
+<div class="note warn"><b>Check the address twice.</b> A typo mines for
+somebody else, and nothing can undo that. The dashboard asks for confirmation
+before it changes the wallet, for the same reason.</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 4 -->
+<section id="start">
+<div class="step"><span class="n">4</span><h2>Start mining</h2></div>
+<div class="os">
+  <div>
+    <h3>Linux</h3>
+    <p>With the defaults the installer has already started it, as the
+    <code>dagcore-miner</code> service: it starts at boot and restarts by
+    itself.</p>
+<pre><code>sudo systemctl status dagcore-miner     # running?
+sudo journalctl -u dagcore-miner -f     # its log, live
+sudo systemctl restart dagcore-miner</code></pre>
+    <p>Without a service (a container, or you said no):
+    <code>sudo /opt/dagcore-miner/start.sh</code>, Ctrl+C to stop.</p>
+  </div>
+  <div>
+    <h3>Windows</h3>
+    <p>Double-click <code>dagcore-miner.exe</code> (or
+    <code>dagcore-miner-cpu.exe</code> on a machine without an NVIDIA card).
+    A console window opens and stays open while it mines. Windows may ask
+    whether to allow network access the first time — allow it.</p>
+    <p>To stop: Ctrl+C in that window, or close it. Either way the miner shuts
+    down cleanly.</p>
+    <p>It finds everything in its own folder, whichever folder it is started
+    from.</p>
+  </div>
+</div>
+<p><b>How to tell it worked:</b> the log shows <code>Connected!</code>, then
+<code>Authorized</code> and <code>Mining started!</code>, and soon lines with
+<code>Share ACCEPTED</code>. In the first seconds they come fast — the pool
+starts every connection at a low difficulty and raises it over the first
+minutes.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 5 -->
+<section id="dashboard">
+<div class="step"><span class="n">5</span><h2>Open the dashboard</h2></div>
+<p>In a browser on the same machine:
+<a href="http://localhost:8881/"><b>http://localhost:8881/</b></a>. It shows
+the hashrate, the shares, the card's temperature and power, a 30-minute chart,
+and the settings. Reading it needs nothing else.</p>
+<h3>From another computer</h3>
+<p>By default the dashboard answers only on the machine itself. The safe way to
+reach it from elsewhere is an SSH tunnel, then open the same address:</p>
+<pre><code>ssh -L 8881:127.0.0.1:8881 user@rig-address</code></pre>
+<p>Opening it to the whole local network (<code>--lan</code> for the installer,
+<code>METRICS_BIND=0.0.0.0</code> in <code>config.env</code>) works too, but
+then everyone on that network sees the page, including your full wallet
+address.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 6 -->
+<section id="token">
+<div class="step"><span class="n">6</span><h2>Enter the control token</h2></div>
+<p>Changing anything from the dashboard needs the rig's <b>control token</b>,
+a long random string the miner creates the first time it starts. Paste it once
+under <b>Settings → Control token</b> and press <b>Save</b>; the browser keeps
+it.</p>
+<div class="os">
+  <div>
+    <h3>Linux</h3>
+<pre><code>sudo cat /etc/dagcore-miner/api-token</code></pre>
+    <p>It is also printed once, on the first start, in the log.</p>
+  </div>
+  <div>
+    <h3>Windows</h3>
+    <p>The file <code>api-token</code> in the miner's folder — open it with
+    Notepad. The first start also prints it in the console, after
+    <code>Token:</code>. Every start names the file it uses
+    (<code>Control API token:</code>).</p>
+  </div>
+</div>
+<p><b>How to tell it worked:</b> the controls in Settings stop being greyed out.
+<i>Rejected: invalid token</i> means it was mistyped, or a new one was made
+since — delete the file and restart the miner to get a fresh one.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 7 -->
+<section id="config">
+<div class="step"><span class="n">7</span><h2>Mining configuration</h2></div>
+<p>At the top of Settings, in its own box: <b>wallet</b>, <b>pool</b> and
+<b>port</b>, <b>CPU threads</b> and <b>graphics cards</b>. The same settings
+as in <code>config.env</code>; saving writes them there and keeps the previous
+file as <code>config.env.bak</code>.</p>
+<ol class="body">
+  <li>Change what you want — any number of fields.</li>
+  <li>The box turns orange and says what is not saved yet:
+    <div class="mock">
+      <div class="row"><span>CPU threads</span><b>3</b></div>
+      <div class="act"><span class="pend">Not saved yet: CPU threads 2 → 3.
+      Press Save &amp; restart to apply.</span><span class="save">Save &amp; restart</span></div>
+    </div>
+  </li>
+  <li>Press <b>Save &amp; restart at the bottom of that box</b>. The miner
+  restarts to apply it, and the page reconnects by itself.</li>
+</ol>
+<div class="note info"><b>Two buttons read "Save &amp; restart".</b> The one
+inside the Mining configuration box saves the box. The one next to GPU
+intensity saves the intensity only — if the box has unsaved changes, it asks
+first.</div>
+<p><b>CPU threads:</b> <i>auto</i> is half the logical cores, <i>0</i> is card
+only. Under the setting the page shows what the CPU is adding right now — on a
+rig with a card, well under one percent, which is why the default is 0.</p>
+<p>A field marked <i>set on the command line</i> cannot be changed here: the
+command line wins over <code>config.env</code> at every start.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 8 -->
+<section id="tuning">
+<div class="step"><span class="n">8</span><h2>Tune the card <span class="tag">optional</span></h2></div>
+<p>The rest of Settings. None of it is needed to mine; it trades power and heat
+for hashrate. <b>Change one thing at a time</b> — if two change together and
+shares start being rejected, there is no telling which one did it.</p>
+<div class="table-scroll"><table>
+  <tr><th>Setting</th><th>What it does</th><th>How it applies</th></tr>
+  <tr><td>GPU power limit</td><td>Caps the card's watts. Lower saves power and heat,
+      usually for little hashrate.</td><td>Apply — at once</td></tr>
+  <tr><td>Memory offset</td><td>Raises the memory clock; this algorithm is
+      memory-bound, so this is where hashrate comes from.</td>
+      <td>Apply — then a 10-minute test</td></tr>
+  <tr><td>GPU intensity</td><td>How much work each batch gives the card, 0–100.
+      Lower leaves the machine more responsive.</td><td>Save &amp; restart</td></tr>
+  <tr><td>Advanced: core clock, memory clock, core offset</td><td>For experienced
+      users.</td><td>Apply — then a 10-minute test</td></tr>
+</table></div>
+<p><b>The 10-minute test</b> starts by itself for clock changes. A banner shows
+the countdown and the rejected shares. If any appear, the old value comes back
+on its own and nothing is saved; after ten clean minutes the new one is kept for
+every future start. You do not have to keep the page open.</p>
+<p><b>Default</b> on each row gives the card's own factory value back.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- 9 -->
+<section id="check">
+<div class="step"><span class="n">9</span><h2>Check that it works</h2></div>
+<ul>
+  <li>The chip at the top says <b>mining</b> (not <i>connecting</i> or
+  <i>paused</i>).</li>
+  <li><b>GPU hashrate</b> is steady — an RTX 3080 does about 1.6 MH/s. A card
+  missing from the count, or a GPU figure of 0 with only CPU mining, is not
+  normal: see below.</li>
+  <li><b>Accepted</b> shares keep rising; <b>rejected</b> stays at or near
+  0. A few <i>stale</i> ones are normal.</li>
+  <li><b>Effective hashrate</b> — what the pool actually credited — appears
+  after ten minutes and settles near the raw figure. In the first minutes after
+  a start it runs low while the pool's difficulty climbs; that is expected.</li>
+</ul>
+<div class="note ok"><b>That is all.</b> From here the rig mines on its own.
+<b>Pause mining</b> in the header stops it without closing anything; the page
+stays up so you can resume from it.</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- upgrade -->
+<section id="upgrade">
+<h2>Upgrading</h2>
+<div class="os">
+  <div>
+    <h3>Linux</h3>
+<pre><code>cd dagcore-miner
+git pull
+sudo ./install.sh        # choose Upgrade</code></pre>
+    <p>Settings are kept. What changed is in <code>CHANGELOG.md</code>.</p>
+  </div>
+  <div>
+    <h3>Windows</h3>
+    <p>Stop the miner, then copy the new <code>.exe</code> files,
+    <code>dagcore_gpu.cl</code>, the <code>dashboard</code> folder and this
+    page over the old ones. Keep <code>config.env</code>,
+    <code>api-token</code> and <code>overrides.env</code>: they hold your
+    settings and the token your browser knows.</p>
+  </div>
+</div>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<!-- trouble -->
+<section id="trouble">
+<h2>When something is wrong</h2>
+<div class="table-scroll"><table>
+  <tr><th>You see</th><th>What to do</th></tr>
+  <tr><td>The dashboard does not open</td>
+      <td>Is the miner running (step 4)? Is it the same machine, or a tunnel
+      (step 5)? The log says <code>Metrics server on http://…</code> with the
+      address it answers on.</td></tr>
+  <tr><td>GPU 0 H/s, only the CPU mining</td>
+      <td>The miner found no card. Check the NVIDIA driver; in a container, the
+      installer offers the missing OpenCL registration — say yes.</td></tr>
+  <tr><td>Controls greyed out</td>
+      <td>No token in this browser — step 6. On a rig with several cards, or
+      without <code>nvidia-smi</code>, the reason is written on each control.</td></tr>
+  <tr><td>A change "does nothing"</td>
+      <td>In Mining configuration, was the box saved with its own Save &amp;
+      restart (step 7)? Is the field set on the command line?</td></tr>
+  <tr><td>Rejected shares after tuning</td>
+      <td>Let the 10-minute test put the old value back, or press
+      <b>Cancel test</b>. Then try a smaller step.</td></tr>
+  <tr><td>Windows: nothing saved, token missing</td>
+      <td>The folder must be writable — not <code>Program Files</code>. The
+      console names the files it uses at every start.</td></tr>
+</table></div>
+<p>Every number and every message on the dashboard is explained in
+<a href="http://localhost:8881/help">Help</a> (the miner has to be running), and
+installation in more depth in <code>docs/INSTALL.md</code> of the source.</p>
+<a class="up" href="#top">back to top</a>
+</section>
+
+<footer>DAGCore Miner &middot; dagcore.net</footer>
+</div>
+</body>
+</html>
