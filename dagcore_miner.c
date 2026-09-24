@@ -3047,10 +3047,21 @@ static void *dagtech_mine_thread(void *arg) {
     return NULL;
 }
 
+static int nvml_read_stats(double *temp, double *usage, double *memory, double *power,
+                           double *core_clk, double *mem_clk);
+
 /* One nvidia-smi per metrics request, not one per value: the clocks ride
- * along with the telemetry that was already being queried. */
+ * along with the telemetry that was already being queried.
+ * On Windows NVML is asked first (nvml.dll comes with every NVIDIA driver;
+ * nvidia-smi.exe is not always on PATH), and nvidia-smi only if that fails.
+ * Linux still reads through nvidia-smi, as it always has. With neither - no
+ * NVIDIA card, as on a laptop with Intel graphics - it returns -1 and the
+ * dashboard shows the fields as unknown. */
 static int get_gpu_stats(double *temp, double *usage, double *memory, double *power,
                          double *core_clk, double *mem_clk) {
+#ifdef _WIN32
+    if (nvml_read_stats(temp, usage, memory, power, core_clk, mem_clk) == 0) return 0;
+#endif
     FILE *fp = popen("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,"
                      "power.draw,clocks.current.graphics,clocks.current.memory "
                      "--format=csv,noheader,nounits " DT_NULL_STDERR, "r");
@@ -3179,7 +3190,41 @@ static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, doubl
  * DAGCORE_NVML_LIB redirects the library, which is what makes this testable
  * without touching a real card. */
 
-#ifndef _WIN32
+/* ---- Loading NVML: dlopen on Linux, LoadLibrary on Windows ------------ */
+#ifdef _WIN32
+typedef HMODULE dt_lib_t;
+/* nvml.dll comes with the NVIDIA driver: in System32 with current (DCH)
+ * drivers, in "NVIDIA Corporation\NVSMI" under Program Files with older ones.
+ * It is looked for in exactly those two places and never by bare name: the
+ * default search would try the .exe's own folder first, a folder the user can
+ * write to, and load whatever nvml.dll was dropped there. DAGCORE_NVML_LIB,
+ * given as a full path, overrides both. */
+static dt_lib_t dt_lib_open(const char *name) {
+    if (strchr(name, '\\') || strchr(name, '/'))
+        return LoadLibraryExA(name, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    HMODULE h = LoadLibraryExA(name, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!h) {
+        const char *pf = getenv("ProgramW6432");
+        if (!pf || !pf[0]) pf = getenv("ProgramFiles");
+        if (pf && pf[0]) {
+            char path[MAX_PATH];
+            snprintf(path, sizeof(path), "%s\\NVIDIA Corporation\\NVSMI\\%s", pf, name);
+            h = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        }
+    }
+    return h;
+}
+static void *dt_lib_sym(dt_lib_t lib, const char *sym) {
+    return (void *)GetProcAddress(lib, sym);
+}
+#define DT_NVML_LIB_DEFAULT "nvml.dll"
+#else
+typedef void *dt_lib_t;
+static dt_lib_t dt_lib_open(const char *name) { return dlopen(name, RTLD_LAZY); }
+static void *dt_lib_sym(dt_lib_t lib, const char *sym) { return dlsym(lib, sym); }
+#define DT_NVML_LIB_DEFAULT "libnvidia-ml.so.1"
+#endif
+
 typedef int (*nvml_init_fn)(void);
 typedef int (*nvml_shutdown_fn)(void);
 typedef int (*nvml_handle_fn)(unsigned int, void **);
@@ -3192,16 +3237,42 @@ typedef int (*nvml_clkinfo_fn)(void *, int, unsigned int *);
 typedef int (*nvml_supmem_fn)(void *, unsigned int *, unsigned int *);
 typedef int (*nvml_pstate_fn)(void *, int, int, unsigned int *, unsigned int *);
 typedef const char *(*nvml_errstr_fn)(int);
+/* Telemetry. The structs are NVML's own v1 layouts, stable since the first
+ * NVML: nvmlUtilization_t and nvmlMemory_t. */
+typedef struct { unsigned int gpu, memory; } dt_nvml_util_t;
+typedef struct { unsigned long long total, free, used; } dt_nvml_mem_t;
+/* nvmlMemory_v2_t: "used" without the memory the driver reserves - what
+ * nvidia-smi reports. v1 counts the reservation too (on an RTX 3080 mining,
+ * 2642 MiB against nvidia-smi's 2279). */
+typedef struct { unsigned int version; unsigned long long total, reserved, free, used; } dt_nvml_mem2_t;
+#define DT_NVML_MEMORY_V2 ((unsigned int)(sizeof(dt_nvml_mem2_t) | (2u << 24)))
+typedef int (*nvml_temp_fn)(void *, int, unsigned int *);
+typedef int (*nvml_util_fn)(void *, dt_nvml_util_t *);
+typedef int (*nvml_meminfo_fn)(void *, dt_nvml_mem_t *);
+typedef int (*nvml_meminfo2_fn)(void *, dt_nvml_mem2_t *);
+typedef int (*nvml_power_fn)(void *, unsigned int *);
 
 #define NVML_CLK_GRAPHICS 0
 #define NVML_CLK_MEM      2
+#define NVML_TEMPERATURE_GPU 0
 
 static struct {
-    int   tried;          /* 0 = not attempted yet */
-    int   ok;             /* 1 = usable */
-    void *lib;
+    /* The library, its init and the device handle - enough to read. */
+    int   base_tried;     /* 0 = not attempted yet */
+    int   base_ok;        /* 1 = loaded, initialised, handle in hand */
+    dt_lib_t lib;
     void *dev;
+    nvml_errstr_fn     errstr;
     nvml_shutdown_fn   shutdown;
+    nvml_temp_fn       temp;
+    nvml_util_fn       util;
+    nvml_meminfo_fn    meminfo;
+    nvml_meminfo2_fn   meminfo2;
+    nvml_power_fn      power;
+    nvml_clkinfo_fn    cur_clk;
+    /* Clock control on top of that (Linux only for now). */
+    int   tried;          /* 0 = not attempted yet */
+    int   ok;             /* 1 = clock control usable */
     nvml_get_off_fn    get_core, get_mem;
     nvml_set_off_fn    set_core, set_mem;
     nvml_minmax_off_fn range_core, range_mem;
@@ -3210,67 +3281,131 @@ static struct {
     nvml_clkinfo_fn    max_clk;
     nvml_supmem_fn     sup_mem;
     nvml_pstate_fn     pstate;
-    nvml_errstr_fn     errstr;
     char  why[160];       /* why it is unusable, for the dashboard */
 } g_nvml;
+static pthread_mutex_t nvml_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *nvml_err(int rc) {
     if (g_nvml.errstr) return g_nvml.errstr(rc);
     return "NVML error";
 }
 
-/* Resolve everything up front: a half-loaded NVML is worse than none. */
-static int nvml_load(void) {
-    if (g_nvml.tried) return g_nvml.ok;
-    g_nvml.tried = 1;
+/* Open the library, initialise it and take the handle of the mining card.
+ * Tried once; on a machine without an NVIDIA driver it fails quietly and
+ * leaves the reason in g_nvml.why. The telemetry entry points are optional:
+ * a missing one just leaves that reading to nvidia-smi or to "unknown". */
+static int nvml_load_base(void) {
+    pthread_mutex_lock(&nvml_mtx);
+    if (g_nvml.base_tried) { pthread_mutex_unlock(&nvml_mtx); return g_nvml.base_ok; }
+    g_nvml.base_tried = 1;
     snprintf(g_nvml.why, sizeof(g_nvml.why), "not initialised");
 
     const char *libname = getenv("DAGCORE_NVML_LIB");
-    if (!libname || !libname[0]) libname = "libnvidia-ml.so.1";
+    if (!libname || !libname[0]) libname = DT_NVML_LIB_DEFAULT;
 
-    g_nvml.lib = dlopen(libname, RTLD_LAZY);
+    g_nvml.lib = dt_lib_open(libname);
     if (!g_nvml.lib) {
         snprintf(g_nvml.why, sizeof(g_nvml.why), "cannot load %s", libname);
+        pthread_mutex_unlock(&nvml_mtx);
         return 0;
     }
-    nvml_init_fn   init = (nvml_init_fn)  dlsym(g_nvml.lib, "nvmlInit_v2");
-    nvml_handle_fn hnd  = (nvml_handle_fn)dlsym(g_nvml.lib, "nvmlDeviceGetHandleByIndex_v2");
-    g_nvml.shutdown     = (nvml_shutdown_fn)dlsym(g_nvml.lib, "nvmlShutdown");
-    g_nvml.get_core     = (nvml_get_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetGpcClkVfOffset");
-    g_nvml.set_core     = (nvml_set_off_fn)dlsym(g_nvml.lib, "nvmlDeviceSetGpcClkVfOffset");
-    g_nvml.get_mem      = (nvml_get_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMemClkVfOffset");
-    g_nvml.set_mem      = (nvml_set_off_fn)dlsym(g_nvml.lib, "nvmlDeviceSetMemClkVfOffset");
-    g_nvml.range_core   = (nvml_minmax_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetGpcClkMinMaxVfOffset");
-    g_nvml.range_mem    = (nvml_minmax_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMemClkMinMaxVfOffset");
-    g_nvml.lock_core    = (nvml_lock_fn)dlsym(g_nvml.lib, "nvmlDeviceSetGpuLockedClocks");
-    g_nvml.lock_mem     = (nvml_lock_fn)dlsym(g_nvml.lib, "nvmlDeviceSetMemoryLockedClocks");
-    g_nvml.unlock_core  = (nvml_unlock_fn)dlsym(g_nvml.lib, "nvmlDeviceResetGpuLockedClocks");
-    g_nvml.unlock_mem   = (nvml_unlock_fn)dlsym(g_nvml.lib, "nvmlDeviceResetMemoryLockedClocks");
-    g_nvml.max_clk      = (nvml_clkinfo_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMaxClockInfo");
-    g_nvml.sup_mem      = (nvml_supmem_fn)dlsym(g_nvml.lib, "nvmlDeviceGetSupportedMemoryClocks");
-    g_nvml.pstate       = (nvml_pstate_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMinMaxClockOfPState");
-    g_nvml.errstr       = (nvml_errstr_fn)dlsym(g_nvml.lib, "nvmlErrorString");
+    nvml_init_fn   init = (nvml_init_fn)  dt_lib_sym(g_nvml.lib, "nvmlInit_v2");
+    nvml_handle_fn hnd  = (nvml_handle_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetHandleByIndex_v2");
+    g_nvml.errstr   = (nvml_errstr_fn)  dt_lib_sym(g_nvml.lib, "nvmlErrorString");
+    g_nvml.shutdown = (nvml_shutdown_fn)dt_lib_sym(g_nvml.lib, "nvmlShutdown");
+    g_nvml.temp     = (nvml_temp_fn)    dt_lib_sym(g_nvml.lib, "nvmlDeviceGetTemperature");
+    g_nvml.util     = (nvml_util_fn)    dt_lib_sym(g_nvml.lib, "nvmlDeviceGetUtilizationRates");
+    g_nvml.meminfo  = (nvml_meminfo_fn) dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemoryInfo");
+    g_nvml.meminfo2 = (nvml_meminfo2_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemoryInfo_v2");
+    g_nvml.power    = (nvml_power_fn)   dt_lib_sym(g_nvml.lib, "nvmlDeviceGetPowerUsage");
+    g_nvml.cur_clk  = (nvml_clkinfo_fn) dt_lib_sym(g_nvml.lib, "nvmlDeviceGetClockInfo");
+    if (!init || !hnd) {
+        snprintf(g_nvml.why, sizeof(g_nvml.why), "%s lacks nvmlInit_v2", libname);
+        pthread_mutex_unlock(&nvml_mtx);
+        return 0;
+    }
+    int rc = init();
+    if (rc != 0) {
+        snprintf(g_nvml.why, sizeof(g_nvml.why), "nvmlInit failed: %s", nvml_err(rc));
+        pthread_mutex_unlock(&nvml_mtx);
+        return 0;
+    }
+    rc = hnd((unsigned)(gpu_device < 0 ? 0 : gpu_device), &g_nvml.dev);
+    if (rc != 0) {
+        snprintf(g_nvml.why, sizeof(g_nvml.why), "no NVML handle for GPU %d: %s",
+                 gpu_device, nvml_err(rc));
+        pthread_mutex_unlock(&nvml_mtx);
+        return 0;
+    }
+    g_nvml.base_ok = 1;
+    snprintf(g_nvml.why, sizeof(g_nvml.why), "ok");
+    pthread_mutex_unlock(&nvml_mtx);
+    return 1;
+}
 
-    if (!init || !hnd || !g_nvml.get_core || !g_nvml.set_core ||
+/* The mining card's temperature (C), load (%), memory used (MiB), power (W)
+ * and current core and memory clocks (MHz), straight from NVML - what
+ * nvidia-smi --query-gpu reports, without starting a process for it. A value
+ * NVML cannot give is -1. 0 if NVML answered at all, -1 if it is not there. */
+#if defined(__GNUC__) && !defined(_WIN32)
+__attribute__((unused))   /* Linux reads through nvidia-smi; kept for tests */
+#endif
+static int nvml_read_stats(double *temp, double *usage, double *memory, double *power,
+                           double *core_clk, double *mem_clk) {
+    *temp = *usage = *memory = *power = *core_clk = *mem_clk = -1.0;
+    if (!nvml_load_base()) return -1;
+    unsigned int u = 0;
+    dt_nvml_util_t ut;
+    dt_nvml_mem_t  mi;
+    dt_nvml_mem2_t m2;
+    int any = 0;
+    if (g_nvml.temp && g_nvml.temp(g_nvml.dev, NVML_TEMPERATURE_GPU, &u) == 0) { *temp = u; any = 1; }
+    if (g_nvml.util && g_nvml.util(g_nvml.dev, &ut) == 0) { *usage = ut.gpu; any = 1; }
+    memset(&m2, 0, sizeof(m2));
+    m2.version = DT_NVML_MEMORY_V2;
+    if (g_nvml.meminfo2 && g_nvml.meminfo2(g_nvml.dev, &m2) == 0) {
+        *memory = (double)m2.used / (1024.0 * 1024.0); any = 1;
+    } else if (g_nvml.meminfo && g_nvml.meminfo(g_nvml.dev, &mi) == 0) {
+        *memory = (double)mi.used / (1024.0 * 1024.0); any = 1;
+    }
+    if (g_nvml.power && g_nvml.power(g_nvml.dev, &u) == 0) { *power = u / 1000.0; any = 1; }
+    if (g_nvml.cur_clk && g_nvml.cur_clk(g_nvml.dev, NVML_CLK_GRAPHICS, &u) == 0) { *core_clk = u; any = 1; }
+    if (g_nvml.cur_clk && g_nvml.cur_clk(g_nvml.dev, NVML_CLK_MEM, &u) == 0) { *mem_clk = u; any = 1; }
+    return any ? 0 : -1;
+}
+
+#ifndef _WIN32
+/* Clock control: the base, plus every clock entry point resolved up front -
+ * a half-loaded NVML is worse than none. */
+static int nvml_load(void) {
+    if (g_nvml.tried) return g_nvml.ok;
+    g_nvml.tried = 1;
+    if (!nvml_load_base()) return 0;
+
+    const char *libname = getenv("DAGCORE_NVML_LIB");
+    if (!libname || !libname[0]) libname = DT_NVML_LIB_DEFAULT;
+    g_nvml.get_core     = (nvml_get_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetGpcClkVfOffset");
+    g_nvml.set_core     = (nvml_set_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetGpcClkVfOffset");
+    g_nvml.get_mem      = (nvml_get_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemClkVfOffset");
+    g_nvml.set_mem      = (nvml_set_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetMemClkVfOffset");
+    g_nvml.range_core   = (nvml_minmax_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetGpcClkMinMaxVfOffset");
+    g_nvml.range_mem    = (nvml_minmax_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemClkMinMaxVfOffset");
+    g_nvml.lock_core    = (nvml_lock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetGpuLockedClocks");
+    g_nvml.lock_mem     = (nvml_lock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetMemoryLockedClocks");
+    g_nvml.unlock_core  = (nvml_unlock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceResetGpuLockedClocks");
+    g_nvml.unlock_mem   = (nvml_unlock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceResetMemoryLockedClocks");
+    g_nvml.max_clk      = (nvml_clkinfo_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMaxClockInfo");
+    g_nvml.sup_mem      = (nvml_supmem_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetSupportedMemoryClocks");
+    g_nvml.pstate       = (nvml_pstate_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMinMaxClockOfPState");
+
+    if (!g_nvml.get_core || !g_nvml.set_core ||
         !g_nvml.get_mem || !g_nvml.set_mem || !g_nvml.lock_core || !g_nvml.lock_mem ||
         !g_nvml.unlock_core || !g_nvml.unlock_mem || !g_nvml.max_clk || !g_nvml.sup_mem) {
         snprintf(g_nvml.why, sizeof(g_nvml.why),
                  "%s lacks the clock entry points", libname);
         return 0;
     }
-    int rc = init();
-    if (rc != 0) {
-        snprintf(g_nvml.why, sizeof(g_nvml.why), "nvmlInit failed: %s", nvml_err(rc));
-        return 0;
-    }
-    rc = hnd((unsigned)gpu_device, &g_nvml.dev);
-    if (rc != 0) {
-        snprintf(g_nvml.why, sizeof(g_nvml.why), "no NVML handle for GPU %d: %s",
-                 gpu_device, nvml_err(rc));
-        return 0;
-    }
     g_nvml.ok = 1;
-    snprintf(g_nvml.why, sizeof(g_nvml.why), "ok");
     return 1;
 }
 
@@ -4356,6 +4491,50 @@ static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *b
         api_pause(cfd, body);
         return;
     }
+    /* Intensity is the miner's own parameter, not the driver's: it needs a
+     * card that is mining, and nothing from nvidia-smi or NVML - so it is
+     * not held back by g_control_ok, which also stops on a missing
+     * nvidia-smi (a Windows machine, a container) or on several cards. */
+    if (strncmp(req, "POST /api/intensity", 19) == 0) {
+        if (g_num_gpus == 0) {
+            http_send_err(cfd, 409, "Conflict", "no GPU is mining - intensity applies to the GPU miner");
+            return;
+        }
+        long v;
+        if (json_get_int(body, "value", &v) != 0) {
+            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"value\\\"");
+            return;
+        }
+        if (v < 0 || v > 100) {
+            http_send_err(cfd, 400, "Bad Request", "value must be between 0 and 100");
+            return;
+        }
+        char val[16];
+        snprintf(val, sizeof(val), "%ld", v);
+        if (overrides_set("GPU_INTENSITY", val) != 0) {
+            http_send_err(cfd, 500, "Internal Server Error", "could not write overrides file");
+            return;
+        }
+        /* Intensity is fixed when the GPU buffers are allocated, so it only
+         * takes effect on a restart. systemd sets INVOCATION_ID; without it
+         * nothing would bring the miner back, so we save and say so instead
+         * of exiting into nowhere. */
+        int supervised = (getenv("INVOCATION_ID") != NULL);
+        char resp[240];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"saved\":true,\"restarting\":%s%s}",
+                 supervised ? "true" : "false",
+                 supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+        http_send_json(cfd, 200, "OK", resp);
+        if (supervised) {
+            printf("[DagCore] Intensity set to %ld via control API - exiting for restart\n", v);
+            keep_alive = 0;
+            running = 0;
+        } else {
+            printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
+        }
+        return;
+    }
     if (!g_control_ok) {
         char msg[200];
         snprintf(msg, sizeof(msg), "controls unavailable: %s", g_control_reason);
@@ -4427,42 +4606,6 @@ static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *b
         return;
     }
 
-    if (strncmp(req, "POST /api/intensity", 19) == 0) {
-        long v;
-        if (json_get_int(body, "value", &v) != 0) {
-            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"value\\\"");
-            return;
-        }
-        if (v < 0 || v > 100) {
-            http_send_err(cfd, 400, "Bad Request", "value must be between 0 and 100");
-            return;
-        }
-        char val[16];
-        snprintf(val, sizeof(val), "%ld", v);
-        if (overrides_set("GPU_INTENSITY", val) != 0) {
-            http_send_err(cfd, 500, "Internal Server Error", "could not write overrides file");
-            return;
-        }
-        /* Intensity is fixed when the GPU buffers are allocated, so it only
-         * takes effect on a restart. systemd sets INVOCATION_ID; without it
-         * nothing would bring the miner back, so we save and say so instead
-         * of exiting into nowhere. */
-        int supervised = (getenv("INVOCATION_ID") != NULL);
-        char resp[240];
-        snprintf(resp, sizeof(resp),
-                 "{\"ok\":true,\"saved\":true,\"restarting\":%s%s}",
-                 supervised ? "true" : "false",
-                 supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
-        http_send_json(cfd, 200, "OK", resp);
-        if (supervised) {
-            printf("[DagCore] Intensity set to %ld via control API - exiting for restart\n", v);
-            keep_alive = 0;
-            running = 0;
-        } else {
-            printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
-        }
-        return;
-    }
 
     /* Clock endpoints. Both take {"mhz":N} to lock, or {"reset":true} to hand
      * the domain back to the driver. */

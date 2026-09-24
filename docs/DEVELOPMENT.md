@@ -248,9 +248,23 @@ multi-card rig.
 with the token from `BCryptGenRandom`, every file next to the `.exe` (the
 portable layout below),
 `overrides.env` replaced with `MoveFileEx`, the metrics receive timeout,
-`2>NUL` for `nvidia-smi`, and a clean stop on console close. Still missing:
-NVML (stubbed, so no offsets or clock locks), a Windows service and
-installer, and an ACL on the token file (other local accounts can read it).
+`2>NUL` for `nvidia-smi`, a clean stop on console close, and the GPU
+readings from `nvml.dll` (below). Still missing: NVML writes (offsets and
+clock locks are stubbed; the power limit goes through `nvidia-smi` and has not
+been tried), the CPU temperature, a Windows service and installer, and an ACL
+on the token file (other local accounts can read it).
+
+**NVML on both systems.** The library is loaded at run time - `dlopen` of
+`libnvidia-ml.so.1` on Linux, `LoadLibraryEx` of `nvml.dll` on Windows, from
+System32 or `Program Files\NVIDIA Corporation\NVSMI` only, never from the
+`.exe`'s own writable folder - so no build links against it and a machine
+without the driver runs normally. `nvml_load_base()` opens it, initialises it
+and takes the mining card's handle; `nvml_read_stats()` reads temperature,
+load, memory used (`nvmlDeviceGetMemoryInfo_v2`, as `nvidia-smi` counts it),
+power and clocks. Windows reads through it first, `nvidia-smi` second; Linux
+still reads through `nvidia-smi`. `nvml_load()` adds the clock-control entry
+points on top, on Linux only. `DAGCORE_NVML_LIB` points either at another
+library, which is how it is tested.
 None of it has run on Windows yet; treat the build as unverified.
 
 **Portable layout (`DT_PORTABLE_LAYOUT`).** On for Windows builds, off for

@@ -52,13 +52,29 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     lock and offset rows, Adopt, and the text about clock tests - instead of
     an error note about offsets; `/metrics` gains `clock_controls_supported`,
     `false` there.
+  - Windows: GPU temperature, load, memory used, power and clocks are read
+    from `nvml.dll`, which every NVIDIA driver installs, loaded at run time
+    from System32 or the NVSMI folder only; `nvidia-smi` is the fallback.
+    Without either the miner runs normally and the dashboard leaves those
+    readings out. Writes (power limit, offsets, clock locks) are not done
+    through it yet.
   - README: how to run the Windows build by hand, CPU-only, for testing.
 
 ### Changed
+- The dashboard leaves out a reading the machine cannot give - GPU
+  temperature, load, power, memory, CPU temperature - instead of showing
+  `n/a`, and the whole GPU & thermals card when there is none.
 - The CPU-only build (`make cpu`, `dagcore-miner-cpu.exe`) no longer accepts
   `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
   mined nothing and reported 0 H/s. It now warns at startup and uses
   auto-detect (half the logical cores) instead.
+
+### Fixed
+- **GPU intensity can be changed wherever a card is mining.** It was held
+  back with the tuning controls, which need `nvidia-smi` and a single card,
+  so a rig with several cards, or without `nvidia-smi` (a container, Windows),
+  could not change it from the dashboard although it is the miner's own
+  setting. It now needs only the token and a mining card.
 
 ## [1.2.1] - 2026-09-23
 

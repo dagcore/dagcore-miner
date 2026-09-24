@@ -247,6 +247,11 @@ so 16384 work-items is about 2 GB. It does not change while mining.</li>
 <li><b>CPU temperature</b> — the host processor, read from the kernel. Same
 colour thresholds. Unrelated to the GPU.</li>
 </ul>
+<p>A reading the machine cannot give is left out, and the whole card when none
+is available — a computer without an NVIDIA card, or without its driver. The
+GPU readings come from the NVIDIA driver: through <code>nvidia-smi</code> on
+Linux, through <code>nvml.dll</code> (or <code>nvidia-smi</code>) on Windows.
+The CPU temperature is Linux-only for now.</p>
 
 <div class="note warn"><b>Memory temperature is not shown, and cannot be.</b>
 The NVIDIA driver on Linux does not expose GDDR6X memory junction temperature

@@ -971,6 +971,18 @@ function render(d){
   txt("gPower", d.gpu_power >= 0 ? d.gpu_power.toFixed(1) + " W" : "n/a");
   txt("gMem",   d.gpu_memory >= 0 ? num(d.gpu_memory) + " MB" : "n/a");
 
+  /* A reading the machine cannot give - no NVIDIA driver, no nvml.dll or
+   * nvidia-smi, no CPU sensor - is left out rather than shown as n/a, and the
+   * card goes altogether when it would be empty (a laptop with Intel
+   * graphics). The gauges come back by themselves once there is a value. */
+  var have = { gTempV: d.gpu_temp >= 0, gLoadV: d.gpu_usage >= 0, cTempV: d.cpu_temp >= 0,
+               gPower: d.gpu_power >= 0, gMem: d.gpu_memory >= 0 }, anyTherm = false, hk;
+  for (hk in have){
+    $(hk).closest(".gauge, .row").hidden = !have[hk];
+    if (have[hk]) anyTherm = true;
+  }
+  $("gTempV").closest(".card").hidden = !anyTherm;
+
   /* session / rig */
   txt("uptime", uptimeStr(d.uptime));
   txt("diff", (typeof d.difficulty === "number") ? d.difficulty.toFixed(6) : "--");
@@ -1152,12 +1164,12 @@ function refreshApply(id){
 
 function controlsEnabled(on){
   controlsOn = on;
-  var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply",
+  var ids = ["plRange1","plNum","plApply",
              "coreSlider","coreNum","coreApply","coreDefault",
              "memSlider","memNum","memApply","memDefault",
              "coreoffSlider","coreoffNum","coreoffApply","coreoffDefault",
              "memoffSlider","memoffNum","memoffApply","memoffDefault",
-             "plDefault","inDefault","adoptBtn","adoptCore","adoptMem"], i;
+             "plDefault","adoptBtn","adoptCore","adoptMem"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
   var rows = ["core","mem","coreoff","memoff"], k;
   for (k = 0; k < rows.length; k++) refreshApply(rows[k]);
@@ -1165,7 +1177,17 @@ function controlsEnabled(on){
 
 /* The server is the authority on whether controls can work: no token, GPU off,
  * more than one card, or no nvidia-smi all disable them, each with a reason. */
+/* Intensity is the miner's own setting: it needs the token and a card that is
+ * mining, not nvidia-smi - so it stays usable where the tuning controls are
+ * not (Windows, several cards, no nvidia-smi). */
+function intensityEnabled(d){
+  var on = !!token && (d.gpu_count || 0) > 0;
+  var ids = ["inRange","inNum","inApply","inDefault"], i;
+  for (i = 0; i < ids.length; i++) $(ids[i]).disabled = !on;
+}
+
 function syncSettings(d){
+  intensityEnabled(d);
   var avail = d.control_available === true;
   if (!token){
     controlsEnabled(false);
