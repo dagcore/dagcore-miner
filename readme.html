@@ -182,7 +182,8 @@ that, this page is all you need.</p>
 by hand and has no installer or service. Clock locks and offsets are Linux-only
 for now (the Windows build has no NVML). The power limit goes through
 <code>nvidia-smi</code> as on Linux, and on Windows only works with the miner
-started as administrator (right-click → Run as administrator); otherwise the
+started as administrator (<code>start.bat</code>, or right-click → Run as
+administrator); otherwise the
 dashboard shows it as unavailable and says why. Mining itself works the
 same.</div>
 <a class="up" href="#top">back to top</a>
@@ -289,6 +290,9 @@ sudo systemctl restart dagcore-miner</code></pre>
     down cleanly.</p>
     <p>It finds everything in its own folder, whichever folder it is started
     from.</p>
+    <p>To change the power limit from the dashboard, double-click
+    <code>start.bat</code> instead: Windows asks for administrator rights,
+    and the miner opens in its own window with them.</p>
   </div>
 </div>
 <p><b>How to tell it worked:</b> the log shows <code>Connected!</code>, then

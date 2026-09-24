@@ -3963,7 +3963,7 @@ static void control_init(void) {
     if (!dt_is_elevated()) {
         snprintf(g_control_reason, sizeof(g_control_reason),
                  "the power limit needs administrator rights on Windows - "
-                 "start the miner with Run as administrator");
+                 "start the miner with start.bat");
         return;
     }
 #endif

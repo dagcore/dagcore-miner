@@ -85,6 +85,8 @@ WIN_PKG        := dist/windows
 # The getting-started page sits next to the .exe, where a user who has just
 # unzipped the folder sees it first; it takes its style from dashboard/.
 README_HTML    := readme.html
+# Starts the miner as administrator, which the power limit needs on Windows.
+WIN_START_BAT  := win/start.bat
 
 # The installer's location, so that a hand "make install" over an installed rig
 # replaces what its service runs. Until 1.2.1 it was /usr/local, which nothing
@@ -125,7 +127,8 @@ $(WIN_CONFIG_EX): $(CONFIG_EX) $(WIN_CONFIG_SED)
 windows-package: windows
 	rm -rf $(WIN_PKG)
 	mkdir -p $(WIN_PKG)/dashboard
-	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(README_HTML) $(WIN_PKG)/
+	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(README_HTML) \
+	    $(WIN_START_BAT) $(WIN_PKG)/
 	cp $(DASHBOARD) $(DASH_OFL) $(WIN_PKG)/dashboard/
 	cd $(WIN_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
 	    xargs sha256sum > SHA256SUMS

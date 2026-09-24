@@ -130,10 +130,17 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 - Windows: the power limit needs the miner run as administrator, and
   without it every Apply failed with "nvidia-smi: Terminating early due to
   previous errors". The controls now show as unavailable from the start,
-  with the reason and "start the miner with Run as administrator"; run
-  that way, the power limit applies. A failed `nvidia-smi -pl` - on any
-  system - now reports its first line, the cause ("Insufficient
-  Permissions"), instead of that last one.
+  with the reason and "start the miner with start.bat"; run that way, the
+  power limit applies. A failed `nvidia-smi -pl` - on any system - now
+  reports its first line, the cause ("Insufficient Permissions"), instead
+  of that last one.
+- Windows kit: `start.bat` starts `dagcore-miner.exe` as administrator -
+  the UAC prompt - in a window of its own, passing on its arguments. The
+  miner has that window to itself, as with a double-click: Ctrl+C asks no
+  "Terminate batch job" question, errors stay on screen, and Save & restart
+  restarts it there. Refused, it starts nothing and says how to mine
+  without administrator rights. `.gitattributes` keeps `.bat` files CRLF in
+  every checkout.
 - `make windows` on Windows itself (Git Bash) created `include/CL/CL` on
   every forced rebuild, since `ln -s` copies there; the link is now replaced.
 

@@ -107,6 +107,7 @@ It holds:
 | `dashboard\` | The dashboard's pages |
 | `config.env.example` | Settings, written for Windows |
 | `readme.html` | A getting-started page; opens with a double-click, offline |
+| `start.bat` | Starts `dagcore-miner.exe` as administrator, which the power limit needs |
 | `SHA256SUMS` | Checksums of all of the above |
 
 Nothing else is needed: the `.exe` files have no DLLs of their own to bring
@@ -145,6 +146,12 @@ Left out, the CPU build warns that its default, `0` (GPU only), would mine
 nothing and uses `-1` instead. Windows may ask whether to allow network
 access the first time.
 
+To change the power limit from the dashboard, start it with **`start.bat`**
+instead: it asks for administrator rights (the UAC prompt) and starts
+`dagcore-miner.exe` in a window of its own, passing on any arguments
+(`start.bat --threads 1`). Refused, it starts nothing and says how to mine
+without them.
+
 Open **http://localhost:8881/** for the dashboard. To reach it from another
 computer, set `METRICS_BIND=0.0.0.0` and allow TCP 8881 in Windows Firewall
 for the local network only; read the [security notes](docs/INSTALL.md#security)
@@ -167,7 +174,7 @@ deleted. Every start prints which token file is in use (`Control API token:`).
 **Limits of this build.** Temperature, load, power, memory and clocks are
 read from the NVIDIA driver; clock locks, offsets and Adopt are not offered.
 The power limit works only when the miner runs as administrator
-(right-click `dagcore-miner.exe` → Run as administrator); otherwise the
+(`start.bat`, or right-click `dagcore-miner.exe` → Run as administrator); otherwise the
 dashboard says so and leaves it unavailable. There is no service: Save & restart
 works because the miner starts itself again, in the same window, but nothing
 brings it back after a crash or a reboot. The GPU build keeps one CPU
