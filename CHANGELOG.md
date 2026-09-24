@@ -8,10 +8,14 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ### Added
 - Dashboard: a log panel under the hashrate chart, about seven lines tall,
-  with the console's status line (hashrate, shares, uptime) for the last ten
-  minutes, each with its time and the hashrates in MH/s. The miner keeps the
-  lines (60, in memory) and serves them as `GET /log`; the console output is
-  unchanged.
+  with the console's status line (hashrate, shares, uptime), the last 100
+  lines (about sixteen minutes), newest first, each with its time and the
+  hashrates in MH/s. The miner keeps the lines (in memory) and serves them
+  as `GET /log`; the console output is unchanged. Each line also carries
+  its share counters as numbers, read once for the line and for `/log`, and
+  the Shares card shows the newest line's, so card and log always agree -
+  before, the card read `/metrics` every 5 seconds and ran ahead of the
+  line printed up to 10 seconds earlier.
 - `make windows` builds `dagcore-miner.exe` and `dagcore-miner-cpu.exe` with
   MinGW-w64 - cross-compiled on Linux, or natively on Windows with WinLibs -
   and `make check` builds them too. Run by hand on Windows 11 with an RTX 3080
@@ -81,7 +85,10 @@ All notable changes to DAGCore Miner are recorded here. The format follows
     page say so, with the hashrate that costs without tuning (1.43-1.53
     MH/s stock on an RTX 3080 at 300 W, 1.63 with the memory raised in
     Afterburner, 1.61 on Linux with +1200). NVAPI, which Afterburner uses,
-    was looked into and left out (DEVELOPMENT.md).
+    was looked into and left out (DEVELOPMENT.md). The dashboard no longer
+    shows "Clock offsets unavailable: ... Not Supported by the Windows
+    driver" as an error: `offset_reason` says to set them with MSI
+    Afterburner, and the note is shown as information.
   - Windows: GPU temperature, load, memory used, power and clocks are read
     from `nvml.dll`, which every NVIDIA driver installs, loaded at run time
     from System32 or the NVSMI folder only; `nvidia-smi` is the fallback.

@@ -292,7 +292,9 @@ clocks and set offsets at all: `true` now on both systems; `false` came from
 the first Windows builds, without NVML control, and the dashboard then leaves
 every clock control out - the lock and offset rows, Adopt, and the text about
 clock tests. On Windows `offset_available` is `false` with `offset_reason`
-"clock offsets: Not Supported by the Windows driver", and the offset fields
+"set them with MSI Afterburner - the Windows driver does not let the miner
+change them" (NVML answers the offset calls "Not Supported"); the dashboard
+shows it as information, not as an error. The offset fields
 are 0 even when MSI Afterburner has applied one: the miner cannot read it.
 `gpu_mem_clock` and `gpu_core_clock` still report the clock that results;
 `_max`, `_boost` and `_shift` do not include it.
@@ -350,16 +352,20 @@ a client should place samples by `now - t` rather than trust its own clock.
 
 ## /log
 
-`GET /log` returns the status lines the console printed, the last ten
-minutes of them: one every 10 seconds, at most 60, in memory only like
+`GET /log` returns the status lines the console printed, the last 100 of
+them (about sixteen minutes, one every 10 seconds), in memory only like
 `/history`. The text is exactly what the console shows, without the newline.
 No authentication.
 
 ```json
 {"now":1790281829,"lines":[
-  {"t":1790281805,"text":"[DagCore] 1610100.36 H/s | CPU: 0.00 H/s | GPU: 1610100.36 H/s | Shares: 2262/2179/0/83 (sub/acc/rej/stale) | Uptime: 0h12m"}, ...]}
+  {"t":1790281805,"submitted":2262,"accepted":2179,"rejected":0,"stale":83,
+   "text":"[DagCore] 1610100.36 H/s | CPU: 0.00 H/s | GPU: 1610100.36 H/s | Shares: 2262/2179/0/83 (sub/acc/rej/stale) | Uptime: 0h12m"}, ...]}
 ```
 
 Lines are oldest first; `t` and `now` are Unix seconds on the miner's clock,
-as in `/history`. The dashboard shows them under the chart, with the time and
-the hashrates converted to MH/s (or kH/s, GH/s).
+as in `/history`. `submitted`, `accepted`, `rejected` and `stale` are the
+counters the line shows, read once for both, so they always agree with its
+text. The dashboard shows the lines under the chart, newest first, with the
+time and the hashrates converted to MH/s (or kH/s, GH/s), and fills the
+Shares card from the newest line's counters, so card and log never disagree.

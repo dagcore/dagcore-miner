@@ -601,21 +601,25 @@ static int             hist_count = 0;
 static pthread_mutex_t hist_mtx   = PTHREAD_MUTEX_INITIALIZER;
 
 /* The status lines the console prints every 10s, served at /log for the
- * dashboard's log panel. The last 60 - ten minutes - at 768 bytes each (a
- * multi-card line grows by ~25 bytes a card): 46 KB, fixed, in .bss. Memory
- * only, like the history. */
-#define LOG_LEN      60
+ * dashboard's log panel. The last 100 - about sixteen minutes - at 768 bytes
+ * each (a multi-card line grows by ~25 bytes a card): 77 KB, fixed, in .bss.
+ * Memory only, like the history. */
+#define LOG_LEN      100
 #define LOG_LINE_MAX 768
-static struct { int64_t t; char text[LOG_LINE_MAX]; } log_buf[LOG_LEN];
+/* The share counters a line shows, kept beside its text so /log can hand them
+ * over as numbers rather than have the page parse them back out. */
+typedef struct { uint64_t submitted, accepted, rejected, stale; } log_shares_t;
+static struct { int64_t t; log_shares_t sh; char text[LOG_LINE_MAX]; } log_buf[LOG_LEN];
 static int             log_head  = 0;
 static int             log_count = 0;
 static pthread_mutex_t log_mtx   = PTHREAD_MUTEX_INITIALIZER;
 
-/* Print a status line and keep it for /log. */
-static void status_line(const char *text) {
+/* Print a status line and keep it for /log, with the counters it shows. */
+static void status_line(const char *text, const log_shares_t *sh) {
     printf("%s\n", text);
     pthread_mutex_lock(&log_mtx);
-    log_buf[log_head].t = (int64_t)time(NULL);
+    log_buf[log_head].t  = (int64_t)time(NULL);
+    log_buf[log_head].sh = *sh;
     snprintf(log_buf[log_head].text, LOG_LINE_MAX, "%s", text);
     log_head = (log_head + 1) % LOG_LEN;
     if (log_count < LOG_LEN) log_count++;
@@ -3450,12 +3454,19 @@ static int nvml_read_offsets(int *core, int *mem) {
     int c = 0, m = 0, rc;
     if ((rc = g_nvml.get_core(g_nvml.dev, &c)) != 0 ||
         (rc = g_nvml.get_mem(g_nvml.dev, &m)) != 0) {
-        const char *where = "";
 #ifdef _WIN32
-        if (rc == 3) where = " by the Windows driver";    /* NVML_ERROR_NOT_SUPPORTED */
+        /* NVML_ERROR_NOT_SUPPORTED: not a fault but how the Windows driver
+         * works, so say where offsets are set instead. The dashboard shows
+         * this as information, not as an error. */
+        if (rc == 3) {
+            snprintf(g_nvml.off_why, sizeof(g_nvml.off_why),
+                     "set them with MSI Afterburner - the Windows driver does not "
+                     "let the miner change them");
+            return -1;
+        }
 #endif
-        snprintf(g_nvml.off_why, sizeof(g_nvml.off_why), "clock offsets: %s%s",
-                 nvml_err(rc), where);
+        snprintf(g_nvml.off_why, sizeof(g_nvml.off_why), "clock offsets: %s",
+                 nvml_err(rc));
         return -1;
     }
     if (core) *core = c;
@@ -5146,8 +5157,9 @@ static void serve_history(dt_sock_t cfd) {
  * /history does. */
 static void serve_log(dt_sock_t cfd) {
     /* Escaping can grow a line; status lines are plain ASCII, so 1.1x is
-     * plenty, and a line that would not fit is left out, not cut. */
-    size_t cap = 64 + (size_t)LOG_LEN * (LOG_LINE_MAX + 128);
+     * plenty, and a line that would not fit is left out, not cut. The four
+     * counters add at most ~130 bytes. */
+    size_t cap = 64 + (size_t)LOG_LEN * (LOG_LINE_MAX + 256);
     char *out = malloc(cap);
     if (!out) {
         http_send_err(cfd, 500, "Internal Server Error", "out of memory");
@@ -5161,8 +5173,13 @@ static void serve_log(dt_sock_t cfd) {
     for (int i = 0; i < log_count; i++) {
         int k = (first + i) % LOG_LEN;
         json_escape(log_buf[k].text, esc, sizeof(esc));
-        int w = snprintf(out + n, cap - n, "%s{\"t\":%lld,\"text\":\"%s\"}",
-                         emitted ? "," : "", (long long)log_buf[k].t, esc);
+        const log_shares_t *sh = &log_buf[k].sh;
+        int w = snprintf(out + n, cap - n,
+                         "%s{\"t\":%lld,\"submitted\":%" DT_PRIu64 ",\"accepted\":%" DT_PRIu64
+                         ",\"rejected\":%" DT_PRIu64 ",\"stale\":%" DT_PRIu64 ",\"text\":\"%s\"}",
+                         emitted ? "," : "", (long long)log_buf[k].t,
+                         (unsigned long long)sh->submitted, (unsigned long long)sh->accepted,
+                         (unsigned long long)sh->rejected, (unsigned long long)sh->stale, esc);
         if (w < 0 || (size_t)w >= cap - n - 2) break;   /* keep room for "]}" */
         n += (size_t)w;
         emitted++;
@@ -6911,6 +6928,17 @@ int main(int argc, char **argv) {
                 int up_h = (int)(uptime / 3600);
                 int up_m = (int)((uptime % 3600) / 60);
 
+                /* One read of the share counters, for the line and for /log,
+                 * so the dashboard's Shares card can show exactly what the
+                 * line says. */
+                log_shares_t _sh;
+                pthread_mutex_lock(&stats_mtx);
+                _sh.submitted = total_submitted;
+                _sh.accepted  = total_accepted;
+                _sh.rejected  = total_rejected;
+                _sh.stale     = total_stale;
+                pthread_mutex_unlock(&stats_mtx);
+
                 char _line[LOG_LINE_MAX];
                 if (gpu_enabled == 1) {
 #ifdef DAGTECH_GPU
@@ -6927,10 +6955,10 @@ int main(int argc, char **argv) {
                                "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
                                " (sub/acc/rej/stale) | Uptime: %dh%dm",
                                current_hashrate, cpu_hashrate, _gd,
-                               (unsigned long long)total_submitted,
-                               (unsigned long long)total_accepted,
-                               (unsigned long long)total_rejected,
-                               (unsigned long long)total_stale,
+                               (unsigned long long)_sh.submitted,
+                               (unsigned long long)_sh.accepted,
+                               (unsigned long long)_sh.rejected,
+                               (unsigned long long)_sh.stale,
                                up_h, up_m);
                     } else
 #endif
@@ -6939,10 +6967,10 @@ int main(int argc, char **argv) {
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
                            " (sub/acc/rej/stale) | Uptime: %dh%dm",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
-                           (unsigned long long)total_submitted,
-                           (unsigned long long)total_accepted,
-                           (unsigned long long)total_rejected,
-                           (unsigned long long)total_stale,
+                           (unsigned long long)_sh.submitted,
+                           (unsigned long long)_sh.accepted,
+                           (unsigned long long)_sh.rejected,
+                           (unsigned long long)_sh.stale,
                            up_h, up_m);
                     }
                 } else {
@@ -6950,13 +6978,13 @@ int main(int argc, char **argv) {
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
                            " (sub/acc/rej/stale) | Uptime: %dh%dm",
                            current_hashrate,
-                           (unsigned long long)total_submitted,
-                           (unsigned long long)total_accepted,
-                           (unsigned long long)total_rejected,
-                           (unsigned long long)total_stale,
+                           (unsigned long long)_sh.submitted,
+                           (unsigned long long)_sh.accepted,
+                           (unsigned long long)_sh.rejected,
+                           (unsigned long long)_sh.stale,
                            up_h, up_m);
                 }
-                status_line(_line);
+                status_line(_line, &_sh);
 
                 last_total = h;
                 last_cpu_h = ch;

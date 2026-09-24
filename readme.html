@@ -181,7 +181,9 @@ that, this page is all you need.</p>
 <div class="note warn"><b>Windows is experimental.</b> The Windows build runs
 by hand and has no installer or service. Clock locks work as on Linux; clock
 offsets cannot be set from the miner — the Windows driver refuses them
-("Not Supported"). Tune the memory with MSI Afterburner instead; the miner
+("Not Supported"). Tune the memory with
+<a href="https://www.msi.com/Landing/afterburner" target="_blank" rel="noopener">MSI Afterburner</a>
+instead; the miner
 shows the clocks that result. Without it, expect less hashrate than on Linux
 (see <a href="#tuning">Tune the card</a>). The power limit goes through
 <code>nvidia-smi</code> as on Linux; it and the clock locks only work with the miner
@@ -401,12 +403,15 @@ shares start being rejected, there is no telling which one did it.</p>
       users.</td><td>Apply — then a 10-minute test</td></tr>
 </table></div>
 <p><b>On Windows</b> clock offsets cannot be set from the miner: the driver
-refuses them, so the offset rows do not appear and the dashboard says why.
+refuses them, so the offset rows do not appear and the dashboard says to
+set them with MSI Afterburner.
 The clock locks, the power limit and GPU intensity are there as on Linux, but
 a memory lock cannot go above the 9251 MHz the driver allows while computing.
 The locks and the power limit need the miner started as administrator;
 intensity does not.</p>
-<p><b>Raise the memory with MSI Afterburner</b>, running next to the miner.
+<p><b>Raise the memory with
+<a href="https://www.msi.com/Landing/afterburner" target="_blank" rel="noopener">MSI Afterburner</a></b>,
+running next to the miner.
 The dashboard shows the clock that results (Memory clock), the same figure
 <code>nvidia-smi</code> gives; its lock range does not know about
 Afterburner's offset, so leave the memory lock off. Afterburner's offset moves

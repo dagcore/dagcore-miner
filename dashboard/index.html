@@ -219,6 +219,7 @@ button.ghost{color:var(--blue);border-color:rgba(77,157,255,.5);background:rgba(
 button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
 .set-note{font-size:12px;margin-top:14px;padding:11px 13px;border-radius:9px;
   border:1px solid var(--line-soft);background:rgba(0,0,0,.25);color:var(--muted)}
+.set-note a{color:var(--blue)}
 .set-note.ok{color:var(--ok);border-color:rgba(63,224,138,.4)}
 .set-note.err{color:var(--bad);border-color:rgba(244,162,156,.45)}
 .set-note.busy{color:var(--mine);border-color:rgba(255,171,46,.45)}
@@ -416,7 +417,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
   </section>
 
   <section class="card" style="margin-bottom:14px">
-    <h2 style="margin:0">Log &mdash; last 10 minutes</h2>
+    <h2 style="margin:0">Log &mdash; last 100 lines</h2>
     <div class="logbox" id="logBox"><span class="log-empty">waiting for the first status line&hellip;</span></div>
   </section>
 
@@ -881,6 +882,24 @@ function drawChart(){
 }
 
 /* ---- rendering --------------------------------------------------- */
+/* The Shares card. Fed the counters of the newest log line, so it reads
+ * exactly what the top line of the log says; /metrics only until the first
+ * line exists, or from a miner that has no /log. */
+function renderShares(s){
+  var a = s.accepted || 0, r = s.rejected || 0, st = s.stale || 0;
+  var resolved = a + r + st;
+  txt("shAcc",   num(a) + "  (" + pct(a, resolved) + ")");
+  txt("shRej",   num(r) + "  (" + pct(r, resolved) + ")");
+  txt("shStale", num(st) + "  (" + pct(st, resolved) + ")");
+  txt("shSub",   num(s.submitted));
+  $("shRej").className = "v" + (r > 0 ? " t-bad" : "");
+  $("shStale").className = "v" + (st > 0 ? " t-warn" : "");
+  var base = resolved || 1;
+  $("barA").style.width = (100 * a  / base) + "%";
+  $("barR").style.width = (100 * r  / base) + "%";
+  $("barS").style.width = (100 * st / base) + "%";
+}
+
 function render(d){
   var p;
   p = hashParts(d.hashrate);     txt("hrTotal", p[0]); txt("hrTotalU", p[1]);
@@ -964,19 +983,8 @@ function render(d){
    * wants it. */
   txt("wallet", d.wallet || "--");       /* abbreviated field, never wallet_full */
 
-  /* shares */
-  var a = d.accepted || 0, r = d.rejected || 0, st = d.stale || 0;
-  var resolved = a + r + st;
-  txt("shAcc",   num(a) + "  (" + pct(a, resolved) + ")");
-  txt("shRej",   num(r) + "  (" + pct(r, resolved) + ")");
-  txt("shStale", num(st) + "  (" + pct(st, resolved) + ")");
-  txt("shSub",   num(d.submitted));
-  $("shRej").className = "v" + (r > 0 ? " t-bad" : "");
-  $("shStale").className = "v" + (st > 0 ? " t-warn" : "");
-  var base = resolved || 1;
-  $("barA").style.width = (100 * a  / base) + "%";
-  $("barR").style.width = (100 * r  / base) + "%";
-  $("barS").style.width = (100 * st / base) + "%";
+  /* shares - from the newest log line once there is one (see loadLog) */
+  if (!logShares) renderShares(d);
 
   /* thermals - the miner sends -1 when a reading is unavailable */
   if (d.gpu_temp >= 0)
@@ -1109,6 +1117,7 @@ function poll(){
                    e: d.effective_window_full ? (d.effective_hashrate || 0) : null });
     while (history.length && history[0].t < now - WINDOW_MS) history.shift();
     drawChart();
+    loadLog();
     txt("lastUpdate", new Date().toLocaleTimeString());
   };
   xhr.onerror = function(){ if (!done){ done = true; fail("connection refused"); } };
@@ -1146,9 +1155,11 @@ function loadHistory(){
 /* The console's status lines, kept by the miner (/log). Shown with the time
  * they were printed, without the "[DagCore]" prefix, and with every "H/s"
  * figure in the page's units (1610100.36 H/s -> 1.61 MH/s); the console keeps
- * the raw numbers. Times are the miner's clock mapped onto ours, as in
- * loadHistory. */
-var LOG_MS = 10000, logLast = null;
+ * the raw numbers. Newest first, so the latest line is always the top one.
+ * Times are the miner's clock mapped onto ours, as in loadHistory. Fetched
+ * after every /metrics poll, so the Shares card, which shows the newest line's
+ * counters, is never more than one poll behind the console. */
+var LOG_MAX = 100, logLast = null, logNewestT = null, logShares = null;
 function logText(s){
   return s.replace(/^\[DagCore\]\s*/, "")
           .replace(/(\d+(?:\.\d+)?) H\/s/g, function(m, v){ return hashStr(parseFloat(v)); });
@@ -1161,15 +1172,27 @@ function loadLog(){
     if (xhr.readyState !== 4 || xhr.status !== 200) return;
     var d;
     try { d = JSON.parse(xhr.responseText); } catch (e){ return; }
-    if (!d || !d.lines || typeof d.now !== "number" || !d.lines.length) return;
+    if (!d || !d.lines || typeof d.now !== "number") return;
+    /* A miner that has just (re)started has no line yet: the card goes back
+     * to /metrics rather than keep the old process's counters. */
+    if (!d.lines.length){ logShares = null; return; }
+    /* The miner keeps 100 as well; never show more, whatever it sends. */
+    if (d.lines.length > LOG_MAX) d.lines = d.lines.slice(-LOG_MAX);
     var tail = d.lines[d.lines.length - 1];
+    if (typeof tail.accepted === "number"){ logShares = tail; renderShares(tail); }
     var key = d.lines.length + ":" + tail.t + ":" + tail.text;
     if (key === logLast) return;
     logLast = key;
     var box = $("logBox");
-    var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+    var atTop = box.scrollTop < 8, before = box.scrollTop;
+    /* Lines newer than the top one shown last time: each pushes the rest
+     * down a row. */
+    var added = 0;
+    if (logNewestT !== null)
+      for (var j = 0; j < d.lines.length; j++) if (d.lines[j].t > logNewestT) added++;
+    logNewestT = tail.t;
     var now = Date.now(), frag = document.createDocumentFragment();
-    for (var i = 0; i < d.lines.length; i++){
+    for (var i = d.lines.length - 1; i >= 0; i--){
       var ln = d.lines[i], row = document.createElement("div"), t = document.createElement("span");
       t.className = "log-t";
       t.textContent = new Date(now - (d.now - ln.t) * 1000).toLocaleTimeString();
@@ -1179,8 +1202,10 @@ function loadLog(){
     }
     box.textContent = "";
     box.appendChild(frag);
-    /* Follow new lines unless the reader has scrolled up to look back. */
-    if (atEnd || box.getAttribute("data-filled") !== "1") box.scrollTop = box.scrollHeight;
+    /* At the top, stay there and see the new line. Scrolled down to look
+     * back, keep the same lines in view: move down by the rows added above. */
+    if (atTop || box.getAttribute("data-filled") !== "1") box.scrollTop = 0;
+    else box.scrollTop = before + added * (box.firstChild ? box.firstChild.offsetHeight : 0);
     box.setAttribute("data-filled", "1");
   };
   try { xhr.send(); } catch (e){}
@@ -1216,6 +1241,19 @@ function note(msg, cls, holdMs){
 function noteIdle(msg, cls){
   if (Date.now() < noteHold) return;
   note(msg, cls);
+}
+/* The Windows offset note, with "MSI Afterburner" linked to its page. */
+var AFTERBURNER_URL = "https://www.msi.com/Landing/afterburner";
+function afterburnerNote(reason){
+  var n = $("setNote"), i = reason.indexOf("MSI Afterburner");
+  var a = document.createElement("a");
+  a.href = AFTERBURNER_URL; a.target = "_blank"; a.rel = "noopener";
+  a.textContent = "MSI Afterburner";
+  n.className = "set-note";
+  n.textContent = "Clock offsets: " + reason.slice(0, i);
+  n.appendChild(a);
+  n.appendChild(document.createTextNode(reason.slice(i + 15) +
+                                        ". The dashboard shows the clocks that result."));
 }
 
 /* Apply only means something once a value has been entered, and only if it
@@ -1392,8 +1430,14 @@ function syncOffset(d, id, field, trialBase){
   if (d.clock_controls_supported === false){ row.hidden = true; return; }
   if (d.offset_available !== true){
     row.hidden = true;
-    if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token)
-      noteIdle("Clock offsets unavailable: " + d.offset_reason, "err");
+    /* On Windows the reason points to MSI Afterburner: that is the way
+     * offsets are set there, not a fault, so it is not shown as an error. */
+    if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token){
+      if (/MSI Afterburner/.test(d.offset_reason)){
+        if (Date.now() >= noteHold) afterburnerNote(d.offset_reason);
+      } else
+        noteIdle("Clock offsets unavailable: " + d.offset_reason, "err");
+    }
     return;
   }
   row.hidden = false;
@@ -2104,8 +2148,6 @@ drawChart();
 loadHistory();
 poll();
 setInterval(poll, POLL_MS);
-loadLog();
-setInterval(loadLog, LOG_MS);
 })();
 </script>
 </body>

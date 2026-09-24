@@ -188,14 +188,15 @@ restarts, the chart starts empty. It is there to show shape:
 a flat line is healthy, a sawtooth means something is throttling, a cliff
 means the miner reconnected or the card stopped.</p>
 
-<h3>Log</h3>
+<h3 id="log">Log</h3>
 <p>The status line the miner prints in its console every 10 seconds, the last
-ten minutes of it: hashrate (total, CPU, GPU or each card), shares as
+100 lines of it (about sixteen minutes): hashrate (total, CPU, GPU or each card), shares as
 submitted/accepted/rejected/stale, and uptime. The dashboard shows the time
 each line was printed and the hashrates in the same units as the rest of the
 page (1.61 MH/s); the console keeps the raw figure (1610100.36 H/s). Like the
-chart, it is kept in memory and starts empty when the miner restarts. Scroll
-up to look back; it follows new lines only while you are at the bottom.</p>
+chart, it is kept in memory and starts empty when the miner restarts. The
+newest line is at the top; scroll down to look back, and the lines you are
+reading stay in place while new ones arrive above them.</p>
 
 <h3>Session, rig</h3>
 <ul>
@@ -242,6 +243,12 @@ is the cause.</div>
 
 <p>The bar under the three numbers shows their proportions. A healthy bar is
 almost entirely green with a thin amber sliver.</p>
+
+<p>The Shares card shows the counters of the newest line in the
+<a href="#log">log</a>, so its numbers are always the ones on the log's top
+line. That line is printed every 10 seconds, so the card can be up to 10
+seconds behind the pool; until the first line exists, a few seconds after a
+start, it shows the live counters instead.</p>
 <a class="up" href="#top">back to top</a>
 </section>
 
@@ -355,7 +362,8 @@ and it takes effect immediately with no test of its own.</p>
 Windows driver refuses them ("Not Supported"), so the memory and core offsets
 are not shown. The clock locks, the power limit and GPU intensity are there as
 on Linux, but a memory lock cannot go above the clock the driver allows while
-computing (9251 MHz on an RTX 3080). Raise the memory with MSI Afterburner
+computing (9251 MHz on an RTX 3080). Raise the memory with
+<a href="https://www.msi.com/Landing/afterburner" target="_blank" rel="noopener">MSI Afterburner</a>
 instead: Memory clock here shows the clock that results, but the lock range
 does not know about Afterburner's offset, so leave the memory lock off.
 Afterburner's offset moves the clock one to one, the Linux offset below by

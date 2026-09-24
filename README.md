@@ -176,8 +176,8 @@ read from the NVIDIA driver. Clock locks work, through NVML as on Linux.
 
 **Clock offsets cannot be set from the miner on Windows.** The Windows
 GeForce driver refuses them through NVML ("Not Supported"), so the dashboard
-hides the offset rows and shows that reason. Tuning on Windows is yours to do
-with **MSI Afterburner**, running next to the miner. The miner reads the
+hides the offset rows and says to set them with MSI Afterburner. Tuning on Windows is yours to do
+with **[MSI Afterburner](https://www.msi.com/Landing/afterburner)**, running next to the miner. The miner reads the
 clocks that result and shows them as they are: with the memory raised in
 Afterburner to 10277 MHz, the dashboard and `nvidia-smi` both showed 10277.
 Two things it cannot know about. The lock range (`gpu_mem_clock_max`) stays at
