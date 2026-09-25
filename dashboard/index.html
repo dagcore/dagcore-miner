@@ -1242,18 +1242,24 @@ function noteIdle(msg, cls){
   if (Date.now() < noteHold) return;
   note(msg, cls);
 }
-/* The Windows offset note, with "MSI Afterburner" linked to its page. */
+/* The Windows offset note, with both tuning tools linked to their pages (new
+ * tab). Its own text: offset_reason only says that the offsets are refused. */
 var AFTERBURNER_URL = "https://www.msi.com/Landing/afterburner";
-function afterburnerNote(reason){
-  var n = $("setNote"), i = reason.indexOf("MSI Afterburner");
+var ADRENALIN_URL   = "https://www.amd.com/en/products/software/adrenalin.html";
+function extLink(href, text){
   var a = document.createElement("a");
-  a.href = AFTERBURNER_URL; a.target = "_blank"; a.rel = "noopener";
-  a.textContent = "MSI Afterburner";
+  a.href = href; a.target = "_blank"; a.rel = "noopener";
+  a.textContent = text;
+  return a;
+}
+function afterburnerNote(){
+  var n = $("setNote");
   n.className = "set-note";
-  n.textContent = "Clock offsets: " + reason.slice(0, i);
-  n.appendChild(a);
-  n.appendChild(document.createTextNode(reason.slice(i + 15) +
-                                        ". The dashboard shows the clocks that result."));
+  n.textContent = "Note: on Windows the driver refuses clock offsets from the miner. Use ";
+  n.appendChild(extLink(AFTERBURNER_URL, "MSI Afterburner"));
+  n.appendChild(document.createTextNode(" (NVIDIA) or "));
+  n.appendChild(extLink(ADRENALIN_URL, "AMD Software: Adrenalin Edition"));
+  n.appendChild(document.createTextNode(" (AMD) for tuning."));
 }
 
 /* Apply only means something once a value has been entered, and only if it
@@ -1434,7 +1440,7 @@ function syncOffset(d, id, field, trialBase){
      * offsets are set there, not a fault, so it is not shown as an error. */
     if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token){
       if (/MSI Afterburner/.test(d.offset_reason)){
-        if (Date.now() >= noteHold) afterburnerNote(d.offset_reason);
+        if (Date.now() >= noteHold) afterburnerNote();
       } else
         noteIdle("Clock offsets unavailable: " + d.offset_reason, "err");
     }
