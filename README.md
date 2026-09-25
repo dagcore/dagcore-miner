@@ -44,16 +44,22 @@ sudo ./install.sh --wallet 0xYOURADDRESS --yes
 
 ### Prebuilt binaries
 
-From 1.2.0 on, each [release](https://github.com/dagcore/dagcore-miner/releases)
-also carries Linux x86-64 binaries: `dagcore-miner` (GPU and CPU),
-`dagcore-miner-cpu` (CPU only), the GPU kernel `dagcore_gpu.cl`, and
-`SHA256SUMS`. They need glibc 2.34 or newer (Ubuntu 22.04, Debian 12 or later)
-and, for the GPU build, the NVIDIA driver's OpenCL (`libOpenCL.so.1`). Keep
-`dagcore_gpu.cl` in the same directory as `dagcore-miner`: the miner loads it
-from there. The installer above is still what sets up the service and the
-dashboard. The dashboard's pages are not among these files: replacing only the
-binary of an installed rig leaves the old dashboard in place, so upgrade with
-`git pull` and `sudo ./install.sh` instead.
+Each [release](https://github.com/dagcore/dagcore-miner/releases) carries
+two archives: `dagcore-miner-<version>-linux-x64.tar.gz` and
+`dagcore-miner-<version>-windows-x64.zip`, the Windows kit described
+[below](#windows-experimental). Releases 1.2.0 and 1.2.1 attached the Linux
+files one by one; from 1.3.0 on there are only the archives.
+
+The Linux archive unpacks into one folder, `dagcore-miner-<version>-linux-x64/`,
+holding `dagcore-miner` (GPU and CPU), `dagcore-miner-cpu` (CPU only), the GPU
+kernel `dagcore_gpu.cl`, `dashboard/`, `config.env.example`, `LICENSE` and
+`SHA256SUMS`. The binaries need glibc 2.34 or newer (Ubuntu 22.04, Debian 12
+or later) and, for the GPU build, the NVIDIA driver's OpenCL
+(`libOpenCL.so.1`). Keep the folder together: the miner loads
+`dagcore_gpu.cl` from its own directory. The archive installs nothing - the
+installer above is still what sets up the service and the dashboard, and
+replacing only the binary of an installed rig leaves its old dashboard in
+place, so upgrade with `git pull` and `sudo ./install.sh` instead.
 
 To install a build of your own over an installed rig (`make install` uses the
 installer's `/opt/dagcore-miner` since 1.2.1):
@@ -62,22 +68,21 @@ installer's `/opt/dagcore-miner` since 1.2.1):
 make && sudo make install && sudo systemctl restart dagcore-miner
 ```
 
-Check the files before running them:
+Download, unpack and check the files before running them:
 
 ```sh
-V=1.2.1
-base=https://github.com/dagcore/dagcore-miner/releases/download/v$V
-for f in dagcore-miner dagcore-miner-cpu dagcore_gpu.cl SHA256SUMS; do
-    curl -fLO "$base/$f"
-done
+V=1.3.0
+d=dagcore-miner-$V-linux-x64
+curl -fLO "https://github.com/dagcore/dagcore-miner/releases/download/v$V/$d.tar.gz"
+tar xzf "$d.tar.gz"
+cd "$d"
 sha256sum -c SHA256SUMS
-chmod +x dagcore-miner dagcore-miner-cpu
 ```
 
-Every line must end in `OK`. `FAILED` means the file is damaged or not the one
-released: delete it and download it again. The sums come from the same place as
-the files, so they catch a broken or incomplete download, not a compromised
-account; they are not a signature.
+Every line must end in `OK`. `FAILED` means a file is damaged or not the one
+released: delete the folder and the archive and download it again. The sums
+come from the same place as the files, so they catch a broken or incomplete
+download, not a compromised account; they are not a signature.
 
 ## Windows (experimental)
 
@@ -108,6 +113,7 @@ It holds:
 | `config.env.example` | Settings, written for Windows |
 | `readme.html` | A getting-started page; opens with a double-click, offline |
 | `start.bat` | Starts `dagcore-miner.exe` as administrator, which the power limit needs |
+| `LICENSE` | The MIT license the miner is released under |
 | `SHA256SUMS` | Checksums of all of the above |
 
 Nothing else is needed: the `.exe` files have no DLLs of their own to bring

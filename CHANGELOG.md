@@ -6,6 +6,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-25
+
 ### Added
 - Dashboard: a log panel under the hashrate chart, about seven lines tall,
   with the console's status line (hashrate, shares, uptime), the last 100
@@ -112,8 +114,11 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   attaches: `dist/dagcore-miner-<version>-linux-x64.tar.gz` from
   `dist/linux/` and `dist/dagcore-miner-<version>-windows-x64.zip` from
   `dist/windows/` (`make release-linux`, `make release-windows` for one).
-  Each unpacks into a single folder named like the archive; the version is
-  the one the binary reports.
+  Each unpacks into a single folder named like the archive, for example
+  `dagcore-miner-1.3.0-linux-x64/`, on both systems; the version is the one
+  the binary reports.
+- Both kits carry `LICENSE`, the MIT notice that has to go with every copy
+  of the binaries; `SHA256SUMS` covers it.
 - The dashboard leaves out a reading the machine cannot give - GPU
   temperature, load, power, memory, CPU temperature - instead of showing
   `n/a`, and the whole GPU & thermals card when there is none.

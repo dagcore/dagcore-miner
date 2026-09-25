@@ -171,7 +171,7 @@
  * DagTech GPU Miner Configuration
  * ========================================================================= */
 /* DagCore versioning restarts at 1.0.0; derived from DagTech GPU-2026.0628.1. */
-#define DAGCORE_VERSION       "1.2.1"
+#define DAGCORE_VERSION       "1.3.0"
 #define DAGCORE_BANNER        "DagCore Miner v" DAGCORE_VERSION " - dagcore.net"
 #define DAGTECH_DEFAULT_POOL  "stratum.dagcore.net"
 #define DAGTECH_DEFAULT_PORT  3334
