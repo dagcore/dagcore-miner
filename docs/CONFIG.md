@@ -9,6 +9,7 @@ Every setting, option, endpoint and metrics field.
 - [Control API](#control-api)
 - [/metrics fields](#metrics-fields)
 - [/history](#history)
+- [/log](#log)
 
 ## Where settings come from
 
@@ -183,7 +184,7 @@ Bodies and replies are JSON. Every reply carries `ok`.
 | `/api/mem-clock` | `{"mhz":9851}` or `{"reset":true}` | Same for memory. |
 | `/api/core-offset` | `{"mhz":150}` or `{"reset":true}` | VF offset through NVML. Starts a trial. Re-applies any clock lock at its step. |
 | `/api/mem-offset` | `{"mhz":1200}` or `{"reset":true}` | Same for memory. |
-| `/api/intensity` | `{"value":90}` | Saves and exits so the supervisor restarts the miner — intensity is fixed when buffers are allocated. Replies `restarting:false` when not supervised. |
+| `/api/intensity` | `{"value":90}` | Saves and restarts the miner — intensity is fixed when buffers are allocated. Under systemd it exits and the service brings it back; on Windows it starts its own `.exe` again, same command line and console, once it has shut down. Replies `restarting:false`, with a `note`, only on Linux without systemd, where it keeps running on the old value until started again. |
 | `/api/cancel-trial` | `{"domain":"mem-clock"}` | Ends a running trial and puts the previous value back. Domains: `core-clock`, `mem-clock`, `core-offset`, `mem-offset`. |
 | `/api/config` | Any of `{"wallet","pool","port","threads","gpu_device"}` | Validates every field, writes them into `config.env` (previous file kept as `config.env.bak`, other lines untouched) and exits for a restart like `/api/intensity`. Unchanged values answer `saved:false`. `threads` is `-1` (auto) to the core count, `0` only while a GPU mines; `gpu_device` is `all`, `N` or `N,M`. Works even when the tuning controls are unavailable. |
 | `/api/pause` | `{"paused":true}` or `{"paused":false}` | Stops the mining threads and disconnects from the pool, or resumes. The web server keeps running. Not saved across restarts. Refused during a trial. Works even when the tuning controls are unavailable. |
@@ -286,6 +287,17 @@ For each of `gpu_core_clock` and `gpu_mem_clock`:
 ### Offsets
 `gpu_core_offset`, `gpu_mem_offset`, each with `_min` and `_max` from the card.
 `offset_available` and `offset_reason` say whether NVML could be used.
+`clock_controls_supported` (appended last) says whether this build can lock
+clocks and set offsets at all: `true` now on both systems; `false` came from
+the first Windows builds, without NVML control, and the dashboard then leaves
+every clock control out - the lock and offset rows, Adopt, and the text about
+clock tests. On Windows `offset_available` is `false` with `offset_reason`
+"set them with MSI Afterburner - the Windows driver does not let the miner
+change them" (NVML answers the offset calls "Not Supported"); the dashboard
+shows it as information, not as an error. The offset fields
+are 0 even when MSI Afterburner has applied one: the miner cannot read it.
+`gpu_mem_clock` and `gpu_core_clock` still report the clock that results;
+`_max`, `_boost` and `_shift` do not include it.
 
 ### Trials
 For each of `trial_core`, `trial_mem`, `trial_coreoff`, `trial_memoff`:
@@ -337,3 +349,23 @@ restart and never written to disk. No authentication.
 Samples are oldest first. `t` and `now` are Unix seconds on the miner's clock;
 a client should place samples by `now - t` rather than trust its own clock.
 `effective_hashrate` is `null` until the effective window is full.
+
+## /log
+
+`GET /log` returns the status lines the console printed, the last 100 of
+them (about sixteen minutes, one every 10 seconds), in memory only like
+`/history`. The text is exactly what the console shows, without the newline.
+No authentication.
+
+```json
+{"now":1790281829,"lines":[
+  {"t":1790281805,"submitted":2262,"accepted":2179,"rejected":0,"stale":83,
+   "text":"[DagCore] 1610100.36 H/s | CPU: 0.00 H/s | GPU: 1610100.36 H/s | Shares: 2262/2179/0/83 (sub/acc/rej/stale) | Uptime: 0h12m"}, ...]}
+```
+
+Lines are oldest first; `t` and `now` are Unix seconds on the miner's clock,
+as in `/history`. `submitted`, `accepted`, `rejected` and `stale` are the
+counters the line shows, read once for both, so they always agree with its
+text. The dashboard shows the lines under the chart, newest first, with the
+time and the hashrates converted to MH/s (or kH/s, GH/s), and fills the
+Shares card from the newest line's counters, so card and log never disagree.

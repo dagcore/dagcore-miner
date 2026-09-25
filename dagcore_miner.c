@@ -173,7 +173,6 @@
 /* DagCore versioning restarts at 1.0.0; derived from DagTech GPU-2026.0628.1. */
 #define DAGCORE_VERSION       "1.2.1"
 #define DAGCORE_BANNER        "DagCore Miner v" DAGCORE_VERSION " - dagcore.net"
-#define DAGTECH_AUTHOR        "Dawie Nel / DagTech Ltd"
 #define DAGTECH_DEFAULT_POOL  "stratum.dagcore.net"
 #define DAGTECH_DEFAULT_PORT  3334
 
@@ -197,6 +196,11 @@ static int  cpu_limit          = 100; /* 1-100: % of CPU time to use per thread 
 static int  gpu_throttle       = 100; /* 1-100: % of GPU time to use (duty-cycle throttle) */
 static volatile int running    = 1;
 static volatile int keep_alive = 1;  /* 0 = clean program exit; stays 1 across reconnects */
+#ifdef _WIN32
+/* A dashboard save asked for a restart and nothing supervises the miner
+ * (Windows): once shut down, it starts a fresh copy of itself. */
+static volatile int g_self_restart = 0;
+#endif
 
 /* Pause from the dashboard (POST /api/pause): the session ends as it does on
  * a dropped pool connection - mining threads joined, pool socket closed - and
@@ -267,19 +271,104 @@ static char dashboard_dir[512] = "";
  * Both paths, and the token file, can be redirected with environment
  * variables - needed to test without root, useful for containers.
  *
- * On Windows all three live in %ProgramData%\DAGCore\ (config.env,
- * overrides.env, api-token): machine-wide, like /etc and /var/lib, and
- * writable without administrator rights for the account that creates it. */
+ * On Windows the miner is a folder someone unzips, and everything lives in
+ * it, next to the .exe: config.env, overrides.env, api-token, dashboard\ and
+ * dagcore_gpu.cl (the "portable" layout, DT_PORTABLE_LAYOUT). The first
+ * Windows test builds kept the first three in %ProgramData%\DAGCore\; a file that exists
+ * there and not next to the .exe is still used, so an existing setup keeps
+ * working. A new file is always created next to the .exe - which therefore
+ * has to be a folder the user can write to, not Program Files.
+ *
+ * The layout can be switched on in a Linux build too (-DDT_PORTABLE_LAYOUT),
+ * which is how it is tested; %ProgramData% is then an environment variable
+ * like any other. */
 #define DT_TOKEN_PATH_DEFAULT     "/etc/dagcore-miner/api-token"
 #define DT_OVERRIDES_PATH_DEFAULT "/var/lib/dagcore-miner/overrides.env"
+#if defined(_WIN32) && !defined(DT_PORTABLE_LAYOUT)
+  #define DT_PORTABLE_LAYOUT 1
+#endif
 #ifdef _WIN32
+  #define DT_SEP_STR "\\"
+#else
+  #define DT_SEP_STR "/"
+#endif
+
+/* Directory of the running executable, with its trailing separator, or ""
+ * when unknown. Set once at the start of main. On Windows it comes from
+ * GetModuleFileName: argv[0] is just "dagcore-miner.exe" when the program is
+ * started from its own folder or from PATH. */
+static char g_exe_dir[1024] = "";
+static void dt_init_exe_dir(const char *argv0) {
+    char buf[1024] = "";
+#ifdef _WIN32
+    DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) buf[0] = '\0';
+#endif
+    if (!buf[0] && argv0) snprintf(buf, sizeof(buf), "%s", argv0);
+    char *sep = strrchr(buf, '/');
+#ifdef _WIN32
+    { char *sep2 = strrchr(buf, '\\'); if (sep2 > sep) sep = sep2; }
+#endif
+    if (sep) { *(sep + 1) = '\0'; snprintf(g_exe_dir, sizeof(g_exe_dir), "%s", buf); }
+    else g_exe_dir[0] = '\0';
+}
+
+#ifdef DT_PORTABLE_LAYOUT
+/* %ProgramData%\DAGCore: where the first Windows test builds kept their files. */
 static const char *dt_win_datadir(void) {
     static char dir[512];
     if (!dir[0]) {
         const char *pd = getenv("ProgramData");
-        snprintf(dir, sizeof(dir), "%s\\DAGCore", (pd && pd[0]) ? pd : "C:\\ProgramData");
+        snprintf(dir, sizeof(dir), "%s" DT_SEP_STR "DAGCore",
+                 (pd && pd[0]) ? pd : "C:\\ProgramData");
     }
     return dir;
+}
+
+/* Copy src to dst byte for byte; 0 on success. dst is written in full or
+ * removed. */
+static int dt_copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[4096];
+    size_t got;
+    int bad = 0;
+    while ((got = fread(buf, 1, sizeof(buf), in)) > 0)
+        if (fwrite(buf, 1, got, out) != got) { bad = 1; break; }
+    if (ferror(in)) bad = 1;
+    fclose(in);
+    if (fclose(out) != 0) bad = 1;
+    if (bad) { remove(dst); return -1; }
+    return 0;
+}
+
+/* <exe dir>/name. A file the first Windows test builds left only in
+ * %ProgramData%\DAGCore is copied next to the .exe first, and the copy used -
+ * the same token, overrides and config, now where the user looks for them.
+ * The original stays; if the copy cannot be made (a folder the user cannot
+ * write to), the original is used where it is. */
+static const char *dt_portable_path(char *out, size_t n, const char *name) {
+    FILE *f;
+    snprintf(out, n, "%s%s", g_exe_dir, name);
+    if ((f = fopen(out, "r")) != NULL) { fclose(f); return out; }
+    char old[700];
+    snprintf(old, sizeof(old), "%s" DT_SEP_STR "%s", dt_win_datadir(), name);
+    if ((f = fopen(old, "r")) == NULL) return out;      /* new file, next to the .exe */
+    fclose(f);
+    if (dt_copy_file(old, out) == 0) {
+#ifndef _WIN32
+        if (strcmp(name, "api-token") == 0) chmod(out, 0600);
+#endif
+        printf("[DagCore] Copied %s to %s - the miner keeps its files next to the "
+               ".exe now; the old one can be deleted\n", old, out);
+        return out;
+    }
+    fprintf(stderr, "[DagCore] WARNING: cannot copy %s next to the .exe (%s): %s - "
+                    "using it where it is\n", old, out, strerror(errno));
+    snprintf(out, n, "%s", old);
+    return out;
 }
 #endif
 
@@ -322,9 +411,9 @@ static double g_pl_min = -1, g_pl_max = -1, g_pl_default = -1, g_pl_current = -1
 static const char *dt_token_path(void) {
     const char *e = getenv("DAGCORE_TOKEN_FILE");
     if (e && e[0]) return e;
-#ifdef _WIN32
-    static char p[600];
-    snprintf(p, sizeof(p), "%s\\api-token", dt_win_datadir());
+#ifdef DT_PORTABLE_LAYOUT
+    static char p[1100];
+    if (!p[0]) dt_portable_path(p, sizeof(p), "api-token");
     return p;
 #else
     return DT_TOKEN_PATH_DEFAULT;
@@ -333,9 +422,9 @@ static const char *dt_token_path(void) {
 static const char *dt_overrides_path(void) {
     const char *e = getenv("DAGCORE_OVERRIDES_FILE");
     if (e && e[0]) return e;
-#ifdef _WIN32
-    static char p[600];
-    snprintf(p, sizeof(p), "%s\\overrides.env", dt_win_datadir());
+#ifdef DT_PORTABLE_LAYOUT
+    static char p[1100];
+    if (!p[0]) dt_portable_path(p, sizeof(p), "overrides.env");
     return p;
 #else
     return DT_OVERRIDES_PATH_DEFAULT;
@@ -510,6 +599,32 @@ static hist_sample_t   hist_buf[HIST_LEN];
 static int             hist_head  = 0;   /* next slot to write */
 static int             hist_count = 0;
 static pthread_mutex_t hist_mtx   = PTHREAD_MUTEX_INITIALIZER;
+
+/* The status lines the console prints every 10s, served at /log for the
+ * dashboard's log panel. The last 100 - about sixteen minutes - at 768 bytes
+ * each (a multi-card line grows by ~25 bytes a card): 77 KB, fixed, in .bss.
+ * Memory only, like the history. */
+#define LOG_LEN      100
+#define LOG_LINE_MAX 768
+/* The share counters a line shows, kept beside its text so /log can hand them
+ * over as numbers rather than have the page parse them back out. */
+typedef struct { uint64_t submitted, accepted, rejected, stale; } log_shares_t;
+static struct { int64_t t; log_shares_t sh; char text[LOG_LINE_MAX]; } log_buf[LOG_LEN];
+static int             log_head  = 0;
+static int             log_count = 0;
+static pthread_mutex_t log_mtx   = PTHREAD_MUTEX_INITIALIZER;
+
+/* Print a status line and keep it for /log, with the counters it shows. */
+static void status_line(const char *text, const log_shares_t *sh) {
+    printf("%s\n", text);
+    pthread_mutex_lock(&log_mtx);
+    log_buf[log_head].t  = (int64_t)time(NULL);
+    log_buf[log_head].sh = *sh;
+    snprintf(log_buf[log_head].text, LOG_LINE_MAX, "%s", text);
+    log_head = (log_head + 1) % LOG_LEN;
+    if (log_count < LOG_LEN) log_count++;
+    pthread_mutex_unlock(&log_mtx);
+}
 
 /* Effective hashrate: the work the pool accepted, as hashes. A share passes
  * when the top 64 bits of its hash are <= 0xFFFF00000000 / difficulty (see
@@ -915,28 +1030,12 @@ static size_t gpu_fit_global_size(cl_device_id dev, size_t desired, int gpu_inde
     return fitted;
 }
 
-/* Load the kernel source from the same directory as argv[0] */
-static char *gpu_load_kernel_source(const char *exe_path, size_t *src_len) {
-    char cl_path[1024];
-
-    /* Build path: replace binary name with dagcore_gpu.cl */
-    strncpy(cl_path, exe_path, sizeof(cl_path) - 1);
-    cl_path[sizeof(cl_path) - 1] = '\0';
-
-    /* Find last path separator */
-    char *sep = strrchr(cl_path, '/');
-#ifdef _WIN32
-    {
-        char *sep2 = strrchr(cl_path, '\\');
-        if (sep2 > sep) sep = sep2;
-    }
-#endif
-    if (sep) {
-        *(sep + 1) = '\0';
-        strncat(cl_path, "dagcore_gpu.cl", sizeof(cl_path) - strlen(cl_path) - 1);
-    } else {
-        strncpy(cl_path, "dagcore_gpu.cl", sizeof(cl_path) - 1);
-    }
+/* Load the kernel source from the executable's directory (g_exe_dir: on
+ * Windows the .exe's real folder, not argv[0], which may carry no directory at
+ * all); the current directory when that is unknown. */
+static char *gpu_load_kernel_source(size_t *src_len) {
+    char cl_path[1100];
+    snprintf(cl_path, sizeof(cl_path), "%sdagcore_gpu.cl", g_exe_dir);
 
     FILE *f = fopen(cl_path, "rb");
     if (!f) {
@@ -1221,10 +1320,10 @@ static int gpu_init_one(GpuCtx *ctx, cl_platform_id platform, int platform_idx,
 }
 
 /* Discover and initialise all requested GPUs on gpu_platform */
-static int gpu_init_all(const char *exe_path) {
+static int gpu_init_all(void) {
     /* Load kernel source once — reused for every GPU's compile */
     size_t src_len = 0;
-    char *src = gpu_load_kernel_source(exe_path, &src_len);
+    char *src = gpu_load_kernel_source(&src_len);
     if (!src) return -1;
 
     /* Select platform */
@@ -2978,10 +3077,21 @@ static void *dagtech_mine_thread(void *arg) {
     return NULL;
 }
 
+static int nvml_read_stats(double *temp, double *usage, double *memory, double *power,
+                           double *core_clk, double *mem_clk);
+
 /* One nvidia-smi per metrics request, not one per value: the clocks ride
- * along with the telemetry that was already being queried. */
+ * along with the telemetry that was already being queried.
+ * On Windows NVML is asked first (nvml.dll comes with every NVIDIA driver;
+ * nvidia-smi.exe is not always on PATH), and nvidia-smi only if that fails.
+ * Linux still reads through nvidia-smi, as it always has. With neither - no
+ * NVIDIA card, as on a laptop with Intel graphics - it returns -1 and the
+ * dashboard shows the fields as unknown. */
 static int get_gpu_stats(double *temp, double *usage, double *memory, double *power,
                          double *core_clk, double *mem_clk) {
+#ifdef _WIN32
+    if (nvml_read_stats(temp, usage, memory, power, core_clk, mem_clk) == 0) return 0;
+#endif
     FILE *fp = popen("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,"
                      "power.draw,clocks.current.graphics,clocks.current.memory "
                      "--format=csv,noheader,nounits " DT_NULL_STDERR, "r");
@@ -3110,7 +3220,41 @@ static int nvsmi_query_power(int idx, double *mn, double *mx, double *def, doubl
  * DAGCORE_NVML_LIB redirects the library, which is what makes this testable
  * without touching a real card. */
 
-#ifndef _WIN32
+/* ---- Loading NVML: dlopen on Linux, LoadLibrary on Windows ------------ */
+#ifdef _WIN32
+typedef HMODULE dt_lib_t;
+/* nvml.dll comes with the NVIDIA driver: in System32 with current (DCH)
+ * drivers, in "NVIDIA Corporation\NVSMI" under Program Files with older ones.
+ * It is looked for in exactly those two places and never by bare name: the
+ * default search would try the .exe's own folder first, a folder the user can
+ * write to, and load whatever nvml.dll was dropped there. DAGCORE_NVML_LIB,
+ * given as a full path, overrides both. */
+static dt_lib_t dt_lib_open(const char *name) {
+    if (strchr(name, '\\') || strchr(name, '/'))
+        return LoadLibraryExA(name, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    HMODULE h = LoadLibraryExA(name, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!h) {
+        const char *pf = getenv("ProgramW6432");
+        if (!pf || !pf[0]) pf = getenv("ProgramFiles");
+        if (pf && pf[0]) {
+            char path[MAX_PATH];
+            snprintf(path, sizeof(path), "%s\\NVIDIA Corporation\\NVSMI\\%s", pf, name);
+            h = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        }
+    }
+    return h;
+}
+static void *dt_lib_sym(dt_lib_t lib, const char *sym) {
+    return (void *)GetProcAddress(lib, sym);
+}
+#define DT_NVML_LIB_DEFAULT "nvml.dll"
+#else
+typedef void *dt_lib_t;
+static dt_lib_t dt_lib_open(const char *name) { return dlopen(name, RTLD_LAZY); }
+static void *dt_lib_sym(dt_lib_t lib, const char *sym) { return dlsym(lib, sym); }
+#define DT_NVML_LIB_DEFAULT "libnvidia-ml.so.1"
+#endif
+
 typedef int (*nvml_init_fn)(void);
 typedef int (*nvml_shutdown_fn)(void);
 typedef int (*nvml_handle_fn)(unsigned int, void **);
@@ -3123,16 +3267,42 @@ typedef int (*nvml_clkinfo_fn)(void *, int, unsigned int *);
 typedef int (*nvml_supmem_fn)(void *, unsigned int *, unsigned int *);
 typedef int (*nvml_pstate_fn)(void *, int, int, unsigned int *, unsigned int *);
 typedef const char *(*nvml_errstr_fn)(int);
+/* Telemetry. The structs are NVML's own v1 layouts, stable since the first
+ * NVML: nvmlUtilization_t and nvmlMemory_t. */
+typedef struct { unsigned int gpu, memory; } dt_nvml_util_t;
+typedef struct { unsigned long long total, free, used; } dt_nvml_mem_t;
+/* nvmlMemory_v2_t: "used" without the memory the driver reserves - what
+ * nvidia-smi reports. v1 counts the reservation too (on an RTX 3080 mining,
+ * 2642 MiB against nvidia-smi's 2279). */
+typedef struct { unsigned int version; unsigned long long total, reserved, free, used; } dt_nvml_mem2_t;
+#define DT_NVML_MEMORY_V2 ((unsigned int)(sizeof(dt_nvml_mem2_t) | (2u << 24)))
+typedef int (*nvml_temp_fn)(void *, int, unsigned int *);
+typedef int (*nvml_util_fn)(void *, dt_nvml_util_t *);
+typedef int (*nvml_meminfo_fn)(void *, dt_nvml_mem_t *);
+typedef int (*nvml_meminfo2_fn)(void *, dt_nvml_mem2_t *);
+typedef int (*nvml_power_fn)(void *, unsigned int *);
 
 #define NVML_CLK_GRAPHICS 0
 #define NVML_CLK_MEM      2
+#define NVML_TEMPERATURE_GPU 0
 
 static struct {
-    int   tried;          /* 0 = not attempted yet */
-    int   ok;             /* 1 = usable */
-    void *lib;
+    /* The library, its init and the device handle - enough to read. */
+    int   base_tried;     /* 0 = not attempted yet */
+    int   base_ok;        /* 1 = loaded, initialised, handle in hand */
+    dt_lib_t lib;
     void *dev;
+    nvml_errstr_fn     errstr;
     nvml_shutdown_fn   shutdown;
+    nvml_temp_fn       temp;
+    nvml_util_fn       util;
+    nvml_meminfo_fn    meminfo;
+    nvml_meminfo2_fn   meminfo2;
+    nvml_power_fn      power;
+    nvml_clkinfo_fn    cur_clk;
+    /* Clock control on top of that. */
+    int   tried;          /* 0 = not attempted yet */
+    int   ok;             /* 1 = clock control usable */
     nvml_get_off_fn    get_core, get_mem;
     nvml_set_off_fn    set_core, set_mem;
     nvml_minmax_off_fn range_core, range_mem;
@@ -3141,75 +3311,164 @@ static struct {
     nvml_clkinfo_fn    max_clk;
     nvml_supmem_fn     sup_mem;
     nvml_pstate_fn     pstate;
-    nvml_errstr_fn     errstr;
     char  why[160];       /* why it is unusable, for the dashboard */
+    char  off_why[160];   /* why the offsets cannot be read, when the rest can */
 } g_nvml;
+static pthread_mutex_t nvml_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *nvml_err(int rc) {
     if (g_nvml.errstr) return g_nvml.errstr(rc);
     return "NVML error";
 }
 
-/* Resolve everything up front: a half-loaded NVML is worse than none. */
-static int nvml_load(void) {
-    if (g_nvml.tried) return g_nvml.ok;
-    g_nvml.tried = 1;
+/* Open the library, initialise it and take the handle of the mining card.
+ * Tried once; on a machine without an NVIDIA driver it fails quietly and
+ * leaves the reason in g_nvml.why. The telemetry entry points are optional:
+ * a missing one just leaves that reading to nvidia-smi or to "unknown". */
+static int nvml_load_base(void) {
+    pthread_mutex_lock(&nvml_mtx);
+    if (g_nvml.base_tried) { pthread_mutex_unlock(&nvml_mtx); return g_nvml.base_ok; }
+    g_nvml.base_tried = 1;
     snprintf(g_nvml.why, sizeof(g_nvml.why), "not initialised");
 
     const char *libname = getenv("DAGCORE_NVML_LIB");
-    if (!libname || !libname[0]) libname = "libnvidia-ml.so.1";
+    if (!libname || !libname[0]) libname = DT_NVML_LIB_DEFAULT;
 
-    g_nvml.lib = dlopen(libname, RTLD_LAZY);
+    g_nvml.lib = dt_lib_open(libname);
     if (!g_nvml.lib) {
         snprintf(g_nvml.why, sizeof(g_nvml.why), "cannot load %s", libname);
+        pthread_mutex_unlock(&nvml_mtx);
         return 0;
     }
-    nvml_init_fn   init = (nvml_init_fn)  dlsym(g_nvml.lib, "nvmlInit_v2");
-    nvml_handle_fn hnd  = (nvml_handle_fn)dlsym(g_nvml.lib, "nvmlDeviceGetHandleByIndex_v2");
-    g_nvml.shutdown     = (nvml_shutdown_fn)dlsym(g_nvml.lib, "nvmlShutdown");
-    g_nvml.get_core     = (nvml_get_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetGpcClkVfOffset");
-    g_nvml.set_core     = (nvml_set_off_fn)dlsym(g_nvml.lib, "nvmlDeviceSetGpcClkVfOffset");
-    g_nvml.get_mem      = (nvml_get_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMemClkVfOffset");
-    g_nvml.set_mem      = (nvml_set_off_fn)dlsym(g_nvml.lib, "nvmlDeviceSetMemClkVfOffset");
-    g_nvml.range_core   = (nvml_minmax_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetGpcClkMinMaxVfOffset");
-    g_nvml.range_mem    = (nvml_minmax_off_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMemClkMinMaxVfOffset");
-    g_nvml.lock_core    = (nvml_lock_fn)dlsym(g_nvml.lib, "nvmlDeviceSetGpuLockedClocks");
-    g_nvml.lock_mem     = (nvml_lock_fn)dlsym(g_nvml.lib, "nvmlDeviceSetMemoryLockedClocks");
-    g_nvml.unlock_core  = (nvml_unlock_fn)dlsym(g_nvml.lib, "nvmlDeviceResetGpuLockedClocks");
-    g_nvml.unlock_mem   = (nvml_unlock_fn)dlsym(g_nvml.lib, "nvmlDeviceResetMemoryLockedClocks");
-    g_nvml.max_clk      = (nvml_clkinfo_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMaxClockInfo");
-    g_nvml.sup_mem      = (nvml_supmem_fn)dlsym(g_nvml.lib, "nvmlDeviceGetSupportedMemoryClocks");
-    g_nvml.pstate       = (nvml_pstate_fn)dlsym(g_nvml.lib, "nvmlDeviceGetMinMaxClockOfPState");
-    g_nvml.errstr       = (nvml_errstr_fn)dlsym(g_nvml.lib, "nvmlErrorString");
+    nvml_init_fn   init = (nvml_init_fn)  dt_lib_sym(g_nvml.lib, "nvmlInit_v2");
+    nvml_handle_fn hnd  = (nvml_handle_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetHandleByIndex_v2");
+    g_nvml.errstr   = (nvml_errstr_fn)  dt_lib_sym(g_nvml.lib, "nvmlErrorString");
+    g_nvml.shutdown = (nvml_shutdown_fn)dt_lib_sym(g_nvml.lib, "nvmlShutdown");
+    g_nvml.temp     = (nvml_temp_fn)    dt_lib_sym(g_nvml.lib, "nvmlDeviceGetTemperature");
+    g_nvml.util     = (nvml_util_fn)    dt_lib_sym(g_nvml.lib, "nvmlDeviceGetUtilizationRates");
+    g_nvml.meminfo  = (nvml_meminfo_fn) dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemoryInfo");
+    g_nvml.meminfo2 = (nvml_meminfo2_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemoryInfo_v2");
+    g_nvml.power    = (nvml_power_fn)   dt_lib_sym(g_nvml.lib, "nvmlDeviceGetPowerUsage");
+    g_nvml.cur_clk  = (nvml_clkinfo_fn) dt_lib_sym(g_nvml.lib, "nvmlDeviceGetClockInfo");
+    if (!init || !hnd) {
+        snprintf(g_nvml.why, sizeof(g_nvml.why), "%s lacks nvmlInit_v2", libname);
+        pthread_mutex_unlock(&nvml_mtx);
+        return 0;
+    }
+    int rc = init();
+    if (rc != 0) {
+        snprintf(g_nvml.why, sizeof(g_nvml.why), "nvmlInit failed: %s", nvml_err(rc));
+        pthread_mutex_unlock(&nvml_mtx);
+        return 0;
+    }
+    rc = hnd((unsigned)(gpu_device < 0 ? 0 : gpu_device), &g_nvml.dev);
+    if (rc != 0) {
+        snprintf(g_nvml.why, sizeof(g_nvml.why), "no NVML handle for GPU %d: %s",
+                 gpu_device, nvml_err(rc));
+        pthread_mutex_unlock(&nvml_mtx);
+        return 0;
+    }
+    g_nvml.base_ok = 1;
+    snprintf(g_nvml.why, sizeof(g_nvml.why), "ok");
+    pthread_mutex_unlock(&nvml_mtx);
+    return 1;
+}
 
-    if (!init || !hnd || !g_nvml.get_core || !g_nvml.set_core ||
+/* The mining card's temperature (C), load (%), memory used (MiB), power (W)
+ * and current core and memory clocks (MHz), straight from NVML - what
+ * nvidia-smi --query-gpu reports, without starting a process for it. A value
+ * NVML cannot give is -1. 0 if NVML answered at all, -1 if it is not there. */
+#if defined(__GNUC__) && !defined(_WIN32)
+__attribute__((unused))   /* Linux reads through nvidia-smi; kept for tests */
+#endif
+static int nvml_read_stats(double *temp, double *usage, double *memory, double *power,
+                           double *core_clk, double *mem_clk) {
+    *temp = *usage = *memory = *power = *core_clk = *mem_clk = -1.0;
+    if (!nvml_load_base()) return -1;
+    unsigned int u = 0;
+    dt_nvml_util_t ut;
+    dt_nvml_mem_t  mi;
+    dt_nvml_mem2_t m2;
+    int any = 0;
+    if (g_nvml.temp && g_nvml.temp(g_nvml.dev, NVML_TEMPERATURE_GPU, &u) == 0) { *temp = u; any = 1; }
+    if (g_nvml.util && g_nvml.util(g_nvml.dev, &ut) == 0) { *usage = ut.gpu; any = 1; }
+    memset(&m2, 0, sizeof(m2));
+    m2.version = DT_NVML_MEMORY_V2;
+    if (g_nvml.meminfo2 && g_nvml.meminfo2(g_nvml.dev, &m2) == 0) {
+        *memory = (double)m2.used / (1024.0 * 1024.0); any = 1;
+    } else if (g_nvml.meminfo && g_nvml.meminfo(g_nvml.dev, &mi) == 0) {
+        *memory = (double)mi.used / (1024.0 * 1024.0); any = 1;
+    }
+    if (g_nvml.power && g_nvml.power(g_nvml.dev, &u) == 0) { *power = u / 1000.0; any = 1; }
+    if (g_nvml.cur_clk && g_nvml.cur_clk(g_nvml.dev, NVML_CLK_GRAPHICS, &u) == 0) { *core_clk = u; any = 1; }
+    if (g_nvml.cur_clk && g_nvml.cur_clk(g_nvml.dev, NVML_CLK_MEM, &u) == 0) { *mem_clk = u; any = 1; }
+    return any ? 0 : -1;
+}
+
+/* Clock control: the base, plus every clock entry point resolved up front -
+ * a half-loaded NVML is worse than none. The same code on both systems:
+ * nvml.dll exports every one of these (checked with driver 617.14), and on
+ * Windows, as on Linux, they need administrator rights - control_init
+ * already holds the controls back without them. */
+static int nvml_load(void) {
+    if (g_nvml.tried) return g_nvml.ok;
+    g_nvml.tried = 1;
+    if (!nvml_load_base()) return 0;
+
+    const char *libname = getenv("DAGCORE_NVML_LIB");
+    if (!libname || !libname[0]) libname = DT_NVML_LIB_DEFAULT;
+    g_nvml.get_core     = (nvml_get_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetGpcClkVfOffset");
+    g_nvml.set_core     = (nvml_set_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetGpcClkVfOffset");
+    g_nvml.get_mem      = (nvml_get_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemClkVfOffset");
+    g_nvml.set_mem      = (nvml_set_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetMemClkVfOffset");
+    g_nvml.range_core   = (nvml_minmax_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetGpcClkMinMaxVfOffset");
+    g_nvml.range_mem    = (nvml_minmax_off_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMemClkMinMaxVfOffset");
+    g_nvml.lock_core    = (nvml_lock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetGpuLockedClocks");
+    g_nvml.lock_mem     = (nvml_lock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceSetMemoryLockedClocks");
+    g_nvml.unlock_core  = (nvml_unlock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceResetGpuLockedClocks");
+    g_nvml.unlock_mem   = (nvml_unlock_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceResetMemoryLockedClocks");
+    g_nvml.max_clk      = (nvml_clkinfo_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMaxClockInfo");
+    g_nvml.sup_mem      = (nvml_supmem_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetSupportedMemoryClocks");
+    g_nvml.pstate       = (nvml_pstate_fn)dt_lib_sym(g_nvml.lib, "nvmlDeviceGetMinMaxClockOfPState");
+
+    if (!g_nvml.get_core || !g_nvml.set_core ||
         !g_nvml.get_mem || !g_nvml.set_mem || !g_nvml.lock_core || !g_nvml.lock_mem ||
         !g_nvml.unlock_core || !g_nvml.unlock_mem || !g_nvml.max_clk || !g_nvml.sup_mem) {
         snprintf(g_nvml.why, sizeof(g_nvml.why),
                  "%s lacks the clock entry points", libname);
         return 0;
     }
-    int rc = init();
-    if (rc != 0) {
-        snprintf(g_nvml.why, sizeof(g_nvml.why), "nvmlInit failed: %s", nvml_err(rc));
-        return 0;
-    }
-    rc = hnd((unsigned)gpu_device, &g_nvml.dev);
-    if (rc != 0) {
-        snprintf(g_nvml.why, sizeof(g_nvml.why), "no NVML handle for GPU %d: %s",
-                 gpu_device, nvml_err(rc));
-        return 0;
-    }
     g_nvml.ok = 1;
-    snprintf(g_nvml.why, sizeof(g_nvml.why), "ok");
     return 1;
 }
 
+/* The offsets, or -1 with the reason in g_nvml.off_why. Clock locks can work
+ * where offsets do not: on Windows the GeForce driver answers the offset
+ * calls "Not Supported" (driver 617.14, RTX 3080) - they exist in nvml.dll,
+ * but overclocking there goes through NVAPI - while locks are accepted. */
 static int nvml_read_offsets(int *core, int *mem) {
-    if (!nvml_load()) return -1;
-    int c = 0, m = 0;
-    if (g_nvml.get_core(g_nvml.dev, &c) != 0) return -1;
-    if (g_nvml.get_mem(g_nvml.dev, &m) != 0) return -1;
+    if (!nvml_load()) {
+        snprintf(g_nvml.off_why, sizeof(g_nvml.off_why), "%s", g_nvml.why);
+        return -1;
+    }
+    int c = 0, m = 0, rc;
+    if ((rc = g_nvml.get_core(g_nvml.dev, &c)) != 0 ||
+        (rc = g_nvml.get_mem(g_nvml.dev, &m)) != 0) {
+#ifdef _WIN32
+        /* NVML_ERROR_NOT_SUPPORTED: not a fault but how the Windows driver
+         * works, so say where offsets are set instead. The dashboard shows
+         * this as information, not as an error. */
+        if (rc == 3) {
+            snprintf(g_nvml.off_why, sizeof(g_nvml.off_why),
+                     "set them with MSI Afterburner - the Windows driver does not "
+                     "let the miner change them");
+            return -1;
+        }
+#endif
+        snprintf(g_nvml.off_why, sizeof(g_nvml.off_why), "clock offsets: %s",
+                 nvml_err(rc));
+        return -1;
+    }
     if (core) *core = c;
     if (mem) *mem = m;
     return 0;
@@ -3352,7 +3611,7 @@ static int nvml_unlock_clock(int is_mem, char *err, size_t err_size) {
  * matches the table after an offset change. */
 static int nvml_current_clock(int is_mem, int *mhz) {
     if (!nvml_load()) return -1;
-    nvml_clkinfo_fn f = (nvml_clkinfo_fn)dlsym(g_nvml.lib, "nvmlDeviceGetClockInfo");
+    nvml_clkinfo_fn f = g_nvml.cur_clk;
     if (!f) return -1;
     unsigned int v = 0;
     if (f(g_nvml.dev, is_mem ? NVML_CLK_MEM : NVML_CLK_GRAPHICS, &v) != 0) return -1;
@@ -3360,27 +3619,6 @@ static int nvml_current_clock(int is_mem, int *mhz) {
     return 0;
 }
 
-#else
-/* No NVML on Windows yet: offsets and locks report "not wired up", and the
- * clock helpers the rest of the file uses see no shift and no table. */
-static int nvml_read_offsets(int *c, int *m) { (void)c; (void)m; return -1; }
-static int nvml_write_offset(int a, int b, char *e, size_t n) {
-    (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
-}
-static int nvml_offset_bounds(int a, int *l, int *h) { (void)a; (void)l; (void)h; return -1; }
-static int nvml_clock_bounds(int a, int *l, int *h)  { (void)a; (void)l; (void)h; return -1; }
-static int nvml_mem_shift(void) { return 0; }
-static int nvml_lock_clock(int a, int b, char *e, size_t n) {
-    (void)a; (void)b; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
-}
-static int nvml_unlock_clock(int a, char *e, size_t n) {
-    (void)a; snprintf(e, n, "NVML is not wired up on Windows"); return -1;
-}
-static int nvml_current_clock(int a, int *m) { (void)a; (void)m; return -1; }
-static int clk_shift(int is_mem) { (void)is_mem; return 0; }
-static int clk_effective(int is_mem, int base) { (void)is_mem; return base > 0 ? base : 0; }
-static int clk_snap_base(int is_mem, int want) { (void)is_mem; return want > 0 ? want : 0; }
-#endif
 
 /* Apply a power limit. Needs root (the service runs as root); nvidia-smi
  * prints the reason on failure, so it is captured and logged rather than
@@ -3393,15 +3631,17 @@ static int nvsmi_set_power_limit(int idx, int watts, char *err, size_t err_size)
         snprintf(err, err_size, "cannot run nvidia-smi");
         return -1;
     }
-    char line[256], last[256] = "";
+    /* The first line is the cause ("... Insufficient Permissions"); the last
+     * is only nvidia-smi's "Terminating early due to previous errors." */
+    char line[256], first[256] = "";
     while (fgets(line, sizeof(line), fp)) {
         size_t l = strlen(line);
         while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
-        if (l) { strncpy(last, line, sizeof(last) - 1); last[sizeof(last) - 1] = '\0'; }
+        if (l && !first[0]) { strncpy(first, line, sizeof(first) - 1); first[sizeof(first) - 1] = '\0'; }
     }
     int rc = pclose(fp);
     if (rc != 0) {
-        snprintf(err, err_size, "%s", last[0] ? last : "nvidia-smi failed");
+        snprintf(err, err_size, "%s", first[0] ? first : "nvidia-smi failed");
         return -1;
     }
     return 0;
@@ -3478,12 +3718,13 @@ static void trial_start(int which, int value, int prev) {
 }
 
 /* Rejected shares seen since the trial began - live while it runs, frozen at
- * the verdict once it ends, so the dashboard can show why it failed. */
-static int trial_rejects(int which) {
+ * the verdict once it ends, so the dashboard can show why it failed.
+ * `rej` is total_rejected, read by the caller: /metrics calls this with
+ * stats_mtx already held, and taking it again here - as it once did - locked
+ * the thread against itself the first time the page was polled during a
+ * trial, and every other thread behind it: the miner stopped mining. */
+static int trial_rejects(int which, uint64_t rej) {
     if (!g_trial[which].active) return g_trial[which].rejected_seen;
-    pthread_mutex_lock(&stats_mtx);
-    uint64_t rej = total_rejected;
-    pthread_mutex_unlock(&stats_mtx);
     if (rej <= g_trial[which].rejected_at_start) return 0;
     return (int)(rej - g_trial[which].rejected_at_start);
 }
@@ -3601,7 +3842,7 @@ static int overrides_set(const char *key, const char *value) {
     const char *path = dt_overrides_path();
     dagtech_mkdir_parents(path);
 
-    char tmp[1100];
+    char tmp[1200];
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *out = fopen(tmp, "w");
     if (!out) return -1;
@@ -3650,7 +3891,10 @@ static void token_init(void) {
                              g_api_token[l-1] == ' ')) g_api_token[--l] = '\0';
         }
         fclose(f);
-        if (g_api_token[0]) return;
+        if (g_api_token[0]) {
+            printf("[DagCore] Control API token: %s\n", path);
+            return;
+        }
     }
 
     unsigned char raw[32];
@@ -3701,6 +3945,23 @@ static int token_equal(const char *a, const char *b) {
     return diff == 0;
 }
 
+#ifdef _WIN32
+/* Whether this process has administrator rights: the Administrators group
+ * enabled in its token. A double-click under UAC, or a token restricted with
+ * runas /trustlevel, carries the group as deny-only and answers no. */
+static int dt_is_elevated(void) {
+    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+    PSID admins = NULL;
+    BOOL member = FALSE;
+    if (!AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                  DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins))
+        return 0;
+    if (!CheckTokenMembership(NULL, admins, &member)) member = FALSE;
+    FreeSid(admins);
+    return member ? 1 : 0;
+}
+#endif
+
 /* Decide once at startup whether the controls can work at all, and say why
  * not - the dashboard shows the reason instead of dead buttons. */
 static void control_init(void) {
@@ -3726,6 +3987,17 @@ static void control_init(void) {
         snprintf(g_control_reason, sizeof(g_control_reason), "nvidia-smi not available");
         return;
     }
+#ifdef _WIN32
+    /* nvidia-smi -pl needs an elevated process on Windows; without one every
+     * Apply failed with "Insufficient Permissions". Say so up front - the
+     * power range above is still read, so the page can show it. */
+    if (!dt_is_elevated()) {
+        snprintf(g_control_reason, sizeof(g_control_reason),
+                 "the power limit needs administrator rights on Windows - "
+                 "start the miner with start.bat");
+        return;
+    }
+#endif
     /* Clock envelope now comes from NVML, and is re-read per request rather
      * than cached: an offset change moves the whole table. A failure here does
      * not disable the controls - the power limit still works and the page
@@ -3779,7 +4051,10 @@ static void http_send_json(dt_sock_t fd, int status, const char *reason, const c
 }
 
 static void http_send_err(dt_sock_t fd, int status, const char *reason, const char *msg) {
-    char body[320];
+    /* Room for a 300-byte message (api_config's err) and the 24 bytes of JSON
+     * around it: at 320 a long one lost its closing "} and the page got
+     * invalid JSON instead of the error. */
+    char body[384];
     snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", msg);
     http_send_json(fd, status, reason, body);
 }
@@ -4006,7 +4281,7 @@ static int cfg_parse_gpu_sel(const char *v, char *norm, size_t n, char *err, siz
  * password and is 0640, and a fresh file would get the umask's 0644. */
 static int config_write_keys(const char *path, const char *const *keys, const char *const *vals,
                              int n, char *err, size_t en) {
-    char tmp[1100], bak[1100];
+    char tmp[1200], bak[1200];
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     snprintf(bak, sizeof(bak), "%s.bak", path);
     int done[16] = {0};
@@ -4067,9 +4342,18 @@ static int config_write_keys(const char *path, const char *const *keys, const ch
         remove(tmp);
         return -1;
     }
-    if (rename(tmp, path) != 0) {
-        fprintf(stderr, "[DagCore] config save: cannot replace %s: %s\n", path, strerror(errno));
-        snprintf(err, en, "cannot replace config.env: %s", strerror(errno));
+    /* dt_replace_file, not rename(): on Windows rename() refuses an existing
+     * target, so every save after the one that created config.env failed
+     * with "File exists". */
+    if (dt_replace_file(tmp, path) != 0) {
+        char why[96];
+#ifdef _WIN32
+        snprintf(why, sizeof(why), "Windows error %lu", (unsigned long)GetLastError());
+#else
+        snprintf(why, sizeof(why), "%s", strerror(errno));
+#endif
+        fprintf(stderr, "[DagCore] config save: cannot replace %s: %s\n", path, why);
+        snprintf(err, en, "cannot replace config.env: %s", why);
         remove(tmp);
         return -1;
     }
@@ -4093,6 +4377,29 @@ static int config_file_value(const char *path, const char *key, char *out, size_
     }
     fclose(f);
     return found;
+}
+
+/* Whether a saved setting can be applied by a restart. Under systemd
+ * (INVOCATION_ID) the miner just exits and the service brings it back. On
+ * Windows nothing supervises it, so it restarts itself after the shutdown -
+ * see dt_self_restart. Linux run by hand is left alone: exiting would stop
+ * it for good, so the change waits for the next start. */
+static int dt_can_restart(void) {
+    if (getenv("INVOCATION_ID") != NULL) return 1;
+#ifdef _WIN32
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* Stop, to be started again - by systemd, or by ourselves on Windows. */
+static void dt_begin_restart(void) {
+#ifdef _WIN32
+    if (getenv("INVOCATION_ID") == NULL) g_self_restart = 1;
+#endif
+    keep_alive = 0;
+    running = 0;
 }
 
 static void api_config(dt_sock_t cfd, const char *body) {
@@ -4218,19 +4525,18 @@ static void api_config(dt_sock_t cfd, const char *body) {
         return;
     }
 
-    int supervised = (getenv("INVOCATION_ID") != NULL);
+    int restart = dt_can_restart();
     char resp[240];
     snprintf(resp, sizeof(resp),
              "{\"ok\":true,\"saved\":true,\"changed\":true,\"restarting\":%s%s}",
-             supervised ? "true" : "false",
-             supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+             restart ? "true" : "false",
+             restart ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
     http_send_json(cfd, 200, "OK", resp);
     printf("[DagCore] Configuration saved to %s (%d setting%s; previous version in %s.bak)\n",
            g_config_path, n, n == 1 ? "" : "s", g_config_path);
-    if (supervised) {
-        printf("[DagCore] Exiting for restart to apply it\n");
-        keep_alive = 0;
-        running = 0;
+    if (restart) {
+        printf("[DagCore] Restarting to apply it\n");
+        dt_begin_restart();
     } else {
         printf("[DagCore] Restart the miner to apply it (not supervised)\n");
     }
@@ -4282,6 +4588,49 @@ static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *b
     }
     if (strncmp(req, "POST /api/pause ", 16) == 0) {
         api_pause(cfd, body);
+        return;
+    }
+    /* Intensity is the miner's own parameter, not the driver's: it needs a
+     * card that is mining, and nothing from nvidia-smi or NVML - so it is
+     * not held back by g_control_ok, which also stops on a missing
+     * nvidia-smi (a Windows machine, a container) or on several cards. */
+    if (strncmp(req, "POST /api/intensity", 19) == 0) {
+        if (g_num_gpus == 0) {
+            http_send_err(cfd, 409, "Conflict", "no GPU is mining - intensity applies to the GPU miner");
+            return;
+        }
+        long v;
+        if (json_get_int(body, "value", &v) != 0) {
+            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"value\\\"");
+            return;
+        }
+        if (v < 0 || v > 100) {
+            http_send_err(cfd, 400, "Bad Request", "value must be between 0 and 100");
+            return;
+        }
+        char val[16];
+        snprintf(val, sizeof(val), "%ld", v);
+        if (overrides_set("GPU_INTENSITY", val) != 0) {
+            http_send_err(cfd, 500, "Internal Server Error", "could not write overrides file");
+            return;
+        }
+        /* Intensity is fixed when the GPU buffers are allocated, so it only
+         * takes effect on a restart - by systemd, or on Windows by the miner
+         * itself. Otherwise nothing would bring it back, so we save and say
+         * so instead of exiting into nowhere. */
+        int restart = dt_can_restart();
+        char resp[240];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"saved\":true,\"restarting\":%s%s}",
+                 restart ? "true" : "false",
+                 restart ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
+        http_send_json(cfd, 200, "OK", resp);
+        if (restart) {
+            printf("[DagCore] Intensity set to %ld via control API - restarting\n", v);
+            dt_begin_restart();
+        } else {
+            printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
+        }
         return;
     }
     if (!g_control_ok) {
@@ -4355,42 +4704,6 @@ static void dagtech_handle_control(dt_sock_t cfd, const char *req, const char *b
         return;
     }
 
-    if (strncmp(req, "POST /api/intensity", 19) == 0) {
-        long v;
-        if (json_get_int(body, "value", &v) != 0) {
-            http_send_err(cfd, 400, "Bad Request", "body must contain \\\"value\\\"");
-            return;
-        }
-        if (v < 0 || v > 100) {
-            http_send_err(cfd, 400, "Bad Request", "value must be between 0 and 100");
-            return;
-        }
-        char val[16];
-        snprintf(val, sizeof(val), "%ld", v);
-        if (overrides_set("GPU_INTENSITY", val) != 0) {
-            http_send_err(cfd, 500, "Internal Server Error", "could not write overrides file");
-            return;
-        }
-        /* Intensity is fixed when the GPU buffers are allocated, so it only
-         * takes effect on a restart. systemd sets INVOCATION_ID; without it
-         * nothing would bring the miner back, so we save and say so instead
-         * of exiting into nowhere. */
-        int supervised = (getenv("INVOCATION_ID") != NULL);
-        char resp[240];
-        snprintf(resp, sizeof(resp),
-                 "{\"ok\":true,\"saved\":true,\"restarting\":%s%s}",
-                 supervised ? "true" : "false",
-                 supervised ? "" : ",\"note\":\"miner is not supervised; restart it to apply\"");
-        http_send_json(cfd, 200, "OK", resp);
-        if (supervised) {
-            printf("[DagCore] Intensity set to %ld via control API - exiting for restart\n", v);
-            keep_alive = 0;
-            running = 0;
-        } else {
-            printf("[DagCore] Intensity %ld saved; restart required (not supervised)\n", v);
-        }
-        return;
-    }
 
     /* Clock endpoints. Both take {"mhz":N} to lock, or {"reset":true} to hand
      * the domain back to the driver. */
@@ -4840,6 +5153,43 @@ static void serve_history(dt_sock_t cfd) {
     free(out);
 }
 
+/* GET /log: the kept status lines oldest first, plus the miner's clock, as
+ * /history does. */
+static void serve_log(dt_sock_t cfd) {
+    /* Escaping can grow a line; status lines are plain ASCII, so 1.1x is
+     * plenty, and a line that would not fit is left out, not cut. The four
+     * counters add at most ~130 bytes. */
+    size_t cap = 64 + (size_t)LOG_LEN * (LOG_LINE_MAX + 256);
+    char *out = malloc(cap);
+    if (!out) {
+        http_send_err(cfd, 500, "Internal Server Error", "out of memory");
+        return;
+    }
+    size_t n = (size_t)snprintf(out, cap, "{\"now\":%lld,\"lines\":[", (long long)time(NULL));
+    char esc[LOG_LINE_MAX + 96];
+    int emitted = 0;
+    pthread_mutex_lock(&log_mtx);
+    int first = (log_head - log_count + LOG_LEN) % LOG_LEN;
+    for (int i = 0; i < log_count; i++) {
+        int k = (first + i) % LOG_LEN;
+        json_escape(log_buf[k].text, esc, sizeof(esc));
+        const log_shares_t *sh = &log_buf[k].sh;
+        int w = snprintf(out + n, cap - n,
+                         "%s{\"t\":%lld,\"submitted\":%" DT_PRIu64 ",\"accepted\":%" DT_PRIu64
+                         ",\"rejected\":%" DT_PRIu64 ",\"stale\":%" DT_PRIu64 ",\"text\":\"%s\"}",
+                         emitted ? "," : "", (long long)log_buf[k].t,
+                         (unsigned long long)sh->submitted, (unsigned long long)sh->accepted,
+                         (unsigned long long)sh->rejected, (unsigned long long)sh->stale, esc);
+        if (w < 0 || (size_t)w >= cap - n - 2) break;   /* keep room for "]}" */
+        n += (size_t)w;
+        emitted++;
+    }
+    pthread_mutex_unlock(&log_mtx);
+    snprintf(out + n, cap - n, "]}");
+    http_send_json(cfd, 200, "OK", out);
+    free(out);
+}
+
 /* =========================================================================
  * Built-in Metrics Server (for Dashboard)
  * ========================================================================= */
@@ -4938,6 +5288,11 @@ static void *dagtech_metrics_thread(void *arg) {
                 dt_closesock(cfd);
                 continue;
             }
+            if (strcmp(path, "/log") == 0) {
+                serve_log(cfd);
+                dt_closesock(cfd);
+                continue;
+            }
         }
 
         /* Dashboard files. Anything that is not /metrics falls back to the
@@ -4995,11 +5350,7 @@ static void *dagtech_metrics_thread(void *arg) {
         const char *off_why = "not queried";
         if (g_control_ok) {
             off_ok = (nvml_read_offsets(&off_core, &off_mem) == 0);
-#ifndef _WIN32
-            off_why = g_nvml.why;
-#else
-            off_why = "not supported on Windows";
-#endif
+            off_why = off_ok ? "ok" : g_nvml.off_why;
         } else {
             off_why = g_control_reason;
         }
@@ -5197,7 +5548,8 @@ static void *dagtech_metrics_thread(void *arg) {
             "\"submit_inflight\":%d,"
             "\"submit_burst_max\":%d,"
             "\"submit_burst_gap_us\":%d,"
-            "\"submit_max_inflight\":%d"
+            "\"submit_max_inflight\":%d,"
+            "\"clock_controls_supported\":%s"
             "}",
             DAGCORE_VERSION, pool_host, pool_port,
             wallet, wallet + strlen(wallet) - 4,
@@ -5212,16 +5564,16 @@ static void *dagtech_metrics_thread(void *arg) {
             gpu_mem_cur,  g_mem_lo,  g_mem_hi,  g_mem_boost,
             lock_mem_eff, gpu_mem_clock_base,
             g_trial[0].status, g_trial[0].value, trial_remaining_s(0),
-            g_trial[0].prev, trial_rejects(0),
+            g_trial[0].prev, trial_rejects(0, total_rejected),
             g_trial[1].status, g_trial[1].value, trial_remaining_s(1),
-            g_trial[1].prev, trial_rejects(1),
+            g_trial[1].prev, trial_rejects(1, total_rejected),
             off_core, off_core_lo, off_core_hi,
             off_mem, off_mem_lo, off_mem_hi,
             off_ok ? "true" : "false", off_why,
             g_trial[2].status, g_trial[2].value, trial_remaining_s(2),
-            g_trial[2].prev, trial_rejects(2),
+            g_trial[2].prev, trial_rejects(2, total_rejected),
             g_trial[3].status, g_trial[3].value, trial_remaining_s(3),
-            g_trial[3].prev, trial_rejects(3),
+            g_trial[3].prev, trial_rejects(3, total_rejected),
             mem_shift, core_shift, lock_stale ? "true" : "false",
             g_control_ok ? "true" : "false", g_control_reason,
             (unsigned long long)total_hashes,
@@ -5258,7 +5610,14 @@ static void *dagtech_metrics_thread(void *arg) {
             (unsigned long long)q_queued, (unsigned long long)q_sent,
             (unsigned long long)q_over, (unsigned long long)q_full,
             (unsigned long long)q_expired, q_depth, inflight,
-            submit_burst_max, submit_burst_gap_us, submit_max_inflight);
+            submit_burst_max, submit_burst_gap_us, submit_max_inflight,
+            /* Whether this build can lock clocks and set offsets at all - both
+             * can since the Windows build drives NVML too. Kept for the page,
+             * which leaves every clock control out when it reads false (the
+             * Windows builds before that); whether NVML answers right now is
+             * offset_available. */
+            "true"
+            );
         pthread_mutex_unlock(&stats_mtx);
 
         /* Same headers as before; the body no longer has to fit a fixed
@@ -5316,6 +5675,123 @@ static BOOL WINAPI dt_console_ctrl(DWORD type) {
 }
 #endif
 
+/* Before a startup error ends the process: a miner double-clicked in Explorer
+ * has a console window of its own, which Windows closes the moment the process
+ * exits - taking the error with it, unread. Hold it open until Enter, but only
+ * then: a console shared with cmd or PowerShell stays open anyway, and with
+ * stdin redirected (a service, a script) there is nobody to press Enter. */
+static void dt_hold_console_on_error(void) {
+#ifdef _WIN32
+    DWORD procs[2], mode;
+    if (GetConsoleProcessList(procs, 2) == 1 &&
+        GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode)) {
+        fprintf(stderr, "\nPress Enter to close this window.\n");
+        (void)getchar();
+    }
+#endif
+}
+
+#ifdef _WIN32
+/* Restarting without a supervisor. After a clean shutdown the miner starts
+ * its own .exe again with the same command line, in the same console window
+ * and current directory, and exits. The new process first waits for the old
+ * one to be gone (DAGCORE_RESTART_AFTER_PID), so port 8881 and the card's
+ * memory are free before it takes them. Only the standard handles are passed
+ * on: sockets are inheritable on Windows, and an inherited copy of the
+ * metrics socket would keep the port bound after the old process exits. */
+#define DT_RESTART_ENV "DAGCORE_RESTART_AFTER_PID"
+
+static int dt_self_restart(void) {
+    char exe[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    if (n == 0 || n >= sizeof(exe)) {
+        fprintf(stderr, "[DagCore] ERROR: cannot restart: own path unknown (error %lu)\n",
+                GetLastError());
+        return -1;
+    }
+    char pid[16];
+    snprintf(pid, sizeof(pid), "%lu", (unsigned long)GetCurrentProcessId());
+    SetEnvironmentVariableA(DT_RESTART_ENV, pid);
+
+    /* CreateProcess may write into the command line, so it gets a copy. */
+    const char *orig = GetCommandLineA();
+    size_t cl = strlen(orig) + 1;
+    char *cmd = malloc(cl);
+    if (!cmd) return -1;
+    memcpy(cmd, orig, cl);
+
+    STARTUPINFOEXA si;
+    memset(&si, 0, sizeof(si));
+    si.StartupInfo.cb = sizeof(si);
+    HANDLE std3[3] = { GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE),
+                       GetStdHandle(STD_ERROR_HANDLE) };
+    HANDLE list[3];
+    int nl = 0;
+    for (int i = 0; i < 3; i++) {
+        HANDLE h = std3[i];
+        int dup = 0;
+        if (!h || h == INVALID_HANDLE_VALUE) continue;
+        for (int j = 0; j < nl; j++) if (list[j] == h) dup = 1;
+        if (!dup && SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+            list[nl++] = h;
+    }
+    SIZE_T asz = 0;
+    DWORD flags = 0;
+    if (nl > 0) {
+        InitializeProcThreadAttributeList(NULL, 1, 0, &asz);
+        si.lpAttributeList = malloc(asz);
+        if (si.lpAttributeList &&
+            InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &asz) &&
+            UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                      list, nl * sizeof(HANDLE), NULL, NULL)) {
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.StartupInfo.hStdInput  = std3[0];
+            si.StartupInfo.hStdOutput = std3[1];
+            si.StartupInfo.hStdError  = std3[2];
+            flags = EXTENDED_STARTUPINFO_PRESENT;
+        } else {
+            free(si.lpAttributeList);
+            si.lpAttributeList = NULL;
+            nl = 0;
+        }
+    }
+
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(exe, cmd, NULL, NULL, nl > 0, flags, NULL, NULL,
+                             &si.StartupInfo, &pi);
+    DWORD cerr = ok ? 0 : GetLastError();
+    if (si.lpAttributeList) {
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        free(si.lpAttributeList);
+    }
+    free(cmd);
+    if (!ok) {
+        fprintf(stderr, "[DagCore] ERROR: cannot restart %s (error %lu) - start it again "
+                        "by hand\n", exe, cerr);
+        return -1;
+    }
+    printf("[DagCore] Restarting: new process %lu\n", (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+}
+
+/* In the new process: wait, before touching anything, for the one that
+ * started it to exit. 30 s at most - its shutdown takes well under one. */
+static void dt_wait_for_restart_parent(void) {
+    const char *s = getenv(DT_RESTART_ENV);
+    if (!s || !s[0]) return;
+    DWORD pid = (DWORD)strtoul(s, NULL, 10);
+    SetEnvironmentVariableA(DT_RESTART_ENV, NULL);
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!h) return;                         /* already gone */
+    if (WaitForSingleObject(h, 30000) == WAIT_TIMEOUT)
+        fprintf(stderr, "[DagCore] WARNING: previous process %lu still running after 30 s\n",
+                (unsigned long)pid);
+    CloseHandle(h);
+}
+#endif
+
 /* =========================================================================
  * Usage / Help
  * ========================================================================= */
@@ -5354,8 +5830,7 @@ static void dagtech_reject_arg(const char *arg) {
 
 static void dagtech_usage(void) {
     printf("\n");
-    printf("  %s\n", DAGCORE_BANNER);
-    printf("  %s\n\n", DAGTECH_AUTHOR);
+    printf("  %s\n\n", DAGCORE_BANNER);
     printf("  Usage: dagcore-miner [options]\n\n");
     printf("  Options:\n");
     printf("    --wallet <addr>        Your wallet address (REQUIRED)\n");
@@ -5406,71 +5881,56 @@ static int dagtech_file_exists(const char *p) {
 
 /* Resolve the config.env path. Search order (first existing file wins):
  *   1. <exedir>/config.env          - next to the binary (e.g. install\bin\)
- *   2. <exedir>/../config.env       - install root, where the installer writes it
- *   3. ./config.env                 - current working directory
- *   4. Windows only: %ProgramData%\DAGCore\config.env - the Windows home of
- *      the configuration, next to overrides.env and the token
+ *   2. Portable layout (Windows) only: %ProgramData%\DAGCore\config.env,
+ *      where the first Windows test builds kept it - copied next to the .exe
+ *      and used from there
+ *   3. <exedir>/../config.env       - install root, where the installer writes it
+ *   4. ./config.env                 - current working directory
  *   5. $USERPROFILE/dagtech-gpu-miner/config.env  - legacy location (back-compat)
- * If none exist, returns (4) on Windows and (5) elsewhere, so a "not found"
- * message - and --save-config - point somewhere sane.
- * exe_path is typically argv[0]; pass NULL to skip the exe-relative candidates. */
-static const char *dagtech_default_config_path(const char *exe_path) {
-    static char path[1024];
+ * If none exist, returns <exedir>/config.env in the portable layout - so the
+ * dashboard's first save creates it next to the .exe - and (5) elsewhere, so a
+ * "not found" message and --save-config point somewhere sane.
+ * Uses g_exe_dir; dt_init_exe_dir() must have run. */
+static const char *dagtech_default_config_path(void) {
+    static char path[1100];
     if (path[0]) return path;
 
-    /* Derive the executable's directory (with trailing separator) from exe_path. */
-    char dir[1024];
-    char ps = '/';
-    dir[0] = '\0';
-    if (exe_path && exe_path[0]) {
-        strncpy(dir, exe_path, sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = '\0';
-        char *sep = strrchr(dir, '/');
-#ifdef _WIN32
-        { char *sep2 = strrchr(dir, '\\'); if (sep2 > sep) sep = sep2; }
-#endif
-        if (sep) { ps = *sep; *(sep + 1) = '\0'; }  /* keep trailing separator */
-        else dir[0] = '\0';
-    }
-
-    char cand[1024];
+    const char *dir = g_exe_dir;
+    char ps = dir[0] ? dir[strlen(dir) - 1] : '/';
+    char cand[1100];
 
     /* 1. <exedir>/config.env */
     if (dir[0]) {
         snprintf(cand, sizeof(cand), "%sconfig.env", dir);
         if (dagtech_file_exists(cand)) {
-            strncpy(path, cand, sizeof(path) - 1);
-            path[sizeof(path) - 1] = '\0';
+            snprintf(path, sizeof(path), "%s", cand);
             return path;
         }
     }
 
-    /* 2. <exedir>/../config.env  (install root, e.g. C:\dagtech-gpu-miner\config.env) */
-    if (dir[0]) {
-        snprintf(cand, sizeof(cand), "%s..%cconfig.env", dir, ps);
-        if (dagtech_file_exists(cand)) {
-            strncpy(path, cand, sizeof(path) - 1);
-            path[sizeof(path) - 1] = '\0';
-            return path;
-        }
-    }
-
-    /* 3. ./config.env */
-    if (dagtech_file_exists("config.env")) {
-        strncpy(path, "config.env", sizeof(path) - 1);
-        return path;
-    }
-
-#ifdef _WIN32
-    /* 4. %ProgramData%\DAGCore\config.env */
-    char win_cfg[600];
-    snprintf(win_cfg, sizeof(win_cfg), "%s\\config.env", dt_win_datadir());
-    if (dagtech_file_exists(win_cfg)) {
-        strncpy(path, win_cfg, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
+#ifdef DT_PORTABLE_LAYOUT
+    /* 2. %ProgramData%\DAGCore\config.env, copied next to the .exe first */
+    snprintf(cand, sizeof(cand), "%s" DT_SEP_STR "config.env", dt_win_datadir());
+    if (dagtech_file_exists(cand)) {
+        dt_portable_path(path, sizeof(path), "config.env");
         return path;
     }
 #endif
+
+    /* 3. <exedir>/../config.env  (install root, e.g. C:\dagtech-gpu-miner\config.env) */
+    if (dir[0]) {
+        snprintf(cand, sizeof(cand), "%s..%cconfig.env", dir, ps);
+        if (dagtech_file_exists(cand)) {
+            snprintf(path, sizeof(path), "%s", cand);
+            return path;
+        }
+    }
+
+    /* 4. ./config.env */
+    if (dagtech_file_exists("config.env")) {
+        snprintf(path, sizeof(path), "config.env");
+        return path;
+    }
 
     /* 5. legacy $USERPROFILE/dagtech-gpu-miner/config.env */
     const char *home = NULL;
@@ -5485,12 +5945,10 @@ static const char *dagtech_default_config_path(const char *exe_path) {
     else
         snprintf(path, sizeof(path), "dagtech-gpu-miner/config.env");
 
-#ifdef _WIN32
-    /* Nothing found: the legacy file is used only if it exists. */
-    if (!dagtech_file_exists(path)) {
-        strncpy(path, win_cfg, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
-    }
+#ifdef DT_PORTABLE_LAYOUT
+    /* Nothing found: the legacy file only if it exists, else next to the .exe. */
+    if (!dagtech_file_exists(path))
+        snprintf(path, sizeof(path), "%sconfig.env", dir);
 #endif
     return path;
 }
@@ -5544,15 +6002,22 @@ static void dagtech_mkdir_parents(const char *filepath) {
 }
 
 /* Default autotune cache location.
- *   Windows: unchanged - the path the installer provisions.
+ *   Portable layout (Windows): autotune.json next to the .exe, like every
+ *            other file of the miner; C:\dagtech-gpu-miner\autotune.json,
+ *            the old default, if one exists there and not next to the .exe.
  *   POSIX:   XDG basedir spec, $XDG_CACHE_HOME/dagcore-miner/autotune.json,
  *            falling back to $HOME/.cache/dagcore-miner/autotune.json. Without
  *            a usable HOME we land in the working directory so a service
  *            account with no home still starts instead of failing to write.
  * AUTOTUNE_CACHE (env var or config.env) overrides this; see main(). */
 static void dagtech_default_autotune_cache(char *out, size_t out_size) {
-#ifdef _WIN32
-    snprintf(out, out_size, "C:\\dagtech-gpu-miner\\autotune.json");
+#ifdef DT_PORTABLE_LAYOUT
+    const char *old = "C:\\dagtech-gpu-miner\\autotune.json";
+    char here[1100];
+    snprintf(here, sizeof(here), "%sautotune.json", g_exe_dir);
+    const char *pick = (!dagtech_file_exists(here) && dagtech_file_exists(old)) ? old : here;
+    if (strlen(pick) < out_size) memcpy(out, pick, strlen(pick) + 1);
+    else snprintf(out, out_size, "autotune.json");
 #else
     const char *xdg  = getenv("XDG_CACHE_HOME");
     const char *home = getenv("HOME");
@@ -5831,6 +6296,39 @@ static int dagtech_detect_threads(void) {
 /* =========================================================================
  * Main Entry Point - DagTech GPU Miner
  * ========================================================================= */
+#ifdef DT_PORTABLE_LAYOUT
+static int dt_dir_has_index(const char *d) {
+    char p[1200];
+    snprintf(p, sizeof(p), "%s" DT_SEP_STR "index.html", d);
+    return dagtech_file_exists(p);
+}
+
+/* The dashboard folder ships next to the .exe. A configured directory that
+ * holds index.html is used as given. A relative one that does not is looked
+ * for next to the .exe, so double-clicking the .exe and starting it from
+ * another folder serve the same page. Anything else - nothing configured, or
+ * a path that does not exist here, like the /opt one in config.env.example -
+ * falls back to the dashboard folder next to the .exe, if it is there. */
+static void dt_portable_dashboard_dir(void) {
+    char cand[sizeof(dashboard_dir)];
+    if (dashboard_dir[0] && dt_dir_has_index(dashboard_dir)) return;
+    int absolute = dashboard_dir[0] == '/' || dashboard_dir[0] == '\\' ||
+                   (dashboard_dir[0] && dashboard_dir[1] == ':');
+    if (dashboard_dir[0] && !absolute) {
+        snprintf(cand, sizeof(cand), "%s%s", g_exe_dir, dashboard_dir);
+        if (dt_dir_has_index(cand)) {
+            snprintf(dashboard_dir, sizeof(dashboard_dir), "%s", cand);
+            return;
+        }
+    }
+    snprintf(cand, sizeof(cand), "%sdashboard", g_exe_dir);
+    if (!dt_dir_has_index(cand)) return;
+    if (dashboard_dir[0])
+        printf("[DagCore] Dashboard: %s has no index.html; using %s\n", dashboard_dir, cand);
+    snprintf(dashboard_dir, sizeof(dashboard_dir), "%s", cand);
+}
+#endif
+
 int main(int argc, char **argv) {
     /* Flush log lines immediately — prevents output appearing in bursts when
        stdout is not a terminal (e.g. running as a background service). */
@@ -5843,6 +6341,7 @@ int main(int argc, char **argv) {
     /* Registered after signal(), so it is called first and handles Ctrl+C
      * too; the window-close case is the one signal() cannot catch. */
     SetConsoleCtrlHandler(dt_console_ctrl, TRUE);
+    dt_wait_for_restart_parent();
 #endif
 #ifndef _WIN32
     /* A client that drops the connection mid-response (a closed browser tab,
@@ -5854,7 +6353,8 @@ int main(int argc, char **argv) {
 #endif
 
     /* ---- Pass 1: look for --config <path> before loading defaults ---- */
-    const char *config_path = dagtech_default_config_path(argv[0]);
+    dt_init_exe_dir(argv[0]);
+    const char *config_path = dagtech_default_config_path();
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             config_path = argv[++i];
@@ -6031,13 +6531,17 @@ int main(int argc, char **argv) {
     printf("\n");
     printf("  ============================================\n");
     printf("  %s\n", DAGCORE_BANNER);
-    printf("  %s\n", DAGTECH_AUTHOR);
     printf("  ============================================\n\n");
+
+#ifdef DT_PORTABLE_LAYOUT
+    dt_portable_dashboard_dir();
+#endif
 
     /* Validate wallet */
     if (wallet[0] == 0) {
         fprintf(stderr, "[DagCore] ERROR: Wallet address is required!\n");
         dagtech_usage();
+        dt_hold_console_on_error();
         return 1;
     }
     if (strncmp(wallet, "0x", 2) != 0 || strlen(wallet) != 42) {
@@ -6102,11 +6606,11 @@ int main(int argc, char **argv) {
                "at most %d unanswered\n",
                submit_burst_max, submit_burst_gap_us, submit_max_inflight);
 
+    int use_gpu = 0;
 #ifdef DAGTECH_GPU
     /* List and initialize GPU */
     gpu_list_devices();
 
-    int use_gpu = 0;
     if (gpu_enabled == 1) {
         use_gpu = 1;
     } else if (gpu_enabled == 0) {
@@ -6119,12 +6623,13 @@ int main(int argc, char **argv) {
     }
 
     if (use_gpu) {
-        if (gpu_init_all(argv[0]) == 0) {
+        if (gpu_init_all() == 0) {
             gpu_enabled = 1;
             printf("[DagCore GPU] Intensity: %d | Platform: %d | GPUs active: %d\n",
                    gpu_intensity, gpu_platform, g_num_gpus);
         } else {
-            fprintf(stderr, "[DagCore GPU] GPU init failed - running CPU only.\n");
+            fprintf(stderr, "[DagCore GPU] GPU init failed%s\n",
+                    num_threads > 0 ? " - running CPU only." : ".");
             gpu_enabled = 0;
         }
     }
@@ -6132,6 +6637,21 @@ int main(int argc, char **argv) {
     printf("[DagCore] Built without GPU support (no -DDAGTECH_GPU).\n");
     gpu_enabled = 0;
 #endif
+
+    /* No card and no CPU threads: nothing would be mined, yet the miner would
+     * connect, report "mining" and 0 H/s for as long as it ran - which is what
+     * a Windows folder without dagcore_gpu.cl did. Stop and say why instead;
+     * a GPU rig that cannot mine is a broken setup, not a CPU rig. */
+    if (gpu_enabled != 1 && num_threads == 0) {
+        fprintf(stderr, "[DagCore] ERROR: no GPU is mining (%s) and THREADS is 0, so there "
+                        "is nothing to mine.\n",
+                use_gpu ? "it failed to start - see the error above" : "disabled");
+        fprintf(stderr, "[DagCore]        %s, or mine on the CPU with --threads -1 "
+                        "(THREADS=-1 in config.env).\n",
+                use_gpu ? "Fix the GPU" : "Enable the GPU (GPU_ENABLED=1, no --no-gpu)");
+        dt_hold_console_on_error();
+        return 1;
+    }
 
     printf("\n");
 
@@ -6408,6 +6928,18 @@ int main(int argc, char **argv) {
                 int up_h = (int)(uptime / 3600);
                 int up_m = (int)((uptime % 3600) / 60);
 
+                /* One read of the share counters, for the line and for /log,
+                 * so the dashboard's Shares card can show exactly what the
+                 * line says. */
+                log_shares_t _sh;
+                pthread_mutex_lock(&stats_mtx);
+                _sh.submitted = total_submitted;
+                _sh.accepted  = total_accepted;
+                _sh.rejected  = total_rejected;
+                _sh.stale     = total_stale;
+                pthread_mutex_unlock(&stats_mtx);
+
+                char _line[LOG_LINE_MAX];
                 if (gpu_enabled == 1) {
 #ifdef DAGTECH_GPU
                     if (g_num_gpus > 1) {
@@ -6419,39 +6951,40 @@ int main(int argc, char **argv) {
                                      _gi, g_gpus[_gi].hashrate);
                             strncat(_gd, _t, sizeof(_gd) - strlen(_gd) - 1);
                         }
-                        printf("[DagCore] %.2f H/s | CPU: %.2f H/s%s | "
+                        snprintf(_line, sizeof(_line), "[DagCore] %.2f H/s | CPU: %.2f H/s%s | "
                                "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                               " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                               " (sub/acc/rej/stale) | Uptime: %dh%dm",
                                current_hashrate, cpu_hashrate, _gd,
-                               (unsigned long long)total_submitted,
-                               (unsigned long long)total_accepted,
-                               (unsigned long long)total_rejected,
-                               (unsigned long long)total_stale,
+                               (unsigned long long)_sh.submitted,
+                               (unsigned long long)_sh.accepted,
+                               (unsigned long long)_sh.rejected,
+                               (unsigned long long)_sh.stale,
                                up_h, up_m);
                     } else
 #endif
                     {
-                    printf("[DagCore] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
+                    snprintf(_line, sizeof(_line), "[DagCore] %.2f H/s | CPU: %.2f H/s | GPU: %.2f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                           " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                           " (sub/acc/rej/stale) | Uptime: %dh%dm",
                            current_hashrate, cpu_hashrate, gpu_hashrate,
-                           (unsigned long long)total_submitted,
-                           (unsigned long long)total_accepted,
-                           (unsigned long long)total_rejected,
-                           (unsigned long long)total_stale,
+                           (unsigned long long)_sh.submitted,
+                           (unsigned long long)_sh.accepted,
+                           (unsigned long long)_sh.rejected,
+                           (unsigned long long)_sh.stale,
                            up_h, up_m);
                     }
                 } else {
-                    printf("[DagCore] %.1f H/s | "
+                    snprintf(_line, sizeof(_line), "[DagCore] %.1f H/s | "
                            "Shares: %" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64 "/%" DT_PRIu64
-                           " (sub/acc/rej/stale) | Uptime: %dh%dm\n",
+                           " (sub/acc/rej/stale) | Uptime: %dh%dm",
                            current_hashrate,
-                           (unsigned long long)total_submitted,
-                           (unsigned long long)total_accepted,
-                           (unsigned long long)total_rejected,
-                           (unsigned long long)total_stale,
+                           (unsigned long long)_sh.submitted,
+                           (unsigned long long)_sh.accepted,
+                           (unsigned long long)_sh.rejected,
+                           (unsigned long long)_sh.stale,
                            up_h, up_m);
                 }
+                status_line(_line, &_sh);
 
                 last_total = h;
                 last_cpu_h = ch;
@@ -6489,6 +7022,11 @@ int main(int argc, char **argv) {
     printf("[DagCore] Shutdown complete. Total hashes: %" DT_PRIu64 "\n",
            (unsigned long long)total_hashes);
 #ifdef _WIN32
+    if (g_self_restart && dt_self_restart() != 0) {
+        dt_hold_console_on_error();
+        g_main_done = 1;
+        return 1;
+    }
     g_main_done = 1;          /* releases a console handler waiting on a close */
 #endif
     return 0;

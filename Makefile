@@ -1,9 +1,17 @@
 # Makefile - DagCore Miner
 #
-#   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
-#   make cpu            -> dagcore-miner-cpu  (without OpenCL)
-#   make windows        -> dagcore-miner.exe + dagcore-miner-cpu.exe, cross-compiled
-#                          with MinGW-w64 (apt install mingw-w64)
+#   make                -> build/linux/dagcore-miner      (GPU + CPU, via OpenCL)
+#   make cpu            -> build/linux/dagcore-miner-cpu  (without OpenCL)
+#   make linux          -> build/linux: both of them
+#   make linux-package  -> dist/linux: the Linux kit, with SHA256SUMS
+#   make windows        -> build/win: dagcore-miner.exe + dagcore-miner-cpu.exe,
+#                          cross-compiled with MinGW-w64 (apt install mingw-w64),
+#                          and the Windows config.env.example
+#   make windows-package -> dist/windows: the folder to copy to Windows, with
+#                          SHA256SUMS
+#   make release-linux  -> dist/dagcore-miner-<version>-linux-x64.tar.gz
+#   make release-windows -> dist/dagcore-miner-<version>-windows-x64.zip
+#   make release        -> both archives
 #   make warn           -> syntax check with -Wall -Wextra
 #   make install        -> binary + kernel in $(PREFIX)/bin, the dashboard in
 #                          $(PREFIX)/share/dagcore-miner, config.env.example
@@ -51,8 +59,15 @@ DASHBOARD := dashboard/index.html dashboard/help.html \
 DASH_OFL  := dashboard/OFL.txt
 CONFIG_EX := config.env.example
 
-BIN_GPU := dagcore-miner
-BIN_CPU := dagcore-miner-cpu
+# Built into build/linux, never into the source tree, as the Windows pair is
+# into build/win. The binaries alone do not run from there - the GPU one looks
+# for dagcore_gpu.cl next to itself - so dist/linux is the folder to run or
+# ship, and make install takes them from here.
+LINUX_BUILD := build/linux
+BIN_GPU     := $(LINUX_BUILD)/dagcore-miner
+BIN_CPU     := $(LINUX_BUILD)/dagcore-miner-cpu
+# Exactly what goes into a Linux release, the counterpart of dist/windows.
+LINUX_PKG   := dist/linux
 
 # Windows cross-build. The OpenCL headers are the same ones the Linux build uses;
 # they are exposed through a directory of their own because -I/usr/include
@@ -69,8 +84,29 @@ WIN_OPENCL_LIB := $(WIN_BUILD)/libOpenCL.a
 WIN_CFLAGS     := -std=gnu11 -pthread -O3 -funroll-loops -Wall
 WIN_LDFLAGS    := -static
 WIN_LDLIBS     := -lws2_32 -lbcrypt -lpthread -lm
-BIN_GPU_WIN    := dagcore-miner.exe
-BIN_CPU_WIN    := dagcore-miner-cpu.exe
+# Built into build/win, never into the source tree; only the package copies them.
+BIN_GPU_WIN    := $(WIN_BUILD)/dagcore-miner.exe
+BIN_CPU_WIN    := $(WIN_BUILD)/dagcore-miner-cpu.exe
+# The example config for Windows is made from the Linux one: same keys, same
+# text, with the Linux paths replaced by win/config.env.sed. A Linux path that
+# survives fails the build rather than ship a config pointing into /opt.
+WIN_CONFIG_EX  := $(WIN_BUILD)/config.env.example
+WIN_CONFIG_SED := win/config.env.sed
+# Exactly what is unzipped on a new machine, and nothing else.
+WIN_PKG        := dist/windows
+# The getting-started page sits next to the .exe, where a user who has just
+# unzipped the folder sees it first; it takes its style from dashboard/.
+README_HTML    := readme.html
+# Starts the miner as administrator, which the power limit needs on Windows.
+WIN_START_BAT  := win/start.bat
+
+# Release archives: dist/linux and dist/windows, each in a folder named like
+# the archive, so unpacking gives one folder rather than loose files. The
+# version is the one the binary reports, read from the source.
+VERSION     := $(shell sed -n 's/^\#define DAGCORE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' $(SRC))
+REL_LINUX   := dagcore-miner-$(VERSION)-linux-x64
+REL_WINDOWS := dagcore-miner-$(VERSION)-windows-x64
+REL_STAGE   := dist/.release
 
 # The installer's location, so that a hand "make install" over an installed rig
 # replaces what its service runs. Until 1.2.1 it was /usr/local, which nothing
@@ -82,23 +118,108 @@ SHAREDIR := $(PREFIX)/share/dagcore-miner
 # install payload. Overridable for packagers who want it elsewhere.
 SYSCONFDIR ?= /etc/dagcore-miner
 
-.PHONY: all cpu windows check check-windows warn install uninstall clean help
+.PHONY: all cpu linux linux-package windows windows-package release release-linux \
+        release-windows release-version check check-windows warn install uninstall clean help
 all: $(BIN_GPU)
 
 # $(KERNEL) is a prerequisite only for consistency: it is not compiled, it is read
 # at runtime and handed to clCreateProgramWithSource.
 $(BIN_GPU): $(SRC) $(HDR) $(KERNEL)
+	@mkdir -p $(LINUX_BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(GPU_CPPFLAGS) $< -o $@ $(LDFLAGS) $(GPU_LDLIBS) $(LDLIBS)
 
 cpu: $(BIN_CPU)
 $(BIN_CPU): $(SRC) $(HDR)
+	@mkdir -p $(LINUX_BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-windows: $(BIN_GPU_WIN) $(BIN_CPU_WIN)
+linux: $(BIN_GPU) $(BIN_CPU)
 
+# The Linux counterpart of windows-package: the same layout, the files the
+# miner wants next to itself, and SHA256SUMS over the rest, run from inside
+# the folder. The config example needs no rewriting here: its paths are the
+# Linux ones.
+linux-package: linux
+	rm -rf $(LINUX_PKG)
+	mkdir -p $(LINUX_PKG)/dashboard
+	cp $(BIN_GPU) $(BIN_CPU) $(KERNEL) $(CONFIG_EX) $(LINUX_PKG)/
+	cp $(DASHBOARD) $(DASH_OFL) $(LINUX_PKG)/dashboard/
+	cd $(LINUX_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
+	    xargs sha256sum > SHA256SUMS
+	@echo "linux-package: $(LINUX_PKG) - the Linux kit"
+
+windows: $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(WIN_CONFIG_EX)
+
+$(WIN_CONFIG_EX): $(CONFIG_EX) $(WIN_CONFIG_SED)
+	@mkdir -p $(WIN_BUILD)
+	sed -f $(WIN_CONFIG_SED) $< > $@.tmp
+	@if grep -nE '/etc/|/var/lib|/opt/|/usr/|XDG_|\$$HOME|\.cache/' $@.tmp; then \
+	    echo "$@: Linux paths left (above) - update $(WIN_CONFIG_SED)"; \
+	    rm -f $@.tmp; exit 1; \
+	fi
+	mv $@.tmp $@
+
+# Everything a Windows user unzips, in one folder: the miner looks for all of
+# it next to the .exe. SHA256SUMS covers every other file in it, with paths
+# relative to the folder, so "sha256sum -c SHA256SUMS" runs from inside it.
+windows-package: windows
+	rm -rf $(WIN_PKG)
+	mkdir -p $(WIN_PKG)/dashboard
+	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(README_HTML) \
+	    $(WIN_START_BAT) $(WIN_PKG)/
+	cp $(DASHBOARD) $(DASH_OFL) $(WIN_PKG)/dashboard/
+	cd $(WIN_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
+	    xargs sha256sum > SHA256SUMS
+	@echo "windows-package: $(WIN_PKG) - copy that folder to the Windows machine"
+
+# What a GitHub release attaches. Each archive holds its kit, unchanged, in a
+# folder of the archive's name; SHA256SUMS inside still checks from there.
+release: release-linux release-windows
+
+release-version:
+	@if [ -z "$(VERSION)" ]; then \
+	    echo "release: no DAGCORE_VERSION found in $(SRC)"; exit 1; \
+	fi
+
+# GNU tar, as on any Linux: numeric root ownership and sorted names, so the
+# archive does not carry the build user's name or the directory's order.
+release-linux: release-version linux-package
+	rm -rf $(REL_STAGE) dist/$(REL_LINUX).tar.gz
+	mkdir -p $(REL_STAGE)
+	cp -rp $(LINUX_PKG) $(REL_STAGE)/$(REL_LINUX)
+	cd $(REL_STAGE) && tar --sort=name --owner=0 --group=0 --numeric-owner \
+	    -czf ../$(REL_LINUX).tar.gz $(REL_LINUX)
+	rm -rf $(REL_STAGE)
+	@echo "release-linux: dist/$(REL_LINUX).tar.gz"
+
+# zip where it is installed (apt install zip), else bsdtar (libarchive-tools
+# on Linux; Windows 10 and later ship it as System32\tar.exe, which Git Bash
+# hides behind its own GNU tar, so it is called by its full path).
+release-windows: release-version windows-package
+	rm -rf $(REL_STAGE) dist/$(REL_WINDOWS).zip
+	mkdir -p $(REL_STAGE)
+	cp -rp $(WIN_PKG) $(REL_STAGE)/$(REL_WINDOWS)
+	cd $(REL_STAGE) && \
+	if command -v zip >/dev/null 2>&1; then \
+	    zip -qrX ../$(REL_WINDOWS).zip $(REL_WINDOWS); \
+	elif command -v bsdtar >/dev/null 2>&1; then \
+	    bsdtar -a -cf ../$(REL_WINDOWS).zip $(REL_WINDOWS); \
+	elif [ -n "$$SYSTEMROOT" ] && command -v cygpath >/dev/null 2>&1 && \
+	     [ -x "$$(cygpath -u "$$SYSTEMROOT")/System32/tar.exe" ]; then \
+	    "$$(cygpath -u "$$SYSTEMROOT")/System32/tar.exe" -a -cf ../$(REL_WINDOWS).zip $(REL_WINDOWS); \
+	else \
+	    echo "release-windows: no zip or bsdtar found (apt install zip)"; exit 1; \
+	fi
+	rm -rf $(REL_STAGE)
+	@echo "release-windows: dist/$(REL_WINDOWS).zip"
+
+# Removed first: where ln -s copies instead of linking (Git Bash on Windows
+# without symlink rights), a second run - make check forces one - would copy
+# the headers into the copy, as include/CL/CL. On Linux it removes the link only.
 $(WIN_BUILD)/include/CL:
 	@mkdir -p $(WIN_BUILD)/include
-	ln -sfn $(OPENCL_HEADERS) $@
+	rm -rf $@
+	ln -s $(OPENCL_HEADERS) $@
 
 $(WIN_OPENCL_LIB): $(WIN_OPENCL_DEF)
 	@mkdir -p $(WIN_BUILD)
@@ -109,6 +230,7 @@ $(BIN_GPU_WIN): $(SRC) $(HDR) $(KERNEL) $(WIN_OPENCL_LIB) | $(WIN_BUILD)/include
 	    $(WIN_LDFLAGS) -L$(WIN_BUILD) -lOpenCL $(WIN_LDLIBS)
 
 $(BIN_CPU_WIN): $(SRC) $(HDR)
+	@mkdir -p $(WIN_BUILD)
 	$(MINGW_CC) $(WIN_CFLAGS) $(CPPFLAGS) $< -o $@ $(WIN_LDFLAGS) $(WIN_LDLIBS)
 
 # Builds every variant from scratch. Catches breakage that shows up on one path
@@ -124,7 +246,7 @@ check:
 
 check-windows:
 	@if command -v $(MINGW_CC) >/dev/null 2>&1; then \
-	    $(MAKE) --no-print-directory -B $(BIN_GPU_WIN) $(BIN_CPU_WIN) && \
+	    $(MAKE) --no-print-directory -B $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(WIN_CONFIG_EX) && \
 	    echo "check: both Windows variants (GPU + CPU) compile and link"; \
 	else \
 	    echo "check: SKIPPED Windows variants - $(MINGW_CC) not found (apt install mingw-w64)"; \
@@ -156,7 +278,7 @@ install: $(BIN_GPU)
 	@echo "start the miner with: --config $(SYSCONFDIR)/config.env"
 
 uninstall:
-	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
+	$(RM) $(DESTDIR)$(BINDIR)/$(notdir $(BIN_GPU)) $(DESTDIR)$(BINDIR)/$(KERNEL)
 	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html \
 	      $(DESTDIR)$(SHAREDIR)/dashboard/help.html \
 	      $(DESTDIR)$(SHAREDIR)/dashboard/fonts.css \
@@ -169,11 +291,16 @@ uninstall:
 	    echo "kept: $(SYSCONFDIR)/config.env (remove it by hand if you want it gone)" || \
 	    rmdir "$(DESTDIR)$(SYSCONFDIR)" 2>/dev/null || true
 
+# The two root binaries are what builds before build/linux left behind; they
+# go too, so an old one is never mistaken for the current build.
 clean:
-	$(RM) $(BIN_GPU) $(BIN_CPU) $(BIN_GPU_WIN) $(BIN_CPU_WIN)
-	$(RM) -r $(WIN_BUILD)
+	$(RM) -r $(LINUX_BUILD) $(LINUX_PKG)
+	$(RM) -r $(WIN_BUILD) $(WIN_PKG)
+	$(RM) -r $(REL_STAGE) dist/dagcore-miner-*.tar.gz dist/dagcore-miner-*.zip
+	$(RM) dagcore-miner dagcore-miner-cpu
+	-rmdir build dist 2>/dev/null || true
 
 help:
-	@printf '%s\n' 'targets: all cpu windows check warn install uninstall clean' \
+	@printf '%s\n' 'targets: all cpu linux linux-package windows windows-package release release-linux release-windows check warn install uninstall clean' \
 	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...' \
 	                '       MINGW_CC=... OPENCL_HEADERS=... (windows)'

@@ -131,17 +131,21 @@ are from an RTX 3080 running this miner.</p>
 <h2>1. Reading the dashboard</h2>
 
 <h3>Hashrate</h3>
-<p>Three figures: <b>Total</b>, <b>GPU</b> and <b>CPU</b>. On a GPU rig the GPU
-number is essentially the total — on the RTX 3080 it is about 1.61 MH/s of
-1.62 MH/s, with the two CPU threads contributing roughly 7 kH/s, under half a
-percent. Units switch by themselves: H/s, kH/s, MH/s, GH/s.</p>
+<p>One figure for each part that mines: <b>GPU</b> for the card(s), <b>CPU</b>
+for the CPU threads, and <b>Total</b>, their sum, only when both mine. A GPU
+rig mines on the card alone by default (<code>THREADS=0</code>), so it shows
+the GPU figure and no CPU or Total card; a CPU-only machine shows only the CPU
+one. With CPU threads added, the GPU number is still essentially the total —
+on the RTX 3080 it is about 1.61 MH/s of 1.62 MH/s, with two CPU threads
+contributing roughly 7 kH/s, under half a percent. Units switch by themselves:
+H/s, kH/s, MH/s, GH/s.</p>
 <p>The figure is an average over the last ten seconds, not an instant reading,
 so it moves smoothly. A drop that lasts one ten-second tick is noise; a drop
 that stays is not.</p>
 
 <h3 id="effective">Effective hashrate</h3>
-<p>Next to the total there is a second figure. <b>Total</b> is the raw work of
-the card: every hash it computes. <b>Effective</b> is the work the pool
+<p>Next to the hashrate there is a second figure. The hashrate is the raw work
+of the card: every hash it computes. <b>Effective</b> is the work the pool
 accepted: the accepted shares of the last ten minutes, each counted as the
 hashes it takes on average to find a share at its difficulty. The percentage
 compares the two over the same ten minutes. On the RTX 3080 in normal
@@ -183,6 +187,16 @@ shows the whole half hour. Nothing is written to disk: when the miner
 restarts, the chart starts empty. It is there to show shape:
 a flat line is healthy, a sawtooth means something is throttling, a cliff
 means the miner reconnected or the card stopped.</p>
+
+<h3 id="log">Log</h3>
+<p>The status line the miner prints in its console every 10 seconds, the last
+100 lines of it (about sixteen minutes): hashrate (total, CPU, GPU or each card), shares as
+submitted/accepted/rejected/stale, and uptime. The dashboard shows the time
+each line was printed and the hashrates in the same units as the rest of the
+page (1.61 MH/s); the console keeps the raw figure (1610100.36 H/s). Like the
+chart, it is kept in memory and starts empty when the miner restarts. The
+newest line is at the top; scroll down to look back, and the lines you are
+reading stay in place while new ones arrive above them.</p>
 
 <h3>Session, rig</h3>
 <ul>
@@ -229,6 +243,12 @@ is the cause.</div>
 
 <p>The bar under the three numbers shows their proportions. A healthy bar is
 almost entirely green with a thin amber sliver.</p>
+
+<p>The Shares card shows the counters of the newest line in the
+<a href="#log">log</a>, so its numbers are always the ones on the log's top
+line. That line is printed every 10 seconds, so the card can be up to 10
+seconds behind the pool; until the first line exists, a few seconds after a
+start, it shows the live counters instead.</p>
 <a class="up" href="#top">back to top</a>
 </section>
 
@@ -247,6 +267,11 @@ so 16384 work-items is about 2 GB. It does not change while mining.</li>
 <li><b>CPU temperature</b> — the host processor, read from the kernel. Same
 colour thresholds. Unrelated to the GPU.</li>
 </ul>
+<p>A reading the machine cannot give is left out, and the whole card when none
+is available — a computer without an NVIDIA card, or without its driver. The
+GPU readings come from the NVIDIA driver: through <code>nvidia-smi</code> on
+Linux, through <code>nvml.dll</code> (or <code>nvidia-smi</code>) on Windows.
+The CPU temperature is Linux-only for now.</p>
 
 <div class="note warn"><b>Memory temperature is not shown, and cannot be.</b>
 The NVIDIA driver on Linux does not expose GDDR6X memory junction temperature
@@ -299,7 +324,10 @@ pool, before anything is sent.</p>
 <p><b>Saving restarts the miner</b>, as a change of intensity does, and the page
 reconnects by itself. The file is rewritten in place: every other line and
 comment is kept, and the previous version is saved next to it as
-<code>config.env.bak</code>.</p>
+<code>config.env.bak</code>. Which file that is shows under the block's
+title: on Linux usually <code>/etc/dagcore-miner/config.env</code>; on Windows
+the <code>config.env</code> in the miner's own folder, next to the
+<code>.exe</code> — created there by the first save if it did not exist.</p>
 <p><b>Locked fields.</b> A setting given on the miner's command line wins over
 <code>config.env</code> on every start, so changing it here would change
 nothing. Such fields are shown but locked, marked <i>set on the command
@@ -329,6 +357,20 @@ if efficiency goes up and hashrate barely moves, the lower limit was worth
 it.</p>
 <p>This is the one setting that stays usable while a clock test is running,
 and it takes effect immediately with no test of its own.</p>
+
+<p class="note warn">On Windows clock offsets cannot be set from the miner: the
+Windows driver refuses them ("Not Supported"), so the memory and core offsets
+are not shown. The clock locks, the power limit and GPU intensity are there as
+on Linux, but a memory lock cannot go above the clock the driver allows while
+computing (9251 MHz on an RTX 3080). Raise the memory with
+<a href="https://www.msi.com/Landing/afterburner" target="_blank" rel="noopener">MSI Afterburner</a>
+instead: Memory clock here shows the clock that results, but the lock range
+does not know about Afterburner's offset, so leave the memory lock off.
+Afterburner's offset moves the clock one to one, the Linux offset below by
+half: +1200 here is about +600 there. Without it Windows mines slower — on an
+RTX 3080 at 300 W, 1.43–1.53 MH/s at 9251 MHz, against 1.63 MH/s at 10277 MHz
+raised in Afterburner and 1.61 MH/s on Linux with +1200. The locks and the
+power limit need the miner started as administrator (<code>start.bat</code>).</p>
 
 <h3>Memory offset — the main tuning knob</h3>
 <p><b>Why this one.</b> The algorithm this miner runs is scrypt with N=1024,
@@ -360,8 +402,10 @@ the test exists and why it reverts by itself.</div>
 work-items keep the card busier between round trips.</p>
 <p><b>Why it needs a restart.</b> The scratchpad buffers are allocated once,
 when the GPU is initialised. Changing their size means allocating again, which
-means starting over. The dashboard saves the value and lets systemd restart the
-miner; it comes back in a few seconds and the page reconnects by itself.</p>
+means starting over. The dashboard saves the value and the miner restarts —
+systemd brings it back on Linux, and on Windows it starts itself again in the
+same window. It comes back in a few seconds and the page reconnects by
+itself.</p>
 <p><b>Why 100 is not a magic number.</b> The request is clamped to what VRAM
 can actually hold. Intensity 100 asks for 2<sup>20</sup> work-items, which at
 128 KB each would be 128 GB — far past any card. On the 3080 the limit works
@@ -546,7 +590,8 @@ already back on the card and nothing was saved. Try a smaller step.</div>
 <table>
 <tr><th>Message</th><th>Means</th><th>What to do</th></tr>
 <tr><td>Miner is restarting to apply the new intensity…</td>
-    <td>Expected. Intensity needs a restart; systemd brings the miner back.</td>
+    <td>Expected. Intensity needs a restart; systemd (or, on Windows, the
+    miner itself) brings the miner back.</td>
     <td>Wait. The page reconnects by itself, usually within 10–20 s.</td></tr>
 <tr><td>Miner restarted — running again</td>
     <td>It came back and the new value is live.</td>

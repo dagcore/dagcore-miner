@@ -81,54 +81,136 @@ account; they are not a signature.
 
 ## Windows (experimental)
 
-The Windows build is for testing only. It is cross-compiled on Linux, has not
-been through a real test yet, and has no service, no installer and no GPU
-tuning. The steps below run it by hand, CPU-only, on a machine without an
-NVIDIA card.
+The Windows build is for testing. It has run by hand on Windows 11 with an
+RTX 3080, GPU and CPU, against the public pool, but it has no service, no
+installer, and no GPU tuning beyond the power limit and intensity. Do not
+leave a rig on it unattended yet.
 
-**Build it** on a Linux machine with MinGW-w64 (`sudo apt install mingw-w64`):
+**Build the kit** on Linux with MinGW-w64 (`sudo apt install mingw-w64`):
 
 ```sh
-make windows    # -> dagcore-miner-cpu.exe and dagcore-miner.exe
+make windows-package    # -> dist/windows/
 ```
 
-**Copy to the Windows machine**, all into one folder, for example
-`C:\DAGCore`:
+It also builds on Windows itself, without administrator rights — see
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#building).
 
-- `dagcore-miner-cpu.exe`
-- the `dashboard` folder, whole
+**`dist/windows` is the whole kit.** Copy that folder to the Windows machine,
+somewhere you can write to — for example `C:\DAGCore`, not `Program Files`.
+It holds:
 
-Nothing else is needed: the `.exe` has no DLLs of its own to bring along.
-(`dagcore-miner.exe` is the GPU build; it also needs `dagcore_gpu.cl` next to it
-and an OpenCL driver, and is not covered here.)
+| File | What |
+|------|------|
+| `dagcore-miner.exe` | GPU build (and CPU); needs an NVIDIA driver, which brings OpenCL |
+| `dagcore-miner-cpu.exe` | CPU only, for a machine without an NVIDIA card |
+| `dagcore_gpu.cl` | The GPU kernel, read at every start |
+| `dashboard\` | The dashboard's pages |
+| `config.env.example` | Settings, written for Windows |
+| `readme.html` | A getting-started page; opens with a double-click, offline |
+| `start.bat` | Starts `dagcore-miner.exe` as administrator, which the power limit needs |
+| `SHA256SUMS` | Checksums of all of the above |
 
-**Run it** from a Command Prompt or PowerShell opened in that folder:
+Nothing else is needed: the `.exe` files have no DLLs of their own to bring
+along.
+
+**Check the files** after copying, from PowerShell in that folder. Every line
+must say `True`:
+
+```powershell
+Get-Content SHA256SUMS | ForEach-Object {
+    $hash, $file = $_ -split '\s+\*?', 2
+    '{0,-5} {1}' -f ((Get-FileHash $file -Algorithm SHA256).Hash -eq $hash), $file
+}
+```
+
+`False` means the file is damaged or incomplete: copy it again. As with the
+Linux binaries, the sums catch a broken copy, not a tampered kit.
+
+**Set the wallet.** Rename `config.env.example` to `config.env` and fill in
+`WALLET=`, or give `--wallet` on the command line instead. It needs no
+`DASHBOARD_DIR`; the line is there, commented out, only for serving a copy
+kept elsewhere.
+
+**Run it** by double-clicking `dagcore-miner.exe` (or `dagcore-miner-cpu.exe`)
+when `config.env` has the wallet, or from a Command Prompt or PowerShell:
 
 ```bat
-cd C:\DAGCore
-dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1 --dashboard-dir dashboard
+C:\DAGCore\dagcore-miner.exe --wallet 0xYOURADDRESS
+C:\DAGCore\dagcore-miner-cpu.exe --wallet 0xYOURADDRESS --threads -1
 ```
 
-`--threads -1` uses half the logical cores; a number sets them exactly. Left
-out, the CPU build warns that its default, `0` (GPU only), would mine nothing
-and uses `-1` instead. Windows may ask whether to allow network access the
-first time.
+It finds everything in its own folder, whichever folder it is started from.
+The GPU build mines on the card only (`THREADS=0`); for the CPU build,
+`--threads -1` uses half the logical cores and a number sets them exactly.
+Left out, the CPU build warns that its default, `0` (GPU only), would mine
+nothing and uses `-1` instead. Windows may ask whether to allow network
+access the first time.
 
-Open **http://localhost:8881/** for the dashboard. Stop the miner with Ctrl+C
-or by closing the window; either way it shuts down cleanly.
+To change the power limit from the dashboard, start it with **`start.bat`**
+instead: it asks for administrator rights (the UAC prompt) and starts
+`dagcore-miner.exe` in a window of its own, passing on any arguments
+(`start.bat --threads 1`). Refused, it starts nothing and says how to mine
+without them.
 
-**Files it creates** in `%ProgramData%\DAGCore\` (usually
-`C:\ProgramData\DAGCore\`): `api-token`, and `overrides.env` once a setting
-is changed from the dashboard. Settings can also go in a `config.env` there, in
-the same format as [config.env.example](config.env.example) — with it, the
-command line shrinks to `dagcore-miner-cpu.exe`. A `config.env` in the folder
-you run it from is found too, and takes precedence.
+Open **http://localhost:8881/** for the dashboard. To reach it from another
+computer, set `METRICS_BIND=0.0.0.0` and allow TCP 8881 in Windows Firewall
+for the local network only; read the [security notes](docs/INSTALL.md#security)
+first. Stop the miner with Ctrl+C or by closing the window; either way it
+shuts down cleanly.
 
-**Limits of this build.** On a CPU-only machine the power, clock and intensity
-controls say they are unavailable, which is correct. The token file is not
-protected from other accounts on the same computer yet — do not test on a
-shared machine. What else is missing is listed in
-[DEVELOPMENT.md](docs/DEVELOPMENT.md#not-done-yet).
+**Everything stays in that folder.** The miner reads `config.env`,
+`dashboard\` and `dagcore_gpu.cl` from next to the `.exe`, and writes there
+too: `api-token` on the first start, `config.env` when Mining configuration is
+saved from the dashboard (created if it was not there), `overrides.env` once a
+tuning setting is changed, and `autotune.json` for the GPU build. A
+`DASHBOARD_DIR` that does not exist on this machine — the `/opt/...` one in
+the Linux `config.env.example`, say — falls back to the `dashboard` folder
+next to the `.exe`. The first test builds kept `config.env`, `overrides.env`
+and `api-token` in `%ProgramData%\DAGCore\`; a file found only there is copied
+next to the `.exe` at the next start, and the console says so. The token stays
+the same, so a browser that has it keeps working, and that old folder can be
+deleted. Every start prints which token file is in use (`Control API token:`).
+
+**Limits of this build.** Temperature, load, power, memory and clocks are
+read from the NVIDIA driver. Clock locks work, through NVML as on Linux.
+
+**Clock offsets cannot be set from the miner on Windows.** The Windows
+GeForce driver refuses them through NVML ("Not Supported"), so the dashboard
+hides the offset rows and says to set them with MSI Afterburner. Tuning on Windows is yours to do
+with **[MSI Afterburner](https://www.msi.com/Landing/afterburner)**, running next to the miner. The miner reads the
+clocks that result and shows them as they are: with the memory raised in
+Afterburner to 10277 MHz, the dashboard and `nvidia-smi` both showed 10277.
+Two things it cannot know about. The lock range (`gpu_mem_clock_max`) stays at
+the card's stock table (9501 MHz on an RTX 3080), so leave the memory lock
+off while Afterburner raises the memory; the two were not tested together.
+And the offset belongs to Afterburner: it holds until Reset or a reboot, and
+comes back after a reboot only if Afterburner applies it at startup.
+
+**Expect less hashrate on Windows without tuning.** This algorithm is
+memory-bound, and without an offset the driver keeps the memory at its
+compute clock, 9251 MHz on an RTX 3080. Measured on the same RTX 3080 at 300 W:
+
+| | Memory clock | Hashrate |
+|---|---|---|
+| Windows, no tuning | 9251 MHz | 1.43–1.53 MH/s |
+| Windows, memory raised in Afterburner | 10277 MHz | 1.63 MH/s |
+| Linux, memory offset +1200 set from the miner | 9851 MHz | 1.61 MH/s |
+
+The numbers do not mean the same thing in both tools. Afterburner's memory
+offset moves the clock one to one (+355 raised it from 9251 to 9605 MHz); the
+miner's offset on Linux moves it by half (+1200 gives +600). So +1200 on Linux
+is about +600 in Afterburner.
+
+The power limit and the clock controls work only when
+the miner runs as administrator
+(`start.bat`, or right-click `dagcore-miner.exe` → Run as administrator); otherwise the
+dashboard says so and leaves it unavailable. There is no service: Save & restart
+works because the miner starts itself again, in the same window, but nothing
+brings it back after a crash or a reboot. The GPU build keeps one CPU
+core busy while it mines — the NVIDIA driver waits for the card by spinning
+(see [DEVELOPMENT.md](docs/DEVELOPMENT.md#not-done-yet)). The token file is
+not protected from other accounts on the same computer yet — do not test on
+a shared machine.
 
 ## The dashboard
 

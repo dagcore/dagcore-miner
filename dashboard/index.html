@@ -148,6 +148,14 @@ button.pausebtn{width:auto;min-height:34px;padding:6px 14px;font-size:12.5px}
 canvas{width:100%;height:100%;display:block}
 #chartEmpty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted-2);font-size:12px}
 
+/* ---------- log ---------- */
+/* About seven lines tall; longer lines scroll inside the box, not the page. */
+.logbox{height:136px;margin-top:12px;padding:8px 10px;overflow:auto;
+  background:rgba(0,0,0,.35);border:1px solid var(--line-soft);border-radius:8px;
+  font-size:12px;line-height:1.55;color:var(--text-2);white-space:pre}
+.logbox .log-t{color:var(--label);margin-right:10px}
+.logbox .log-empty{color:var(--muted-2)}
+
 /* ---------- rows / bars ---------- */
 .row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0}
 .row + .row{border-top:1px solid var(--line-soft)}
@@ -166,7 +174,7 @@ canvas{width:100%;height:100%;display:block}
 .gauge .name{color:var(--muted);font-size:13px}
 .gauge .val{font-weight:700;font-size:15px;color:var(--text)}
 .gauge .track{height:6px;border-radius:9px;background:rgba(0,0,0,.35);margin-top:8px;overflow:hidden}
-.gauge .fill{height:100%;border-radius:9px;background:var(--blue);transition:width .5s ease,background .3s}
+.gauge .fill{display:block;height:100%;border-radius:9px;background:var(--blue);transition:width .5s ease,background .3s}
 .gauge + .gauge{margin-top:16px}
 .t-ok{color:var(--ok)!important} .t-warn{color:var(--warn)!important} .t-bad{color:var(--bad)!important}
 .f-ok{background:var(--ok)!important} .f-warn{background:var(--warn)!important} .f-bad{background:var(--bad)!important}
@@ -211,6 +219,7 @@ button.ghost{color:var(--blue);border-color:rgba(77,157,255,.5);background:rgba(
 button:disabled,input:disabled{opacity:.4;cursor:not-allowed}
 .set-note{font-size:12px;margin-top:14px;padding:11px 13px;border-radius:9px;
   border:1px solid var(--line-soft);background:rgba(0,0,0,.25);color:var(--muted)}
+.set-note a{color:var(--blue)}
 .set-note.ok{color:var(--ok);border-color:rgba(63,224,138,.4)}
 .set-note.err{color:var(--bad);border-color:rgba(244,162,156,.45)}
 .set-note.busy{color:var(--mine);border-color:rgba(255,171,46,.45)}
@@ -407,6 +416,11 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
     </div>
   </section>
 
+  <section class="card" style="margin-bottom:14px">
+    <h2 style="margin:0">Log &mdash; last 100 lines</h2>
+    <div class="logbox" id="logBox"><span class="log-empty">waiting for the first status line&hellip;</span></div>
+  </section>
+
   <section class="grid cols">
     <div class="card">
       <h2>Shares</h2>
@@ -487,9 +501,9 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       <div class="sub" id="trialSub">&mdash;</div>
     </div>
 
-    <p class="set-help">Change one setting at a time. Clock changes are tested for
+    <p class="set-help">Change one setting at a time.<span id="clockHelp"> Clock changes are tested for
     10 minutes before being saved; if the card becomes unstable, the previous
-    value comes back automatically.</p>
+    value comes back automatically.</span></p>
 
     <div class="set-row">
       <span class="lab"><b>Control token</b><small id="tokState">required to enable the controls below</small></span>
@@ -580,7 +594,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
 
     <details class="adv">
       <summary>Advanced</summary>
-      <p class="adv-note">For experienced users. These change how the card
+      <p class="adv-note" id="advNote">For experienced users. These change how the card
       clocks itself; a wrong value can cost hashrate or stability. The power
       limit and memory offset above are enough for most tuning.</p>
 
@@ -620,7 +634,7 @@ footer{margin-top:28px;text-align:center;color:var(--label);font-size:11.5px;let
       </span>
     </div>
 
-    <div class="set-row">
+    <div class="set-row" id="adoptRow">
       <span class="lab"><b>Adopt current state</b>
         <small>Save what the card is running now, without a trial. For a rig
         tuned outside this miner. Offsets are always adopted &mdash; they can be
@@ -868,6 +882,24 @@ function drawChart(){
 }
 
 /* ---- rendering --------------------------------------------------- */
+/* The Shares card. Fed the counters of the newest log line, so it reads
+ * exactly what the top line of the log says; /metrics only until the first
+ * line exists, or from a miner that has no /log. */
+function renderShares(s){
+  var a = s.accepted || 0, r = s.rejected || 0, st = s.stale || 0;
+  var resolved = a + r + st;
+  txt("shAcc",   num(a) + "  (" + pct(a, resolved) + ")");
+  txt("shRej",   num(r) + "  (" + pct(r, resolved) + ")");
+  txt("shStale", num(st) + "  (" + pct(st, resolved) + ")");
+  txt("shSub",   num(s.submitted));
+  $("shRej").className = "v" + (r > 0 ? " t-bad" : "");
+  $("shStale").className = "v" + (st > 0 ? " t-warn" : "");
+  var base = resolved || 1;
+  $("barA").style.width = (100 * a  / base) + "%";
+  $("barR").style.width = (100 * r  / base) + "%";
+  $("barS").style.width = (100 * st / base) + "%";
+}
+
 function render(d){
   var p;
   p = hashParts(d.hashrate);     txt("hrTotal", p[0]); txt("hrTotalU", p[1]);
@@ -918,9 +950,21 @@ function render(d){
   }
 
   var tot = d.hashrate || 0;
-  txt("hrTotalSub", num(d.total_hashes) + " hashes this session");
+  var hashes = num(d.total_hashes) + " hashes this session";
+  txt("hrTotalSub", hashes);
   txt("hrGpuSub", tot ? pct(d.gpu_hashrate, tot) + " of total" : " ");
   txt("hrCpuSub", tot ? pct(d.cpu_hashrate, tot) + " of total" : " ");
+  /* A card only for a part that mines. No CPU threads (THREADS=0, GPU only):
+   * no CPU card, rather than a 0 that reads like a fault; no card mining (the
+   * CPU build): no GPU card. Total is shown only when both mine - with one,
+   * it is that one's number again, and "100% of total" under it says nothing;
+   * the card left takes the session's hash count instead. An older miner
+   * without the fields keeps all three. */
+  var cpuOn = d.threads !== 0, gpuOn = d.gpu_enabled !== 0;
+  $("hrCpu").closest(".card").hidden = !cpuOn;
+  $("hrGpu").closest(".card").hidden = !gpuOn;
+  $("hrTotal").closest(".card").hidden = !(cpuOn && gpuOn);
+  if (!(cpuOn && gpuOn)) txt(gpuOn ? "hrGpuSub" : "hrCpuSub", hashes);
 
   /* efficiency: GPU kH per watt - only meaningful with a power reading */
   if (d.gpu_power > 0 && d.gpu_hashrate > 0){
@@ -939,19 +983,8 @@ function render(d){
    * wants it. */
   txt("wallet", d.wallet || "--");       /* abbreviated field, never wallet_full */
 
-  /* shares */
-  var a = d.accepted || 0, r = d.rejected || 0, st = d.stale || 0;
-  var resolved = a + r + st;
-  txt("shAcc",   num(a) + "  (" + pct(a, resolved) + ")");
-  txt("shRej",   num(r) + "  (" + pct(r, resolved) + ")");
-  txt("shStale", num(st) + "  (" + pct(st, resolved) + ")");
-  txt("shSub",   num(d.submitted));
-  $("shRej").className = "v" + (r > 0 ? " t-bad" : "");
-  $("shStale").className = "v" + (st > 0 ? " t-warn" : "");
-  var base = resolved || 1;
-  $("barA").style.width = (100 * a  / base) + "%";
-  $("barR").style.width = (100 * r  / base) + "%";
-  $("barS").style.width = (100 * st / base) + "%";
+  /* shares - from the newest log line once there is one (see loadLog) */
+  if (!logShares) renderShares(d);
 
   /* thermals - the miner sends -1 when a reading is unavailable */
   if (d.gpu_temp >= 0)
@@ -970,6 +1003,18 @@ function render(d){
 
   txt("gPower", d.gpu_power >= 0 ? d.gpu_power.toFixed(1) + " W" : "n/a");
   txt("gMem",   d.gpu_memory >= 0 ? num(d.gpu_memory) + " MB" : "n/a");
+
+  /* A reading the machine cannot give - no NVIDIA driver, no nvml.dll or
+   * nvidia-smi, no CPU sensor - is left out rather than shown as n/a, and the
+   * card goes altogether when it would be empty (a laptop with Intel
+   * graphics). The gauges come back by themselves once there is a value. */
+  var have = { gTempV: d.gpu_temp >= 0, gLoadV: d.gpu_usage >= 0, cTempV: d.cpu_temp >= 0,
+               gPower: d.gpu_power >= 0, gMem: d.gpu_memory >= 0 }, anyTherm = false, hk;
+  for (hk in have){
+    $(hk).closest(".gauge, .row").hidden = !have[hk];
+    if (have[hk]) anyTherm = true;
+  }
+  $("gTempV").closest(".card").hidden = !anyTherm;
 
   /* session / rig */
   txt("uptime", uptimeStr(d.uptime));
@@ -1072,6 +1117,7 @@ function poll(){
                    e: d.effective_window_full ? (d.effective_hashrate || 0) : null });
     while (history.length && history[0].t < now - WINDOW_MS) history.shift();
     drawChart();
+    loadLog();
     txt("lastUpdate", new Date().toLocaleTimeString());
   };
   xhr.onerror = function(){ if (!done){ done = true; fail("connection refused"); } };
@@ -1101,6 +1147,66 @@ function loadHistory(){
     }
     history = before.concat(history);
     drawChart();
+  };
+  try { xhr.send(); } catch (e){}
+}
+
+/* ---- log --------------------------------------------------------- */
+/* The console's status lines, kept by the miner (/log). Shown with the time
+ * they were printed, without the "[DagCore]" prefix, and with every "H/s"
+ * figure in the page's units (1610100.36 H/s -> 1.61 MH/s); the console keeps
+ * the raw numbers. Newest first, so the latest line is always the top one.
+ * Times are the miner's clock mapped onto ours, as in loadHistory. Fetched
+ * after every /metrics poll, so the Shares card, which shows the newest line's
+ * counters, is never more than one poll behind the console. */
+var LOG_MAX = 100, logLast = null, logNewestT = null, logShares = null;
+function logText(s){
+  return s.replace(/^\[DagCore\]\s*/, "")
+          .replace(/(\d+(?:\.\d+)?) H\/s/g, function(m, v){ return hashStr(parseFloat(v)); });
+}
+function loadLog(){
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "log?t=" + Date.now(), true);
+  xhr.timeout = 4000;
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4 || xhr.status !== 200) return;
+    var d;
+    try { d = JSON.parse(xhr.responseText); } catch (e){ return; }
+    if (!d || !d.lines || typeof d.now !== "number") return;
+    /* A miner that has just (re)started has no line yet: the card goes back
+     * to /metrics rather than keep the old process's counters. */
+    if (!d.lines.length){ logShares = null; return; }
+    /* The miner keeps 100 as well; never show more, whatever it sends. */
+    if (d.lines.length > LOG_MAX) d.lines = d.lines.slice(-LOG_MAX);
+    var tail = d.lines[d.lines.length - 1];
+    if (typeof tail.accepted === "number"){ logShares = tail; renderShares(tail); }
+    var key = d.lines.length + ":" + tail.t + ":" + tail.text;
+    if (key === logLast) return;
+    logLast = key;
+    var box = $("logBox");
+    var atTop = box.scrollTop < 8, before = box.scrollTop;
+    /* Lines newer than the top one shown last time: each pushes the rest
+     * down a row. */
+    var added = 0;
+    if (logNewestT !== null)
+      for (var j = 0; j < d.lines.length; j++) if (d.lines[j].t > logNewestT) added++;
+    logNewestT = tail.t;
+    var now = Date.now(), frag = document.createDocumentFragment();
+    for (var i = d.lines.length - 1; i >= 0; i--){
+      var ln = d.lines[i], row = document.createElement("div"), t = document.createElement("span");
+      t.className = "log-t";
+      t.textContent = new Date(now - (d.now - ln.t) * 1000).toLocaleTimeString();
+      row.appendChild(t);
+      row.appendChild(document.createTextNode(logText(ln.text)));
+      frag.appendChild(row);
+    }
+    box.textContent = "";
+    box.appendChild(frag);
+    /* At the top, stay there and see the new line. Scrolled down to look
+     * back, keep the same lines in view: move down by the rows added above. */
+    if (atTop || box.getAttribute("data-filled") !== "1") box.scrollTop = 0;
+    else box.scrollTop = before + added * (box.firstChild ? box.firstChild.offsetHeight : 0);
+    box.setAttribute("data-filled", "1");
   };
   try { xhr.send(); } catch (e){}
 }
@@ -1136,6 +1242,25 @@ function noteIdle(msg, cls){
   if (Date.now() < noteHold) return;
   note(msg, cls);
 }
+/* The Windows offset note, with both tuning tools linked to their pages (new
+ * tab). Its own text: offset_reason only says that the offsets are refused. */
+var AFTERBURNER_URL = "https://www.msi.com/Landing/afterburner";
+var ADRENALIN_URL   = "https://www.amd.com/en/products/software/adrenalin.html";
+function extLink(href, text){
+  var a = document.createElement("a");
+  a.href = href; a.target = "_blank"; a.rel = "noopener";
+  a.textContent = text;
+  return a;
+}
+function afterburnerNote(){
+  var n = $("setNote");
+  n.className = "set-note";
+  n.textContent = "Note: on Windows the driver refuses clock offsets from the miner. Use ";
+  n.appendChild(extLink(AFTERBURNER_URL, "MSI Afterburner"));
+  n.appendChild(document.createTextNode(" (NVIDIA) or "));
+  n.appendChild(extLink(ADRENALIN_URL, "AMD Software: Adrenalin Edition"));
+  n.appendChild(document.createTextNode(" (AMD) for tuning."));
+}
 
 /* Apply only means something once a value has been entered, and only if it
  * differs from what is already in force. */
@@ -1152,12 +1277,12 @@ function refreshApply(id){
 
 function controlsEnabled(on){
   controlsOn = on;
-  var ids = ["plRange1","plNum","plApply","inRange","inNum","inApply",
+  var ids = ["plRange1","plNum","plApply",
              "coreSlider","coreNum","coreApply","coreDefault",
              "memSlider","memNum","memApply","memDefault",
              "coreoffSlider","coreoffNum","coreoffApply","coreoffDefault",
              "memoffSlider","memoffNum","memoffApply","memoffDefault",
-             "plDefault","inDefault","adoptBtn","adoptCore","adoptMem"], i;
+             "plDefault","adoptBtn","adoptCore","adoptMem"], i;
   for (i = 0; i < ids.length; i++){ var e = $(ids[i]); if (e) e.disabled = !on; }
   var rows = ["core","mem","coreoff","memoff"], k;
   for (k = 0; k < rows.length; k++) refreshApply(rows[k]);
@@ -1165,7 +1290,17 @@ function controlsEnabled(on){
 
 /* The server is the authority on whether controls can work: no token, GPU off,
  * more than one card, or no nvidia-smi all disable them, each with a reason. */
+/* Intensity is the miner's own setting: it needs the token and a card that is
+ * mining, not nvidia-smi - so it stays usable where the tuning controls are
+ * not (Windows, several cards, no nvidia-smi). */
+function intensityEnabled(d){
+  var on = !!token && (d.gpu_count || 0) > 0;
+  var ids = ["inRange","inNum","inApply","inDefault"], i;
+  for (i = 0; i < ids.length; i++) $(ids[i]).disabled = !on;
+}
+
 function syncSettings(d){
+  intensityEnabled(d);
   var avail = d.control_available === true;
   if (!token){
     controlsEnabled(false);
@@ -1191,6 +1326,15 @@ function syncSettings(d){
   syncClock(d, "mem",  "gpu_mem_clock",  "trial_mem");
   syncOffset(d, "coreoff", "gpu_core_offset", "trial_coreoff");
   syncOffset(d, "memoff",  "gpu_mem_offset",  "trial_memoff");
+
+  /* A build that cannot touch clocks at all (the first Windows builds, without
+   * NVML control) shows none of
+   * what goes with them either - not the adopt row, not the text about clock
+   * tests. Only the older miner, which lacks the field, keeps them. */
+  var clk = d.clock_controls_supported !== false;
+  $("adoptRow").hidden = !clk;
+  $("advNote").hidden = !clk;
+  $("clockHelp").hidden = !clk;
 
   /* A new offset moves the table a lock was picked from, and the card does not
    * rescale the lock. Two numbers that quietly disagree are worse than a
@@ -1218,6 +1362,7 @@ var clkTouched = { core: false, mem: false, coreoff: false, memoff: false };
 function syncClock(d, id, base_, trialBase){
   var lo = d[base_ + "_min"], hi = d[base_ + "_max"];
   var row = $(id + "Row");
+  if (d.clock_controls_supported === false){ row.hidden = true; return; }
   if (typeof lo !== "number" || typeof hi !== "number" || lo < 0 || hi <= 0){
     row.hidden = true;
     return;
@@ -1288,10 +1433,17 @@ function syncClock(d, id, base_, trialBase){
  * is unavailable - with the reason shown once, on the core row. */
 function syncOffset(d, id, field, trialBase){
   var row = $(id + "Row");
+  if (d.clock_controls_supported === false){ row.hidden = true; return; }
   if (d.offset_available !== true){
     row.hidden = true;
-    if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token)
-      noteIdle("Clock offsets unavailable: " + d.offset_reason, "err");
+    /* On Windows the reason points to MSI Afterburner: that is the way
+     * offsets are set there, not a fault, so it is not shown as an error. */
+    if (id === "coreoff" && d.offset_reason && d.offset_reason !== "ok" && token){
+      if (/MSI Afterburner/.test(d.offset_reason)){
+        if (Date.now() >= noteHold) afterburnerNote();
+      } else
+        noteIdle("Clock offsets unavailable: " + d.offset_reason, "err");
+    }
     return;
   }
   row.hidden = false;

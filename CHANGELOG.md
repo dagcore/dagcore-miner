@@ -7,33 +7,189 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
-- `make windows` cross-compiles `dagcore-miner.exe` and
-  `dagcore-miner-cpu.exe` with MinGW-w64, and `make check` builds them too.
-  The Windows build compiles and links but has not been run yet, and it has no
-  service, installer or GPU tuning (NVML); it is not ready for use.
+- Dashboard: a log panel under the hashrate chart, about seven lines tall,
+  with the console's status line (hashrate, shares, uptime), the last 100
+  lines (about sixteen minutes), newest first, each with its time and the
+  hashrates in MH/s. The miner keeps the lines (in memory) and serves them
+  as `GET /log`; the console output is unchanged. Each line also carries
+  its share counters as numbers, read once for the line and for `/log`, and
+  the Shares card shows the newest line's, so card and log always agree -
+  before, the card read `/metrics` every 5 seconds and ran ahead of the
+  line printed up to 10 seconds earlier.
+- `make windows` builds `dagcore-miner.exe` and `dagcore-miner-cpu.exe` with
+  MinGW-w64 - cross-compiled on Linux, or natively on Windows with WinLibs -
+  and `make check` builds them too. Run by hand on Windows 11 with an RTX 3080
+  (driver 617.14), against the public pool: NVML readings, the portable
+  layout, the dashboard over the LAN, CPU use and a clean stop all checked.
+  There is still no service, no installer and no GPU tuning beyond the power
+  limit and intensity; it is for testing, not for a rig left unattended.
   - Windows: the control API token comes from `BCryptGenRandom` (there is no
     `/dev/urandom`); without it the control API was always disabled.
-  - Windows: `overrides.env` is replaced with `MoveFileEx`; `rename()` fails
-    there when the file exists, so only the first dashboard change was kept.
-  - Windows: `config.env`, `overrides.env` and the token live in
-    `%ProgramData%\DAGCore\` instead of `/etc` and `/var/lib`.
+  - Windows: `overrides.env` and `config.env` are replaced with `MoveFileEx`;
+    `rename()` fails there when the file exists, so only the first dashboard
+    change was kept - for `config.env`, every Mining configuration save after
+    the first answered "cannot replace config.env: File exists". Five saves in
+    a row now each rewrite the file.
+  - Windows: everything is in the miner's own folder, next to the `.exe` -
+    `config.env` (which a dashboard save creates if missing),
+    `overrides.env`, the token, `autotune.json`, `dashboard\` and
+    `dagcore_gpu.cl` - found from the `.exe`'s real path whatever the
+    current directory, instead of `/etc`, `/var/lib` and
+    `C:\dagtech-gpu-miner\`. `config.env`, `overrides.env` or `api-token` left
+    by the first test builds in `%ProgramData%\DAGCore\` is copied next to
+    the `.exe` at startup (same token, so the browser keeps working). A
+    `DASHBOARD_DIR` that does not exist falls back to the bundled `dashboard`
+    folder.
   - Windows: the dashboard server gives up on a silent client after 2 seconds,
     as on Linux, instead of hanging for every other client.
   - Windows: `nvidia-smi` is called with `2>NUL`; `cmd.exe` has no
     `/dev/null`, so temperature, power and the power limit were never read.
   - Windows: closing the console window, logging off or shutting down stops
     the miner cleanly (`SetConsoleCtrlHandler`), and its waits of several
-    seconds end as soon as a stop is requested.
+    seconds end as soon as a stop is requested. Ctrl+C, Ctrl+Break and the
+    window's close button each end it in under a second, exit code 0, after
+    "Shutdown complete".
   - Windows: waits under 2 ms use a high-resolution waitable timer. `usleep()`
     there was `Sleep(x/1000)`, so the submit queue's 500 µs gap became
     `Sleep(0)` and spun a core, and `Sleep(1)` can last a 15.6 ms timer tick.
-  - README: how to run the Windows build by hand, CPU-only, for testing.
+    Measured: every thread but the GPU one together uses 0.1% of a core while
+    the queue sends shares.
+  - `make windows-package` puts the kit in `dist/windows/`: exactly the folder
+    to copy to a new machine - both `.exe` files, `dagcore_gpu.cl`,
+    `dashboard\`, `config.env.example`, `readme.html` and a `SHA256SUMS` for
+    them. The `.exe` files are built in `build/win/`, no longer in the
+    source tree. The `config.env.example` is made for Windows from the Linux
+    one: no `/etc`, `/var/lib` or XDG paths, and no `DASHBOARD_DIR`
+    (commented out), so the miner no longer starts by saying the `/opt`
+    dashboard is missing.
+  - `readme.html`, a getting-started tutorial in the dashboard's style, sits
+    next to the `.exe` in the Windows package: what you need, putting the
+    miner in place, the wallet, starting, the dashboard, the control token,
+    Mining configuration, tuning, checking that it works, upgrading and
+    troubleshooting - Linux and Windows side by side where they differ. It
+    opens from the folder with a double-click, offline, before the miner
+    has run.
+  - `/metrics` gains `clock_controls_supported`: whether the build can lock
+    clocks and set offsets at all. With `false` the dashboard leaves every
+    clock control out - lock and offset rows, Adopt, the text about clock
+    tests. The first Windows builds sent `false`; both systems now send
+    `true`.
+  - Windows: clock locks go through NVML, the same code as on Linux, with
+    the same 10-minute test and administrator rights (`start.bat`). Clock
+    offsets do not: the Windows GeForce driver answers them "Not Supported"
+    (driver 617.14), so the offset rows stay hidden and `offset_reason` says
+    so. A memory lock cannot lift the clock above the driver's compute cap
+    (9251 MHz on an RTX 3080): the memory cannot be overclocked from the
+    dashboard on Windows. Tuning there is left to MSI Afterburner; the
+    miner shows the clocks that result. README, `readme.html` and the help
+    page say so, with the hashrate that costs without tuning (1.43-1.53
+    MH/s stock on an RTX 3080 at 300 W, 1.63 with the memory raised in
+    Afterburner, 1.61 on Linux with +1200). NVAPI, which Afterburner uses,
+    was looked into and left out (DEVELOPMENT.md). The dashboard no longer
+    shows "Clock offsets unavailable: ... Not Supported by the Windows
+    driver" as an error: `offset_reason` says to set them with MSI
+    Afterburner, and the note is shown as information.
+  - Windows: GPU temperature, load, memory used, power and clocks are read
+    from `nvml.dll`, which every NVIDIA driver installs, loaded at run time
+    from System32 or the NVSMI folder only; `nvidia-smi` is the fallback.
+    Without either the miner runs normally and the dashboard leaves those
+    readings out. On an RTX 3080 the readings match `nvidia-smi` exactly,
+    and an `nvml.dll` dropped next to the `.exe` is not loaded.
+  - README: how to build, check and run the Windows kit by hand.
+- Every start names the control API token file in use, not only the start
+  that creates it.
 
 ### Changed
+- The Linux build no longer writes into the repository's root, like the
+  Windows one: `make` and `make cpu` build into `build/linux/`, `make linux`
+  builds both, and `make linux-package` assembles `dist/linux/` -
+  `dagcore-miner`, `dagcore-miner-cpu`, `dagcore_gpu.cl`, `dashboard/`,
+  `config.env.example` and `SHA256SUMS` - the counterpart of `dist/windows/`.
+  The two kits are what a release archives. `make install` takes the binary
+  from `build/linux/`, and `make clean` removes `build/` and `dist/` for both
+  systems, plus binaries an older build left in the root.
+- `make release` packs the two kits into the files a GitHub release
+  attaches: `dist/dagcore-miner-<version>-linux-x64.tar.gz` from
+  `dist/linux/` and `dist/dagcore-miner-<version>-windows-x64.zip` from
+  `dist/windows/` (`make release-linux`, `make release-windows` for one).
+  Each unpacks into a single folder named like the archive; the version is
+  the one the binary reports.
+- The dashboard leaves out a reading the machine cannot give - GPU
+  temperature, load, power, memory, CPU temperature - instead of showing
+  `n/a`, and the whole GPU & thermals card when there is none.
+- The hashrate cards show only what mines: no CPU card when no CPU thread
+  mines (`THREADS=0`, the default with a GPU), no GPU card when no card does
+  (the CPU build), and the Total card only when both do - with one, it
+  repeated that one's figure over "100% of total". The card left takes the
+  session's hash count.
 - The CPU-only build (`make cpu`, `dagcore-miner-cpu.exe`) no longer accepts
   `--threads 0` / `THREADS=0`, the default, silently: with no GPU support that
   mined nothing and reported 0 H/s. It now warns at startup and uses
   auto-detect (half the logical cores) instead.
+- The startup banner and `--help` show only the name and version, without
+  the original author's line. The DagTech copyright and attribution stay
+  where the licence puts them: `LICENSE`, the source headers and the README.
+
+### Fixed
+- **A clock test no longer freezes the miner while the dashboard is open.**
+  Since 1.0.0, `/metrics` read each running test's rejected shares through
+  a function that took the statistics lock `/metrics` already held. The
+  first poll after a clock or offset change locked the web server against
+  itself, and every thread that touches the statistics - the GPU worker
+  included - stopped behind it: no hashing, no shares, no dashboard, while
+  the process stayed up. Seen on Windows (the pool then lowered the
+  difficulty to 0.003 and closed the connection); the code is the same on
+  Linux. `offset_reason` also gives the real reason offsets cannot be read
+  instead of "ok".
+- **GPU intensity can be changed wherever a card is mining.** It was held
+  back with the tuning controls, which need `nvidia-smi` and a single card,
+  so a rig with several cards, or without `nvidia-smi` (a container, Windows),
+  could not change it from the dashboard although it is the miner's own
+  setting. It now needs only the token and a mining card.
+- A control API error message longer than 296 characters was cut off before
+  its closing `"}`, so the page got invalid JSON instead of the error. The
+  reply now has room for the longest message `/api/config` can give (300).
+  Found by GCC 16's `-Wformat-truncation`.
+- The GPU temperature, GPU load and CPU temperature bars on the GPU &
+  thermals card were never drawn, on any system: their fill was an inline
+  `<span>`, which ignores width and height. The values next to them were
+  right all along.
+- **A miner with nothing to mine stops and says why.** When the GPU failed to
+  start - `dagcore_gpu.cl` missing next to the `.exe`, say - or was disabled,
+  and `THREADS` was 0, the GPU build connected anyway and reported "mining"
+  at 0 H/s for as long as it ran, after a line claiming "running CPU only".
+  It now exits with code 1 and an error naming the cause and the two ways
+  out. A card that fails with CPU threads set still falls back to them, as
+  before. *Possible impact:* a service on such a rig now fails and is
+  restarted every 10 seconds, with the error in `journalctl`, instead of
+  running idle.
+- Windows: a startup error - that one, or a missing wallet - no longer
+  vanishes with the window when the miner was started by a double-click; it
+  waits for Enter. Started from cmd or PowerShell, or with input redirected,
+  it exits at once as before.
+- **Windows: Save & restart restarts.** With no systemd to bring the miner
+  back, a Mining configuration or intensity save was written but only
+  answered "miner is not supervised; restart it to apply", and the miner
+  went on with the old values. It now shuts down cleanly and starts its own
+  `.exe` again - same command line, same console window - which waits for
+  the old process to exit before taking the port and the card. Linux without
+  systemd is unchanged.
+- Windows: the power limit needs the miner run as administrator, and
+  without it every Apply failed with "nvidia-smi: Terminating early due to
+  previous errors". The controls now show as unavailable from the start,
+  with the reason and "start the miner with start.bat"; run that way, the
+  power limit applies. A failed `nvidia-smi -pl` - on any system - now
+  reports its first line, the cause ("Insufficient Permissions"), instead
+  of that last one.
+- Windows kit: `start.bat` starts `dagcore-miner.exe` as administrator -
+  the UAC prompt - in a window of its own, passing on its arguments. The
+  miner has that window to itself, as with a double-click: Ctrl+C asks no
+  "Terminate batch job" question, errors stay on screen, and Save & restart
+  restarts it there. Refused, it starts nothing and says how to mine
+  without administrator rights. `.gitattributes` keeps `.bat` files CRLF in
+  every checkout.
+- `make windows` on Windows itself (Git Bash) created `include/CL/CL` on
+  every forced rebuild, since `ln -s` copies there; the link is now replaced.
 
 ## [1.2.1] - 2026-09-23
 
