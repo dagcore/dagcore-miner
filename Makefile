@@ -3,7 +3,8 @@
 #   make                -> build/linux/dagcore-miner      (GPU + CPU, via OpenCL)
 #   make cpu            -> build/linux/dagcore-miner-cpu  (without OpenCL)
 #   make linux          -> build/linux: both of them
-#   make linux-package  -> dist/linux: the Linux kit, with SHA256SUMS
+#   make linux-package  -> dist/linux: the Linux kit, with README.md and
+#                          SHA256SUMS
 #   make windows        -> build/win: dagcore-miner.exe + dagcore-miner-cpu.exe,
 #                          cross-compiled with MinGW-w64 (apt install mingw-w64),
 #                          and the Windows config.env.example
@@ -99,6 +100,10 @@ WIN_PKG        := dist/windows
 README_HTML    := readme.html
 # Starts the miner as administrator, which the power limit needs on Windows.
 WIN_START_BAT  := win/start.bat
+# The Linux kit's getting-started guide, the counterpart of readme.html: plain
+# text that reads in a terminal, where a Linux kit is usually unpacked. It
+# goes into the kit as README.md.
+LINUX_README   := linux/README.md
 
 # Release archives: dist/linux and dist/windows, each in a folder named like
 # the archive, so unpacking gives one folder rather than loose files. The
@@ -138,11 +143,12 @@ linux: $(BIN_GPU) $(BIN_CPU)
 # The Linux counterpart of windows-package: the same layout, the files the
 # miner wants next to itself, and SHA256SUMS over the rest, run from inside
 # the folder. The config example needs no rewriting here: its paths are the
-# Linux ones.
+# Linux ones, and README.md says which line to change for running from here.
 linux-package: linux
 	rm -rf $(LINUX_PKG)
 	mkdir -p $(LINUX_PKG)/dashboard
 	cp $(BIN_GPU) $(BIN_CPU) $(KERNEL) $(CONFIG_EX) $(LINUX_PKG)/
+	cp $(LINUX_README) $(LINUX_PKG)/README.md
 	cp $(DASHBOARD) $(DASH_OFL) $(LINUX_PKG)/dashboard/
 	cd $(LINUX_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
 	    xargs sha256sum > SHA256SUMS
