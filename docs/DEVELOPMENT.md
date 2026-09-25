@@ -300,7 +300,7 @@ are held back. This is the main thing standing between the dashboard and a
 multi-card rig.
 
 **Windows.** The `#ifdef _WIN32` paths are inherited. They compile and link
-(`make windows`) and run by hand (README, "Windows (experimental)"), with the
+(`make windows`) and run by hand (README, "Windows"), with the
 token from `BCryptGenRandom`, every file next to the `.exe` (the portable
 layout below), `overrides.env` and `config.env` replaced with `MoveFileEx`,
 the metrics receive timeout, `2>NUL` for `nvidia-smi`, a clean stop on Ctrl+C,

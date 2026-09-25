@@ -3,18 +3,23 @@
 An OpenCL miner for [BlockDAG](https://dagcore.net) (chain 1404), with a built-in
 web dashboard for monitoring and GPU tuning.
 
-Derived from DagTech Miner (MIT). Linux; a Windows build is in progress and
-can be run by hand for testing — see [Windows (experimental)](#windows-experimental)
-and [what is left to do](docs/DEVELOPMENT.md#not-done-yet).
+Derived from DagTech Miner (MIT). Linux, with an installer and a service, and
+Windows, run by hand — see [Windows](#windows) and
+[what is left to do](docs/DEVELOPMENT.md#not-done-yet).
 
 ## Requirements
 
-- Linux on x86-64
-- An NVIDIA graphics card
-- The NVIDIA driver, with its OpenCL support
+- Linux on x86-64, or Windows 10 (1803 or later) or 11
+- A graphics card - NVIDIA, AMD or Intel - with its maker's driver and its
+  OpenCL support; or none, with the CPU-only build
+- For the installer below, and for the power and clock controls: an NVIDIA
+  card and the NVIDIA driver
 
-`nvidia-smi` is optional: mining works without it, but the power-limit and clock
-controls in the dashboard do not.
+On other cards the miner mines the same, and the dashboard shows those
+controls as unavailable, with the reason. On Linux, run it from the release's
+kit by hand ([prebuilt binaries](#prebuilt-binaries)); the kit's `README.md`
+says how. `nvidia-smi` is optional: mining works without it, but the
+power-limit and clock controls in the dashboard do not.
 
 ## Install
 
@@ -47,7 +52,7 @@ sudo ./install.sh --wallet 0xYOURADDRESS --yes
 Each [release](https://github.com/dagcore/dagcore-miner/releases) carries
 two archives: `dagcore-miner-<version>-linux-x64.tar.gz` and
 `dagcore-miner-<version>-windows-x64.zip`, the Windows kit described
-[below](#windows-experimental). Releases 1.2.0 and 1.2.1 attached the Linux
+[below](#windows). Releases 1.2.0 and 1.2.1 attached the Linux
 files one by one; from 1.3.0 on there are only the archives.
 
 The Linux archive unpacks into one folder, `dagcore-miner-<version>-linux-x64/`,
@@ -85,12 +90,14 @@ released: delete the folder and the archive and download it again. The sums
 come from the same place as the files, so they catch a broken or incomplete
 download, not a compromised account; they are not a signature.
 
-## Windows (experimental)
+## Windows
 
-The Windows build is for testing. It has run by hand on Windows 11 with an
-RTX 3080, GPU and CPU, against the public pool, but it has no service, no
-installer, and no GPU tuning beyond the power limit and intensity. Do not
-leave a rig on it unattended yet.
+The Windows build runs by hand: there is no installer and no service. It has
+been tested on Windows 11 with an RTX 3080, GPU and CPU, against the public
+pool - card readings through NVML, the portable folder, a clean stop, and runs
+of many hours. AMD and Intel cards go through the same OpenCL code, but have
+not been tested on Windows yet. Clock offsets are left to MSI Afterburner
+(below).
 
 **Build the kit** on Linux with MinGW-w64 (`sudo apt install mingw-w64`):
 
@@ -107,8 +114,8 @@ It holds:
 
 | File | What |
 |------|------|
-| `dagcore-miner.exe` | GPU build (and CPU); needs an NVIDIA driver, which brings OpenCL |
-| `dagcore-miner-cpu.exe` | CPU only, for a machine without an NVIDIA card |
+| `dagcore-miner.exe` | GPU build (and CPU); needs the card's driver, which brings OpenCL - NVIDIA, AMD or Intel |
+| `dagcore-miner-cpu.exe` | CPU only, for a machine without a graphics card |
 | `dagcore_gpu.cl` | The GPU kernel, read at every start |
 | `dashboard\` | The dashboard's pages |
 | `config.env.example` | Settings, written for Windows |
@@ -179,7 +186,8 @@ the same, so a browser that has it keeps working, and that old folder can be
 deleted. Every start prints which token file is in use (`Control API token:`).
 
 **Limits of this build.** Temperature, load, power, memory and clocks are
-read from the NVIDIA driver. Clock locks work, through NVML as on Linux.
+read from the NVIDIA driver; on an AMD or Intel card the dashboard leaves
+them out. Clock locks work on NVIDIA, through NVML as on Linux.
 
 **Clock offsets cannot be set from the miner on Windows.** The Windows
 GeForce driver refuses them through NVML ("Not Supported"), so the dashboard
@@ -216,8 +224,8 @@ works because the miner starts itself again, in the same window, but nothing
 brings it back after a crash or a reboot. The GPU build keeps one CPU
 core busy while it mines — the NVIDIA driver waits for the card by spinning
 (see [DEVELOPMENT.md](docs/DEVELOPMENT.md#not-done-yet)). The token file is
-not protected from other accounts on the same computer yet — do not test on
-a shared machine.
+not protected from other accounts on the same computer yet — do not run it
+on a shared machine.
 
 ## The dashboard
 
