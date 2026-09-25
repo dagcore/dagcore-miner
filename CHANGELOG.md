@@ -100,6 +100,14 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   that creates it.
 
 ### Changed
+- The Linux build no longer writes into the repository's root, like the
+  Windows one: `make` and `make cpu` build into `build/linux/`, `make linux`
+  builds both, and `make linux-package` assembles `dist/linux/` -
+  `dagcore-miner`, `dagcore-miner-cpu`, `dagcore_gpu.cl`, `dashboard/`,
+  `config.env.example` and `SHA256SUMS` - the counterpart of `dist/windows/`.
+  The two kits are what a release archives. `make install` takes the binary
+  from `build/linux/`, and `make clean` removes `build/` and `dist/` for both
+  systems, plus binaries an older build left in the root.
 - The dashboard leaves out a reading the machine cannot give - GPU
   temperature, load, power, memory, CPU temperature - instead of showing
   `n/a`, and the whole GPU & thermals card when there is none.

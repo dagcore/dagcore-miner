@@ -46,8 +46,10 @@ NVML paths are tested without a card.
 ## Building
 
 ```sh
-make            # GPU build -> dagcore-miner
-make cpu        # CPU-only  -> dagcore-miner-cpu
+make            # GPU build -> build/linux/dagcore-miner
+make cpu        # CPU-only  -> build/linux/dagcore-miner-cpu
+make linux      # both, in build/linux
+make linux-package    # dist/linux: the Linux kit
 make check      # builds every variant, from scratch (Windows too, if MinGW is there)
 make windows    # .exe pair in build/win, needs MinGW-w64
 make windows-package  # dist/windows: the kit to copy to a Windows machine
@@ -61,6 +63,22 @@ other links fine in the GPU build and fails only in the CPU one. That has
 happened. The same goes for `#ifndef _WIN32`, which is why `make check` also
 builds the Windows pair; without MinGW-w64 it says `SKIPPED` rather than
 failing.
+
+**Nothing is built in the repository's root.** The Linux binaries go to
+`build/linux/`, the Windows ones to `build/win/`, and the kits to
+`dist/linux/` and `dist/windows/`; `.gitignore` covers `build/` and `dist/`,
+and `make clean` removes all four (and any `dagcore-miner` or
+`dagcore-miner-cpu` an older build left in the root). A binary in
+`build/linux/` does not run on its own: the GPU build loads `dagcore_gpu.cl`
+from its own directory. Run it from `dist/linux/`, or install it.
+
+`make linux-package` assembles `dist/linux/` the same way `dist/windows/` is
+made: `dagcore-miner`, `dagcore-miner-cpu`, `dagcore_gpu.cl`, `dashboard/`
+(with `OFL.txt`), `config.env.example` and `SHA256SUMS` over all of them,
+with paths relative to the folder, rebuilt from scratch each time.
+`dist/linux/` and `dist/windows/` are what a release archives and attaches.
+The Linux kit has no `readme.html` or `start.bat`, and its config example is
+the Linux one, unchanged.
 
 **Windows build.** `make windows` builds `build/win/dagcore-miner.exe` and
 `build/win/dagcore-miner-cpu.exe` with MinGW-w64 (`apt install mingw-w64`). It

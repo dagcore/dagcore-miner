@@ -1,7 +1,9 @@
 # Makefile - DagCore Miner
 #
-#   make                -> dagcore-miner      (GPU + CPU, via OpenCL)
-#   make cpu            -> dagcore-miner-cpu  (without OpenCL)
+#   make                -> build/linux/dagcore-miner      (GPU + CPU, via OpenCL)
+#   make cpu            -> build/linux/dagcore-miner-cpu  (without OpenCL)
+#   make linux          -> build/linux: both of them
+#   make linux-package  -> dist/linux: the Linux kit, with SHA256SUMS
 #   make windows        -> build/win: dagcore-miner.exe + dagcore-miner-cpu.exe,
 #                          cross-compiled with MinGW-w64 (apt install mingw-w64),
 #                          and the Windows config.env.example
@@ -54,8 +56,15 @@ DASHBOARD := dashboard/index.html dashboard/help.html \
 DASH_OFL  := dashboard/OFL.txt
 CONFIG_EX := config.env.example
 
-BIN_GPU := dagcore-miner
-BIN_CPU := dagcore-miner-cpu
+# Built into build/linux, never into the source tree, as the Windows pair is
+# into build/win. The binaries alone do not run from there - the GPU one looks
+# for dagcore_gpu.cl next to itself - so dist/linux is the folder to run or
+# ship, and make install takes them from here.
+LINUX_BUILD := build/linux
+BIN_GPU     := $(LINUX_BUILD)/dagcore-miner
+BIN_CPU     := $(LINUX_BUILD)/dagcore-miner-cpu
+# Exactly what goes into a Linux release, the counterpart of dist/windows.
+LINUX_PKG   := dist/linux
 
 # Windows cross-build. The OpenCL headers are the same ones the Linux build uses;
 # they are exposed through a directory of their own because -I/usr/include
@@ -98,17 +107,34 @@ SHAREDIR := $(PREFIX)/share/dagcore-miner
 # install payload. Overridable for packagers who want it elsewhere.
 SYSCONFDIR ?= /etc/dagcore-miner
 
-.PHONY: all cpu windows windows-package check check-windows warn install uninstall clean help
+.PHONY: all cpu linux linux-package windows windows-package check check-windows warn install uninstall clean help
 all: $(BIN_GPU)
 
 # $(KERNEL) is a prerequisite only for consistency: it is not compiled, it is read
 # at runtime and handed to clCreateProgramWithSource.
 $(BIN_GPU): $(SRC) $(HDR) $(KERNEL)
+	@mkdir -p $(LINUX_BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(GPU_CPPFLAGS) $< -o $@ $(LDFLAGS) $(GPU_LDLIBS) $(LDLIBS)
 
 cpu: $(BIN_CPU)
 $(BIN_CPU): $(SRC) $(HDR)
+	@mkdir -p $(LINUX_BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+linux: $(BIN_GPU) $(BIN_CPU)
+
+# The Linux counterpart of windows-package: the same layout, the files the
+# miner wants next to itself, and SHA256SUMS over the rest, run from inside
+# the folder. The config example needs no rewriting here: its paths are the
+# Linux ones.
+linux-package: linux
+	rm -rf $(LINUX_PKG)
+	mkdir -p $(LINUX_PKG)/dashboard
+	cp $(BIN_GPU) $(BIN_CPU) $(KERNEL) $(CONFIG_EX) $(LINUX_PKG)/
+	cp $(DASHBOARD) $(DASH_OFL) $(LINUX_PKG)/dashboard/
+	cd $(LINUX_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
+	    xargs sha256sum > SHA256SUMS
+	@echo "linux-package: $(LINUX_PKG) - the Linux kit"
 
 windows: $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(WIN_CONFIG_EX)
 
@@ -199,7 +225,7 @@ install: $(BIN_GPU)
 	@echo "start the miner with: --config $(SYSCONFDIR)/config.env"
 
 uninstall:
-	$(RM) $(DESTDIR)$(BINDIR)/$(BIN_GPU) $(DESTDIR)$(BINDIR)/$(KERNEL)
+	$(RM) $(DESTDIR)$(BINDIR)/$(notdir $(BIN_GPU)) $(DESTDIR)$(BINDIR)/$(KERNEL)
 	$(RM) $(DESTDIR)$(SHAREDIR)/dashboard/index.html \
 	      $(DESTDIR)$(SHAREDIR)/dashboard/help.html \
 	      $(DESTDIR)$(SHAREDIR)/dashboard/fonts.css \
@@ -212,11 +238,15 @@ uninstall:
 	    echo "kept: $(SYSCONFDIR)/config.env (remove it by hand if you want it gone)" || \
 	    rmdir "$(DESTDIR)$(SYSCONFDIR)" 2>/dev/null || true
 
+# The two root binaries are what builds before build/linux left behind; they
+# go too, so an old one is never mistaken for the current build.
 clean:
-	$(RM) $(BIN_GPU) $(BIN_CPU)
+	$(RM) -r $(LINUX_BUILD) $(LINUX_PKG)
 	$(RM) -r $(WIN_BUILD) $(WIN_PKG)
+	$(RM) dagcore-miner dagcore-miner-cpu
+	-rmdir build dist 2>/dev/null || true
 
 help:
-	@printf '%s\n' 'targets: all cpu windows windows-package check warn install uninstall clean' \
+	@printf '%s\n' 'targets: all cpu linux linux-package windows windows-package check warn install uninstall clean' \
 	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...' \
 	                '       MINGW_CC=... OPENCL_HEADERS=... (windows)'

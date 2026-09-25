@@ -1,9 +1,10 @@
-# Binare compilate (vezi Makefile).
+# Build output (see Makefile): the binaries in build/linux and build/win, the
+# kits in dist/linux and dist/windows - what a release archives.
+build/
+dist/
+# Binaries that builds before build/linux left in the root.
 # dagtech-gpu-miner ramane versionat deocamdata, ca referinta.
 dagcore-miner
 dagcore-miner-cpu
 dagtech-gpu-miner
 *.exe
-# Build-ul Windows (build/win) si kitul de copiat pe Windows (dist/windows).
-build/
-dist/
