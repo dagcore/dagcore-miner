@@ -108,9 +108,15 @@ but the dashboard can only show, not change anything.
 
 The miner itself is simply ./dagcore-miner. Any setting can also be given on
 the command line, where it wins over config.env; this runs without a
-config.env at all:
+config.env at all, with the same two variables in front:
 
-    ./dagcore-miner --wallet 0xYOURADDRESS --dashboard-dir "$PWD/dashboard"
+    DAGCORE_TOKEN_FILE=$PWD/api-token \
+    DAGCORE_OVERRIDES_FILE=$PWD/overrides.env \
+        ./dagcore-miner --wallet 0xYOURADDRESS --dashboard-dir "$PWD/dashboard"
+
+Without them it mines just the same, but prints "cannot write
+/etc/dagcore-miner/api-token ... control API disabled" and the dashboard
+only shows.
 
 ./dagcore-miner --help lists every option.
 
@@ -122,17 +128,33 @@ then the log shows "Connected!", "Authorized" and "Mining started!", and soon
 lines with "Share ACCEPTED". In the first minutes they come fast: the pool
 starts every connection at a low difficulty and raises it.
 
+No "Authorized", and instead "Share REJECTED" with "username should be a
+valid evm address" or "unauthorized", means the pool refused the wallet:
+the miner keeps running, but nothing it finds counts. Stop it and check
+WALLET in config.env - still 0xYOURADDRESS, a character missing, or a
+worker name added after the address.
+
 Stop it with Ctrl+C. It shuts down cleanly.
 
 To keep it running after you close the terminal, start it inside tmux or
-screen, or in the background with its output in a file:
+screen, or in the background with its output in a file, noting its process
+number in miner.pid:
 
     DAGCORE_TOKEN_FILE=$PWD/api-token \
     DAGCORE_OVERRIDES_FILE=$PWD/overrides.env \
         nohup ./dagcore-miner > miner.log 2>&1 &
+    echo $! > miner.pid
     tail -f miner.log
 
-Stop it then with:  pkill -x dagcore-miner
+Stop it then, from this folder, with:
+
+    kill $(cat miner.pid)
+
+or, from the same terminal it was started in, with:  kill %1
+
+Either one stops only this miner, cleanly, like Ctrl+C. Do not use
+"pkill dagcore-miner" or "killall": run as root, they also stop the
+installer's service, if the machine has one.
 
 
 5. Open the dashboard
@@ -141,6 +163,12 @@ Stop it then with:  pkill -x dagcore-miner
 In a browser on the same machine:
 
     http://localhost:8881/
+
+If the log says "Metrics bind failed on 127.0.0.1:8881", another program
+already uses that port - often the miner's own service, installed on the
+same machine. This miner keeps mining, without a dashboard. Give it another
+port with METRICS_PORT=8882 in config.env (or --metrics-port 8882) and open
+http://localhost:8882/ instead.
 
 It shows the hashrate, the shares the pool accepted and rejected, the card's
 temperature and power, a 30-minute chart and the settings. /help on the same
