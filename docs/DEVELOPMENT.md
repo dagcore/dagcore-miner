@@ -75,8 +75,8 @@ from its own directory. Run it from `dist/linux/`, or install it.
 
 `make linux-package` assembles `dist/linux/` the same way `dist/windows/` is
 made: `dagcore-miner`, `dagcore-miner-cpu`, `dagcore_gpu.cl`, `dashboard/`
-(with `OFL.txt`), `config.env.example` and `SHA256SUMS` over all of them,
-with paths relative to the folder, rebuilt from scratch each time.
+(with `OFL.txt`), `config.env.example`, `LICENSE` and `SHA256SUMS` over all
+of them, with paths relative to the folder, rebuilt from scratch each time.
 `dist/linux/` and `dist/windows/` are what a release archives and attaches.
 The Linux kit has no `readme.html` or `start.bat`, and its config example is
 the Linux one, unchanged.
@@ -128,9 +128,10 @@ fix the script, not the output.
 
 `make windows-package` assembles `dist/windows/`, exactly what is unzipped on
 a new machine and nothing else: both `.exe` files, `dagcore_gpu.cl`,
-`dashboard/`, `config.env.example`, `readme.html`, and `SHA256SUMS` over all
-of them, with paths relative to the folder. It is rebuilt from scratch each
-time, and `make clean` removes it along with `build/win`.
+`dashboard/`, `config.env.example`, `readme.html`, `start.bat`, `LICENSE`, and
+`SHA256SUMS` over all of them, with paths relative to the folder. It is
+rebuilt from scratch each time, and `make clean` removes it along with
+`build/win`.
 
 | Variable | Default | Effect |
 |----------|---------|--------|

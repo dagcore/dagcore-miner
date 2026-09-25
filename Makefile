@@ -97,6 +97,8 @@ WIN_PKG        := dist/windows
 # The getting-started page sits next to the .exe, where a user who has just
 # unzipped the folder sees it first; it takes its style from dashboard/.
 README_HTML    := readme.html
+# MIT asks for its notice with every copy of the binaries: both kits carry it.
+LICENSE        := LICENSE
 # Starts the miner as administrator, which the power limit needs on Windows.
 WIN_START_BAT  := win/start.bat
 
@@ -142,7 +144,7 @@ linux: $(BIN_GPU) $(BIN_CPU)
 linux-package: linux
 	rm -rf $(LINUX_PKG)
 	mkdir -p $(LINUX_PKG)/dashboard
-	cp $(BIN_GPU) $(BIN_CPU) $(KERNEL) $(CONFIG_EX) $(LINUX_PKG)/
+	cp $(BIN_GPU) $(BIN_CPU) $(KERNEL) $(CONFIG_EX) $(LICENSE) $(LINUX_PKG)/
 	cp $(DASHBOARD) $(DASH_OFL) $(LINUX_PKG)/dashboard/
 	cd $(LINUX_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
 	    xargs sha256sum > SHA256SUMS
@@ -166,7 +168,7 @@ windows-package: windows
 	rm -rf $(WIN_PKG)
 	mkdir -p $(WIN_PKG)/dashboard
 	cp $(BIN_GPU_WIN) $(BIN_CPU_WIN) $(KERNEL) $(WIN_CONFIG_EX) $(README_HTML) \
-	    $(WIN_START_BAT) $(WIN_PKG)/
+	    $(WIN_START_BAT) $(LICENSE) $(WIN_PKG)/
 	cp $(DASHBOARD) $(DASH_OFL) $(WIN_PKG)/dashboard/
 	cd $(WIN_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
 	    xargs sha256sum > SHA256SUMS

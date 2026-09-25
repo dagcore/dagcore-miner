@@ -108,6 +108,7 @@ It holds:
 | `config.env.example` | Settings, written for Windows |
 | `readme.html` | A getting-started page; opens with a double-click, offline |
 | `start.bat` | Starts `dagcore-miner.exe` as administrator, which the power limit needs |
+| `LICENSE` | The MIT license the miner is released under |
 | `SHA256SUMS` | Checksums of all of the above |
 
 Nothing else is needed: the `.exe` files have no DLLs of their own to bring
