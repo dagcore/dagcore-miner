@@ -171,22 +171,32 @@ that, this page is all you need.</p>
   <li><b>A BlockDAG wallet address</b> — <code>0x</code> followed by 40
   hexadecimal characters. It is where the pool pays; there is no account to
   create.</li>
-  <li><b>An NVIDIA graphics card</b> with the NVIDIA driver installed. The
-  miner talks to the card through the driver's OpenCL; nothing else has to be
-  installed for it. <code>nvidia-smi</code>, which comes with the driver, is
-  what the power and clock controls use.</li>
-  <li><b>Linux on x86-64</b> — the supported system, with an installer and a
-  service. <b>Windows 10 (1803 or later)</b> works for testing.</li>
+  <li><b>A graphics card — NVIDIA, AMD or Intel</b> — with its maker's driver
+  installed. The miner is OpenCL and talks to the card through the driver;
+  nothing else has to be installed for it. Without a card, the CPU-only
+  build mines on the processor alone.</li>
+  <li><b>For the power and clock controls, an NVIDIA card:</b> they go through
+  the NVIDIA driver (<code>nvidia-smi</code>, and NVML on Windows). On AMD and
+  Intel cards the miner mines the same; the dashboard shows those controls as
+  unavailable, with the reason, and leaves out the card readings it cannot
+  get.</li>
+  <li><b>Linux on x86-64</b>, with an installer and a service — the installer
+  sets up NVIDIA rigs; for other cards run the Linux kit from the release by
+  hand (its <code>README.md</code> says how). Or <b>Windows 10 (1803 or
+  later) or 11</b>.</li>
 </ul>
-<div class="note warn"><b>Windows is experimental.</b> The Windows build runs
-by hand and has no installer or service. Clock locks work as on Linux; clock
+<div class="note info"><b>On Windows</b> the miner runs by hand: there is no
+installer and no service. It has been tested on Windows 11 with an RTX 3080
+— card readings through NVML, the portable folder, a clean stop, and runs of
+many hours. AMD and Intel cards go through the same OpenCL code, but have
+not been tested on Windows yet. Clock locks work as on Linux; clock
 offsets cannot be set from the miner — the Windows driver refuses them
 ("Not Supported"). Tune the memory with
 <a href="https://www.msi.com/Landing/afterburner" target="_blank" rel="noopener">MSI Afterburner</a>
 instead; the miner
 shows the clocks that result. Without it, expect less hashrate than on Linux
 (see <a href="#tuning">Tune the card</a>). The power limit goes through
-<code>nvidia-smi</code> as on Linux; it and the clock locks only work with the miner
+the NVIDIA driver as on Linux; it and the clock locks only work with the miner
 started as administrator (<code>start.bat</code>, or right-click → Run as
 administrator); otherwise the
 dashboard shows it as unavailable and says why. Mining itself works the
@@ -211,7 +221,7 @@ sudo ./install.sh</code></pre>
     configuration to <code>/etc/dagcore-miner/config.env</code>.</p>
   </div>
   <div>
-    <h3>Windows <span class="tag">test</span></h3>
+    <h3>Windows</h3>
     <p>Copy the whole <code>DAGCore</code> folder somewhere you can write to,
     for example <code>C:\DAGCore</code> — <b>not</b>
     <code>Program Files</code>: the miner keeps its settings in that same
@@ -224,6 +234,9 @@ sudo ./install.sh</code></pre>
       the <code>.exe</code></li>
       <li><code>dashboard\</code> — the web page</li>
       <li><code>config.env.example</code></li>
+      <li><code>start.bat</code> — starts the miner as administrator</li>
+      <li><code>LICENSE</code>, and <code>SHA256SUMS</code> to check the
+      files</li>
       <li>this page</li>
     </ul>
     <p>Nothing to install: the <code>.exe</code> brings no DLLs of its own.</p>
@@ -288,7 +301,7 @@ sudo systemctl restart dagcore-miner</code></pre>
   <div>
     <h3>Windows</h3>
     <p>Double-click <code>dagcore-miner.exe</code> (or
-    <code>dagcore-miner-cpu.exe</code> on a machine without an NVIDIA card).
+    <code>dagcore-miner-cpu.exe</code> on a machine without a graphics card).
     A console window opens and stays open while it mines. Windows may ask
     whether to allow network access the first time — allow it.</p>
     <p>To stop: Ctrl+C in that window, or close it. Either way the miner shuts
@@ -486,11 +499,15 @@ sudo ./install.sh        # choose Upgrade</code></pre>
       (step 5)? The log says <code>Metrics server on http://…</code> with the
       address it answers on.</td></tr>
   <tr><td>GPU 0 H/s, only the CPU mining</td>
-      <td>The miner found no card. Check the NVIDIA driver; in a container, the
+      <td>The miner found no card. Check the card's driver and its OpenCL; on
+      Linux, <code>clinfo -l</code> lists the cards OpenCL sees. With two
+      makers' drivers (Intel graphics next to an NVIDIA card),
+      <code>GPU_PLATFORM</code> picks the other one. In a container, the
       installer offers the missing OpenCL registration — say yes.</td></tr>
   <tr><td>Controls greyed out</td>
-      <td>No token in this browser — step 6. On a rig with several cards, or
-      without <code>nvidia-smi</code>, the reason is written on each control.</td></tr>
+      <td>No token in this browser — step 6. On a rig with several cards, on
+      an AMD or Intel card, or without <code>nvidia-smi</code>, the reason is
+      written on each control.</td></tr>
   <tr><td>A change "does nothing"</td>
       <td>In Mining configuration, was the box saved with its own Save &amp;
       restart (step 7)? Is the field set on the command line?</td></tr>

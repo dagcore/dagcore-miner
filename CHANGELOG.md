@@ -6,6 +6,17 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The Windows kit's `readme.html` no longer calls Windows experimental or
+  asks for an NVIDIA card. The miner is OpenCL: it mines on NVIDIA, AMD and
+  Intel cards, or on the CPU alone; the power and clock controls need an
+  NVIDIA card, and AMD and Intel have not been tested on Windows yet. The
+  Windows build is described as tested - Windows 11, an RTX 3080, NVML
+  readings, the portable folder, a clean stop, runs of many hours - and as
+  run by hand, without an installer or a service. The page also lists
+  `start.bat`, `LICENSE` and `SHA256SUMS` among the kit's files, and says
+  what to try when a machine with two OpenCL drivers mines on the wrong one.
+
 ## [1.3.1] - 2026-09-25
 
 ### Added
