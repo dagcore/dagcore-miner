@@ -9,6 +9,9 @@
 #                          and the Windows config.env.example
 #   make windows-package -> dist/windows: the folder to copy to Windows, with
 #                          SHA256SUMS
+#   make release-linux  -> dist/dagcore-miner-<version>-linux-x64.tar.gz
+#   make release-windows -> dist/dagcore-miner-<version>-windows-x64.zip
+#   make release        -> both archives
 #   make warn           -> syntax check with -Wall -Wextra
 #   make install        -> binary + kernel in $(PREFIX)/bin, the dashboard in
 #                          $(PREFIX)/share/dagcore-miner, config.env.example
@@ -97,6 +100,14 @@ README_HTML    := readme.html
 # Starts the miner as administrator, which the power limit needs on Windows.
 WIN_START_BAT  := win/start.bat
 
+# Release archives: dist/linux and dist/windows, each in a folder named like
+# the archive, so unpacking gives one folder rather than loose files. The
+# version is the one the binary reports, read from the source.
+VERSION     := $(shell sed -n 's/^\#define DAGCORE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' $(SRC))
+REL_LINUX   := dagcore-miner-$(VERSION)-linux-x64
+REL_WINDOWS := dagcore-miner-$(VERSION)-windows-x64
+REL_STAGE   := dist/.release
+
 # The installer's location, so that a hand "make install" over an installed rig
 # replaces what its service runs. Until 1.2.1 it was /usr/local, which nothing
 # read on such a rig; PREFIX=/usr/local keeps that layout.
@@ -107,7 +118,8 @@ SHAREDIR := $(PREFIX)/share/dagcore-miner
 # install payload. Overridable for packagers who want it elsewhere.
 SYSCONFDIR ?= /etc/dagcore-miner
 
-.PHONY: all cpu linux linux-package windows windows-package check check-windows warn install uninstall clean help
+.PHONY: all cpu linux linux-package windows windows-package release release-linux \
+        release-windows release-version check check-windows warn install uninstall clean help
 all: $(BIN_GPU)
 
 # $(KERNEL) is a prerequisite only for consistency: it is not compiled, it is read
@@ -159,6 +171,47 @@ windows-package: windows
 	cd $(WIN_PKG) && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | \
 	    xargs sha256sum > SHA256SUMS
 	@echo "windows-package: $(WIN_PKG) - copy that folder to the Windows machine"
+
+# What a GitHub release attaches. Each archive holds its kit, unchanged, in a
+# folder of the archive's name; SHA256SUMS inside still checks from there.
+release: release-linux release-windows
+
+release-version:
+	@if [ -z "$(VERSION)" ]; then \
+	    echo "release: no DAGCORE_VERSION found in $(SRC)"; exit 1; \
+	fi
+
+# GNU tar, as on any Linux: numeric root ownership and sorted names, so the
+# archive does not carry the build user's name or the directory's order.
+release-linux: release-version linux-package
+	rm -rf $(REL_STAGE) dist/$(REL_LINUX).tar.gz
+	mkdir -p $(REL_STAGE)
+	cp -rp $(LINUX_PKG) $(REL_STAGE)/$(REL_LINUX)
+	cd $(REL_STAGE) && tar --sort=name --owner=0 --group=0 --numeric-owner \
+	    -czf ../$(REL_LINUX).tar.gz $(REL_LINUX)
+	rm -rf $(REL_STAGE)
+	@echo "release-linux: dist/$(REL_LINUX).tar.gz"
+
+# zip where it is installed (apt install zip), else bsdtar (libarchive-tools
+# on Linux; Windows 10 and later ship it as System32\tar.exe, which Git Bash
+# hides behind its own GNU tar, so it is called by its full path).
+release-windows: release-version windows-package
+	rm -rf $(REL_STAGE) dist/$(REL_WINDOWS).zip
+	mkdir -p $(REL_STAGE)
+	cp -rp $(WIN_PKG) $(REL_STAGE)/$(REL_WINDOWS)
+	cd $(REL_STAGE) && \
+	if command -v zip >/dev/null 2>&1; then \
+	    zip -qrX ../$(REL_WINDOWS).zip $(REL_WINDOWS); \
+	elif command -v bsdtar >/dev/null 2>&1; then \
+	    bsdtar -a -cf ../$(REL_WINDOWS).zip $(REL_WINDOWS); \
+	elif [ -n "$$SYSTEMROOT" ] && command -v cygpath >/dev/null 2>&1 && \
+	     [ -x "$$(cygpath -u "$$SYSTEMROOT")/System32/tar.exe" ]; then \
+	    "$$(cygpath -u "$$SYSTEMROOT")/System32/tar.exe" -a -cf ../$(REL_WINDOWS).zip $(REL_WINDOWS); \
+	else \
+	    echo "release-windows: no zip or bsdtar found (apt install zip)"; exit 1; \
+	fi
+	rm -rf $(REL_STAGE)
+	@echo "release-windows: dist/$(REL_WINDOWS).zip"
 
 # Removed first: where ln -s copies instead of linking (Git Bash on Windows
 # without symlink rights), a second run - make check forces one - would copy
@@ -243,10 +296,11 @@ uninstall:
 clean:
 	$(RM) -r $(LINUX_BUILD) $(LINUX_PKG)
 	$(RM) -r $(WIN_BUILD) $(WIN_PKG)
+	$(RM) -r $(REL_STAGE) dist/dagcore-miner-*.tar.gz dist/dagcore-miner-*.zip
 	$(RM) dagcore-miner dagcore-miner-cpu
 	-rmdir build dist 2>/dev/null || true
 
 help:
-	@printf '%s\n' 'targets: all cpu linux linux-package windows windows-package check warn install uninstall clean' \
+	@printf '%s\n' 'targets: all cpu linux linux-package windows windows-package release release-linux release-windows check warn install uninstall clean' \
 	                'vars:  NATIVE=1 DEBUG=1 USE_OPENSSL=1 PREFIX=... SYSCONFDIR=...' \
 	                '       MINGW_CC=... OPENCL_HEADERS=... (windows)'

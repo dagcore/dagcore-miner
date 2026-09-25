@@ -108,6 +108,12 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   The two kits are what a release archives. `make install` takes the binary
   from `build/linux/`, and `make clean` removes `build/` and `dist/` for both
   systems, plus binaries an older build left in the root.
+- `make release` packs the two kits into the files a GitHub release
+  attaches: `dist/dagcore-miner-<version>-linux-x64.tar.gz` from
+  `dist/linux/` and `dist/dagcore-miner-<version>-windows-x64.zip` from
+  `dist/windows/` (`make release-linux`, `make release-windows` for one).
+  Each unpacks into a single folder named like the archive; the version is
+  the one the binary reports.
 - The dashboard leaves out a reading the machine cannot give - GPU
   temperature, load, power, memory, CPU temperature - instead of showing
   `n/a`, and the whole GPU & thermals card when there is none.

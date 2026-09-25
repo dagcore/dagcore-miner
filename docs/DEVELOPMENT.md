@@ -53,6 +53,7 @@ make linux-package    # dist/linux: the Linux kit
 make check      # builds every variant, from scratch (Windows too, if MinGW is there)
 make windows    # .exe pair in build/win, needs MinGW-w64
 make windows-package  # dist/windows: the kit to copy to a Windows machine
+make release    # both release archives, in dist/
 make warn       # -Wall -Wextra -Wshadow, syntax only
 make install    # into /opt/dagcore-miner, as the installer does
 ```
@@ -79,6 +80,20 @@ with paths relative to the folder, rebuilt from scratch each time.
 `dist/linux/` and `dist/windows/` are what a release archives and attaches.
 The Linux kit has no `readme.html` or `start.bat`, and its config example is
 the Linux one, unchanged.
+
+**Release archives.** `make release-linux` packs `dist/linux/` into
+`dist/dagcore-miner-<version>-linux-x64.tar.gz`, `make release-windows` packs
+`dist/windows/` into `dist/dagcore-miner-<version>-windows-x64.zip`, and
+`make release` does both. The version is `DAGCORE_VERSION` from the source,
+so it matches what the binary reports. Each archive holds its kit unchanged,
+inside one folder named like the archive, so unpacking gives a folder rather
+than loose files, and `sha256sum -c SHA256SUMS` runs from inside it. These
+are the files a GitHub release attaches. The `.tar.gz` needs GNU tar (it
+stores the files as owned by root, in sorted order), so it is made on Linux.
+The `.zip` is made with `zip` (`apt install zip`) or, without it, `bsdtar`,
+which Windows 10 and later have as `System32\tar.exe`: `make release-windows`
+works from Git Bash with nothing extra installed. `make clean` removes the
+archives too.
 
 **Windows build.** `make windows` builds `build/win/dagcore-miner.exe` and
 `build/win/dagcore-miner-cpu.exe` with MinGW-w64 (`apt install mingw-w64`). It
