@@ -75,11 +75,12 @@ from its own directory. Run it from `dist/linux/`, or install it.
 
 `make linux-package` assembles `dist/linux/` the same way `dist/windows/` is
 made: `dagcore-miner`, `dagcore-miner-cpu`, `dagcore_gpu.cl`, `dashboard/`
-(with `OFL.txt`), `config.env.example`, `LICENSE` and `SHA256SUMS` over all
-of them, with paths relative to the folder, rebuilt from scratch each time.
-`dist/linux/` and `dist/windows/` are what a release archives and attaches.
-The Linux kit has no `readme.html` or `start.bat`, and its config example is
-the Linux one, unchanged.
+(with `OFL.txt`), `config.env.example`, `LICENSE`, `README.md` (from
+`linux/README.md`) and `SHA256SUMS` over all of them, with paths relative
+to the folder, rebuilt from scratch each time. `dist/linux/` and
+`dist/windows/` are what a release archives and attaches. The Linux kit has
+`README.md` where the Windows one has `readme.html`, no `start.bat`, and its
+config example is the Linux one, unchanged.
 
 **Release archives.** `make release-linux` packs `dist/linux/` into
 `dist/dagcore-miner-<version>-linux-x64.tar.gz`, `make release-windows` packs

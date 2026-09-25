@@ -5848,6 +5848,7 @@ static void dagtech_usage(void) {
     printf("    --metrics-port <n>     Metrics HTTP port (default: %d)\n", metrics_port);
     printf("    --metrics-bind <ip>    Interface for metrics/dashboard (default: %s;\n", metrics_bind);
     printf("                             0.0.0.0 exposes them to the LAN)\n");
+    printf("    --dashboard-dir <dir>  Folder with the dashboard's pages (index.html)\n");
     printf("    --gpu                  Force enable GPU mining\n");
     printf("    --no-gpu               Disable GPU mining\n");
     printf("    --gpu-intensity <n|list>  GPU intensity per card: 80, 80,60 (default: 80)\n");
@@ -5863,8 +5864,8 @@ static void dagtech_usage(void) {
     printf("    --help                 Show this help\n");
     printf("\n");
     printf("  Config file keys: WALLET, POOL, PORT, THREADS, WORKER, CPU_LIMIT,\n");
-    printf("    METRICS_PORT, METRICS_BIND, GPU_ENABLED, GPU_INTENSITY, GPU_THROTTLE,\n");
-    printf("    GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN, GPU_POWER_LIMIT,\n");
+    printf("    METRICS_PORT, METRICS_BIND, DASHBOARD_DIR, GPU_ENABLED, GPU_INTENSITY,\n");
+    printf("    GPU_THROTTLE, GPU_PLATFORM, GPU_DEVICE, GPU_ALIGN, GPU_POWER_LIMIT,\n");
     printf("    GPU_CORE_CLOCK_BASE, GPU_MEM_CLOCK_BASE, GPU_CORE_OFFSET,\n");
     printf("    GPU_MEM_OFFSET\n");
     printf("\n");

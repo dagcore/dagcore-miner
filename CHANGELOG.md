@@ -6,6 +6,19 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- The Linux kit carries `README.md`, a getting-started guide in plain text
+  for reading in a terminal - the counterpart of the Windows kit's
+  `readme.html`: what the kit holds, checking it with `SHA256SUMS`, making
+  `config.env` from the example (the wallet, and `DASHBOARD_DIR` pointed at
+  the kit's own `dashboard`, since the example's `/opt` path is the
+  installer's), starting `./dagcore-miner` directly - with
+  `DAGCORE_TOKEN_FILE` and `DAGCORE_OVERRIDES_FILE` kept in the kit's folder,
+  which a normal user can write - or in the background, opening the
+  dashboard and its control token, `--gpu-device` for several cards, what
+  tuning needs, and the installer's systemd service. `make linux-package`
+  copies it from `linux/README.md`, and `SHA256SUMS` covers it.
+
 ## [1.3.0] - 2026-09-25
 
 ### Added
