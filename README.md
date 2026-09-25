@@ -52,9 +52,10 @@ files one by one; from 1.3.0 on there are only the archives.
 
 The Linux archive unpacks into one folder, `dagcore-miner-<version>-linux-x64/`,
 holding `dagcore-miner` (GPU and CPU), `dagcore-miner-cpu` (CPU only), the GPU
-kernel `dagcore_gpu.cl`, `dashboard/`, `config.env.example`, `LICENSE` and
-`SHA256SUMS`. The binaries need glibc 2.34 or newer (Ubuntu 22.04, Debian 12
-or later) and, for the GPU build, the NVIDIA driver's OpenCL
+kernel `dagcore_gpu.cl`, `dashboard/`, `config.env.example`, `LICENSE`,
+`SHA256SUMS` and, from 1.3.1 on, `README.md`, a getting-started guide for the
+terminal (`less README.md`). The binaries need glibc 2.34 or newer (Ubuntu
+22.04, Debian 12 or later) and, for the GPU build, the NVIDIA driver's OpenCL
 (`libOpenCL.so.1`). Keep the folder together: the miner loads
 `dagcore_gpu.cl` from its own directory. The archive installs nothing - the
 installer above is still what sets up the service and the dashboard, and
@@ -71,7 +72,7 @@ make && sudo make install && sudo systemctl restart dagcore-miner
 Download, unpack and check the files before running them:
 
 ```sh
-V=1.3.0
+V=1.3.1
 d=dagcore-miner-$V-linux-x64
 curl -fLO "https://github.com/dagcore/dagcore-miner/releases/download/v$V/$d.tar.gz"
 tar xzf "$d.tar.gz"

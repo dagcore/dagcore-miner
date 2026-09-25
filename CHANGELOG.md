@@ -6,6 +6,8 @@ All notable changes to DAGCore Miner are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-25
+
 ### Added
 - The Linux kit carries `README.md`, a getting-started guide in plain text
   for reading in a terminal - the counterpart of the Windows kit's
@@ -17,7 +19,15 @@ All notable changes to DAGCore Miner are recorded here. The format follows
   which a normal user can write - or in the background, opening the
   dashboard and its control token, `--gpu-device` for several cards, what
   tuning needs, and the installer's systemd service. `make linux-package`
-  copies it from `linux/README.md`, and `SHA256SUMS` covers it.
+  copies it from `linux/README.md`, and `SHA256SUMS` covers it. A miner
+  started in the background is stopped by its PID (`miner.pid`, or
+  `kill %1`), never with `pkill`, which as root would also stop the
+  installer's service. The guide also says what a busy dashboard port and a
+  wallet the pool refuses look like in the log.
+
+### Changed
+- `--help` lists `--dashboard-dir`, and `DASHBOARD_DIR` among the config
+  file keys; both worked before but were not listed.
 
 ## [1.3.0] - 2026-09-25
 
